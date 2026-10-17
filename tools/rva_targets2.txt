@@ -1,0 +1,7 @@
+0x7F3590|SkillCasterComponent.UpdateAll
+0x7F2B30|SkillCasterComponent.OnEnable
+0x7F2AC0|SkillCasterComponent.OnDisable
+0x7F3130|SkillCasterComponent.Setup
+0x7F0D00|SkillCasterComponent.CastSkill
+0x7F0BF0|SkillCasterComponent.CastSkillOneTime
+0x80A130|Entity.IsPlayer

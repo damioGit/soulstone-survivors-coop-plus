@@ -1,0 +1,21 @@
+[Bb]in/
+[Oo]bj/
+*.user
+.vs/
+*.log
+
+# Game binaries and anything derived from them (decompiled/dumped game code) - never commit
+tools/*.dll
+tools/interop/
+tools/decompiled/
+tools/il2cpp_dump/
+tools/ghidra_project/
+tools/api_*.txt
+tools/decompiled_*.txt
+tools/callers_*.txt
+
+# Third-party tools - download separately
+tools/*.zip
+tools/ghidra_*_PUBLIC/
+tools/Il2CppDumper/
+tools/unityexplorer_extracted/

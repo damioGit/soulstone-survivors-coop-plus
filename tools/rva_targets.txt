@@ -1,0 +1,15 @@
+0x7D82F0|PlayerSkillAutoCastComponent.UpdateAll
+0x7D7F80|PlayerSkillAutoCastComponent.OnEnable
+0x7D7F10|PlayerSkillAutoCastComponent.OnDisable
+0x7D71A0|PlayerSkillAutoCastComponent.AttemptToCastSkill
+0x7D7FF0|PlayerSkillAutoCastComponent.Setup
+0x7A3A60|ModifiedCharacter.FixedUpdateAll
+0x7A63B0|ModifiedCharacter.UpdateRotationAndNavMeshAgent
+0x7A59A0|ModifiedCharacter.RotateTowards
+0x7A5E90|ModifiedCharacter.SetRotationMode
+0x7A5F50|ModifiedCharacter.Setup
+0x80B060|Entity.Setup
+0x808B80|Entity.CacheReferences
+0x808AF0|Entity.CacheId
+0x7D67B0|PlayerAutoAimComponent.TryGetAutoAimTarget
+0x7D6600|PlayerAutoAimComponent.Setup
