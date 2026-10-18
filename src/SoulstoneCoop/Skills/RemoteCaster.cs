@@ -230,7 +230,7 @@ public static class RemoteCaster
 
     // ---------------- skill copies ----------------
 
-    private static Copy? GetOrCreateCopy(string key, SkillType skillType)
+    private static Copy? GetOrCreateCopy(string key, SkillType skillType, Skill? template = null)
     {
         if (Copies.TryGetValue(key, out var c))
         {
@@ -241,7 +241,7 @@ public static class RemoteCaster
 
         try
         {
-            var inst = CreateSkillInstance(key, skillType, out string how);
+            var inst = template != null ? CreateFromTemplate(key, template, out string how) : CreateSkillInstance(key, skillType, out how);
             inst.FillPools(3);
 
             c = new Copy { Key = key, Skill = inst, Ptr = inst.Pointer, Kind = inst.GetIl2CppType().Name };
@@ -276,13 +276,38 @@ public static class RemoteCaster
             inst = UnityEngine.Object.Instantiate(prefab, _caster!.transform);
             if (inst == null) throw new Exception("Instantiate returned null");
         }
+        SetupOnCaster(inst, skillType);
+        how = "manual Setup";
+        return inst;
+    }
+
+    private static void SetupOnCaster(Skill inst, SkillType skillType)
+    {
         var phys = _caster!.Physical;
         Collider? col = phys.HasReference && phys.Reference != null ? phys.Reference.Collider : null;
         inst.Setup(_caster, skillType, _caster.Team, _caster.Stats, _caster.PassiveSkills, _caster.Animator, col!,
             new Il2CppSystem.Nullable<float>(), new Il2CppSystem.Nullable<bool>());
-        how = "manual Setup";
+    }
+
+    /// <summary>A skill that is not a player power-up (the God-Entity's meteor): the Resources prefab when there is one
+    /// under Skill-Prefabs, else a clone of the local scene instance (the template), set up on the caster like the
+    /// manual path above. The copy belongs to the caster, so every effect of it is blocked by the patches below.</summary>
+    private static Skill CreateFromTemplate(string key, Skill template, out string how)
+    {
+        string prefabKey = key.StartsWith(GodKeyPrefix, StringComparison.Ordinal) ? key.Substring(GodKeyPrefix.Length) : key;
+        Skill? source = null;
+        try { source = ResourcesUtil.Load<Skill>(SkillPrefabFolder + prefabKey); }
+        catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][casts] Load '{SkillPrefabFolder}{prefabKey}': {ex.Message}"); }
+        how = source != null ? "Resources prefab" : "clone of the local instance";
+        source ??= template;
+        var inst = UnityEngine.Object.Instantiate(source, _caster!.transform);
+        if (inst == null) throw new Exception("Instantiate returned null");
+        SetupOnCaster(inst, template.SkillType);
         return inst;
     }
+
+    /// <summary>Copies made from a God-Entity skill live under their own key namespace.</summary>
+    internal const string GodKeyPrefix = "god:";
 
     /// <summary>Il2Cpp delegates for the funcs some skills require (channeling, updated front position). Built
     /// lazily and guarded: if the conversion fails only those skills are affected.</summary>
@@ -308,10 +333,12 @@ public static class RemoteCaster
 
     public enum PlayResult { Played, NoCaster, NoSkill, Rejected, Error }
 
-    internal static PlayResult Play(CastMessage m)
+    /// <param name="template">Phase "pendências": a local skill instance to copy when the key isn't a player
+    /// power-up (God meteors, see GodCasts). Null for the other player's skills.</param>
+    internal static PlayResult Play(CastMessage m, Skill? template = null)
     {
         if (_caster == null || _caster._skillCaster == null) return PlayResult.NoCaster;
-        var c = GetOrCreateCopy(m.Key, (SkillType)m.SkillType);
+        var c = GetOrCreateCopy(m.Key, (SkillType)m.SkillType, template);
         if (c == null) return PlayResult.NoSkill;
 
         try
@@ -350,7 +377,7 @@ public static class RemoteCaster
             // those arrive as their own cast messages from the other side.
             bool ok = _caster._skillCaster.CastSkill(c.Skill, p, SkillActivationOptions.IgnoreAll);
             if (!ok) return PlayResult.Rejected;
-            PlayGhostAnimation(c.Skill);
+            if (template == null) PlayGhostAnimation(c.Skill); // a God cast is not the ghost's own
             return PlayResult.Played;
         }
         catch (Exception ex)
@@ -467,13 +494,15 @@ public static class RemoteCasterDamageBlockPatch
 {
     [HarmonyPrefix]
     [HarmonyPriority(Priority.First)]
-    public static bool Prefix(Entity attackerEntity, Entity targetEntity,
+    public static bool Prefix(Entity attackerEntity, Entity targetEntity, float healthChange,
         ref float effectiveHealthChange, ref float absorbedDamage, ref bool isImmune)
     {
         try
         {
-            if (!RemoteCaster.IsCaster(attackerEntity) && !RemoteCaster.IsCaster(targetEntity)) return true;
+            bool casterAttacks = RemoteCaster.IsCaster(attackerEntity);
+            if (!casterAttacks && !RemoteCaster.IsCaster(targetEntity)) return true;
             CastSync.CountBlockedDamage();
+            if (casterAttacks) ReplicaCombatText.OnBlockedHit(targetEntity, healthChange); // the effect still draws the number
             effectiveHealthChange = 0f;
             absorbedDamage = 0f;
             isImmune = false;
