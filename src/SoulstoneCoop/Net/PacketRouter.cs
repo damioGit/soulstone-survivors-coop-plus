@@ -31,6 +31,8 @@ public enum PacketType : byte
     LobbyState = 31,   // either way: sender is in the menu / loading a run / in a run (phase 6, on change) (ReliableOrdered)
     RunStart = 32,     // host -> client: scene, mode, mastery tier/level, Survivors affixes: start the same run (phase 6) (ReliableOrdered)
     RunStartRefused = 33, // client -> host: could not follow RunStart, with the reason (phase 6) (ReliableOrdered)
+    // 70-79: small pending items (docs/pendencias-notas.md)
+    GodCast = 70,      // host -> client: the God-Entity cast a meteor, replayed visual-only on the RemoteCaster (ReliableUnordered)
 }
 
 public static class PacketRouter
@@ -77,6 +79,9 @@ public static class PacketRouter
                 break;
             case PacketType.EnemyCast:
                 Enemies.EnemyCasts.OnEnemyCast(reader);
+                break;
+            case PacketType.GodCast:
+                Enemies.GodCasts.OnGodCast(reader);
                 break;
             case PacketType.EnemySnapshot:
                 Enemies.ClientPuppets.OnSnapshot(reader, reader.RawDataSize);

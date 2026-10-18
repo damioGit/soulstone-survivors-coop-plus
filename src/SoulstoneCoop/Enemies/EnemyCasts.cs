@@ -207,6 +207,7 @@ public static class EnemyCasts
     public static void Tick(float unscaledDeltaTime)
     {
         if (NetworkManager.Role == NetRole.None) return;
+        GodCasts.Tick(unscaledDeltaTime); // own try/catch
         if (!GameManagerUtil.HasGameManager && (SkillsByPuppet.Count > 0 || LastSent.Count > 0))
         {
             SkillsByPuppet.Clear();
