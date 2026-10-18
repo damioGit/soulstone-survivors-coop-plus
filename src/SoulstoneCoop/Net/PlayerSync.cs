@@ -9,6 +9,7 @@ public struct PlayerTransformState
 {
     public Vector3 Position;
     public float RotationY;
+    public uint SentMs; // phase 8: the sender's clock (RemoteClock.NowMs)
 
     public void Serialize(NetDataWriter writer)
     {
@@ -16,6 +17,7 @@ public struct PlayerTransformState
         writer.Put(Position.y);
         writer.Put(Position.z);
         writer.Put(RotationY);
+        writer.Put(SentMs);
     }
 
     public static PlayerTransformState Deserialize(NetDataReader reader)
@@ -23,7 +25,8 @@ public struct PlayerTransformState
         return new PlayerTransformState
         {
             Position = new Vector3(reader.GetFloat(), reader.GetFloat(), reader.GetFloat()),
-            RotationY = reader.GetFloat()
+            RotationY = reader.GetFloat(),
+            SentMs = reader.GetUInt(),
         };
     }
 }
@@ -49,6 +52,7 @@ public static class PlayerSync
 
     private struct Sample { public float T; public Vector3 Pos; public float Yaw; }
     private static readonly List<Sample> Buffer = new();
+    private static readonly RemoteClock Clock = new(); // phase 8, [Coop] SenderClock
 
     // Animator parameters of the player's controller (PlayerAnimator..cctor, RVA 0x7A82E0).
     private static readonly int ForwardMovement = Animator.StringToHash("ForwardMovement");
@@ -74,7 +78,7 @@ public static class PlayerSync
         _timeSinceLastSend = 0f;
 
         var t = local.gameObject.transform;
-        var state = new PlayerTransformState { Position = t.position, RotationY = t.eulerAngles.y };
+        var state = new PlayerTransformState { Position = t.position, RotationY = t.eulerAngles.y, SentMs = RemoteClock.NowMs() };
 
         var writer = new NetDataWriter();
         writer.Put((byte)PacketType.PlayerState);
@@ -88,6 +92,7 @@ public static class PlayerSync
     public static void ResetForNewGhost()
     {
         Buffer.Clear();
+        Clock.Reset();
         ReceivedCount = 0;
         _hasLastGhostPos = false;
         _ghostAnimators = null;
@@ -101,10 +106,15 @@ public static class PlayerSync
         LastReceivedPosition = state.Position;
 
         float now = Time.unscaledTime;
+        // Phase 8: with SenderClock the sample goes where the partner took it (jitter no longer bunches samples).
+        bool senderClock = Plugin.SenderClock.Value;
+        float t = senderClock ? (float)Clock.ToLocal(state.SentMs, now) : now;
         // A big jump (respawn, scene change, our own pause backlog): snap instead of sliding across the map.
         if (Buffer.Count > 0 && (Buffer[Buffer.Count - 1].Pos - state.Position).sqrMagnitude > TeleportDistance * TeleportDistance)
             Buffer.Clear();
-        Buffer.Add(new Sample { T = now, Pos = state.Position, Yaw = state.RotationY });
+        // A faster transit just lowered the clock offset: keep the buffer in order.
+        if (senderClock && Buffer.Count > 0 && t <= Buffer[Buffer.Count - 1].T) t = Buffer[Buffer.Count - 1].T + 0.001f;
+        Buffer.Add(new Sample { T = t, Pos = state.Position, Yaw = state.RotationY });
         while (Buffer.Count > 2 && Buffer[0].T < now - 1f) Buffer.RemoveAt(0);
         if (Buffer.Count == 1) Place(state.Position, state.RotationY, snap: true);
     }

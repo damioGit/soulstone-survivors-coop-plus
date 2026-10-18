@@ -42,6 +42,14 @@ public static class EnemyCasts
 
     internal static void ForgetPuppet(IntPtr puppetPtr) => SkillsByPuppet.Remove(puppetPtr);
 
+    /// <summary>Phase 8: every puppet dropped at once (host gone, new run): their pooled instances must not keep
+    /// a skill table.</summary>
+    internal static void ForgetAll()
+    {
+        SkillsByPuppet.Clear();
+        SummonSkill.Clear();
+    }
+
     private static string KeyOf(Skill skill) => EnemyPrefabKeys.StripClone(skill.gameObject.name);
 
     // ---------------- host ----------------

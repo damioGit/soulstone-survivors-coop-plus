@@ -35,7 +35,8 @@ public static class ClientPuppets
         public ushort LastSeq;
         public bool HasSample;
         public Vector3 PrevPos, LatestPos;
-        public float PrevTime, LatestTime;
+        public float PrevTime, LatestTime;     // our clock: arrival, or the host's send time mapped (SenderClock)
+        public double PrevHostT, LatestHostT;  // phase 8: the host's own clock, seconds
         public float Yaw;
         public float HealthPercent = 1f;
         public bool HealthDirty = true;
@@ -141,8 +142,13 @@ public static class ClientPuppets
         Unresolved.Clear();
     }
 
+    /// <summary>Phase 8: the host's snapshot clock on ours ([Coop] SenderClock).</summary>
+    private static readonly RemoteClock SnapshotClock = new();
+
     private static void DespawnAll(string reason)
     {
+        SnapshotClock.Reset();
+        EnemyCasts.ForgetAll();
         int n = 0;
         foreach (var p in ByNetId.Values.ToArray())
         {
@@ -199,6 +205,7 @@ public static class ClientPuppets
     public static void OnSnapshot(NetDataReader reader, int packetBytes)
     {
         ushort seq = reader.GetUShort();
+        uint hostMs = reader.GetUInt();
         var basePos = new Vector3(reader.GetFloat(), reader.GetFloat(), reader.GetFloat());
         int count = reader.GetByte();
         if (!CoopRole.IsClientSide) return;
@@ -207,7 +214,10 @@ public static class ClientPuppets
         _snapshotBytes += packetBytes;
         if (seq != _lastSnapshotSeqSeen) { _snapshotsRecv++; _lastSnapshotSeqSeen = seq; }
 
-        float now = Time.unscaledTime;
+        float arrival = Time.unscaledTime;
+        // Phase 8: with SenderClock the sample is placed when the host took it, not when it got here (jitter).
+        float now = Plugin.SenderClock.Value ? (float)SnapshotClock.ToLocal(hostMs, arrival) : arrival;
+        double hostT = hostMs / 1000.0;
         for (int i = 0; i < count; i++)
         {
             EnemySnapshotFormat.ReadEntry(reader, basePos, out ushort netId, out var pos, out float yaw, out float hp);
@@ -221,10 +231,11 @@ public static class ClientPuppets
             if (p.HasSample && !SeqNewer(seq, p.LastSeq)) continue;
             p.LastSeq = seq;
 
-            if (p.HasSample) { p.PrevPos = p.LatestPos; p.PrevTime = p.LatestTime; }
-            else { p.PrevPos = pos; p.PrevTime = now; p.HasSample = true; }
+            if (p.HasSample) { p.PrevPos = p.LatestPos; p.PrevTime = p.LatestTime; p.PrevHostT = p.LatestHostT; }
+            else { p.PrevPos = pos; p.PrevTime = now; p.PrevHostT = hostT; p.HasSample = true; }
             p.LatestPos = pos;
             p.LatestTime = now;
+            p.LatestHostT = hostT;
             p.Yaw = yaw;
             if (Mathf.Abs(hp - p.HealthPercent) > 0.0001f) { p.HealthPercent = hp; p.HealthDirty = true; }
         }
@@ -319,7 +330,9 @@ public static class ClientPuppets
         Vector3 actual = tr.position;
 
         Vector3 vel = Vector3.zero;
-        float dt = p.LatestTime - p.PrevTime;
+        // Phase 8: with SenderClock the velocity uses the host's own spacing between the two samples; arrival
+        // times bunch up with jitter (two samples in one frame = no velocity, a late one = half of it).
+        float dt = Plugin.SenderClock.Value ? (float)(p.LatestHostT - p.PrevHostT) : p.LatestTime - p.PrevTime;
         if (dt > 0.001f && dt < 0.5f) vel = (p.LatestPos - p.PrevPos) / dt;
 
         float age = Mathf.Clamp(now - p.LatestTime, 0f, MaxExtrapolation);

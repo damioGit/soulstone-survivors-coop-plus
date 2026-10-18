@@ -88,6 +88,7 @@ public static class CoopLife
         _bothDownTimer = 0f;
         _clientRevivePendingTimer = 0f;
         _pendingPortalTimer = 0f;
+        _hostLost = false;
         _armDepth = 0;
         _cameraSwapped = false;
         _savedTarget = null;
@@ -174,6 +175,7 @@ public static class CoopLife
             if (LocalDowned) UpdateSpectator();
             if (CoopRole.IsHostSide && Connected && InMatch) HostTick(dt);
             if (_pendingPortalTimer > 0f) RetryPendingPortal(dt);
+            HostLostTick(dt);
             FeedbackTick(dt);
             HandleHotkeys();
         }
@@ -622,8 +624,83 @@ public static class CoopLife
             _progress = 0f;
             // Alone now: solo rules. A downed player has nobody to revive it.
             if (LocalDowned && InMatch) FinalDeathLocal("partner disconnected");
+            // Phase 8: the client's run can't go on without the host (no enemies, no spawns): end it cleanly.
+            if (CoopRole.IsClientSide && InMatch && !RunEnding) BeginHostLost();
         }
         catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop][life] OnPeerDisconnected: {ex}"); }
+    }
+
+    // =====================================================================================
+    // Phase 8: the host left in the middle of the client's run
+    // =====================================================================================
+
+    private const float HostLostDelay = 4f; // s: long enough to read the notice before the end screen
+
+    private static bool _hostLost;
+    private static float _hostLostTimer;
+    private static bool _hostLostWaitingLogged;
+
+    private static void BeginHostLost()
+    {
+        _hostLost = true;
+        _hostLostTimer = 0f;
+        _hostLostWaitingLogged = false;
+        bool won = VictoryReached();
+        Plugin.StaticLog.LogWarning($"[SoulstoneCoop][life] Host lost mid-run (victory reached={won}, auto end={Plugin.EndRunWhenHostLeaves.Value}).");
+        if (won) Lobby.CoopSession.Notice("O host desconectou. Entre no portal pra terminar a partida.", 10f);
+        else if (Plugin.EndRunWhenHostLeaves.Value) Lobby.CoopSession.Notice("O host desconectou. Encerrando a partida...", 10f);
+        else Lobby.CoopSession.Notice("O host desconectou. Desista pelo menu de pausa pra voltar.", 10f);
+        if (won || !Plugin.EndRunWhenHostLeaves.Value) _hostLost = false; // nothing to do automatically
+    }
+
+    /// <summary>The run was already won here (the boss objective is done and the Home portal is open): the
+    /// player keeps that and walks into the portal; surrendering would throw the victory away.</summary>
+    internal static bool VictoryReached()
+    {
+        try
+        {
+            var data = GameManagerUtil.GameData;
+            if (data == null) return false;
+            if (data.EnterPortalObjective != null) return true;
+            // RunEnd(Victory) applied, the game's victory branch (which opens the portal) still on its way.
+            var obj = data.SurvivorsGameManager != null ? data.SurvivorsGameManager.MainObjective : null;
+            return obj != null && obj.Total > 0 && obj.Current >= obj.Total;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>Surrender through the game's own path (GameManagerUtil.Surrender: LossBySurrender, every player
+    /// killed, the normal end screen and the profile save) once nothing is in the way: not in the level-up
+    /// screen or the pause menu (the player can also press Desistir there themselves).</summary>
+    private static void HostLostTick(float dt)
+    {
+        if (!_hostLost) return;
+        if (!InMatch || RunEnding || NetworkManager.HasPeer || LocalPlayerKilled()) { _hostLost = false; return; }
+        if (VictoryReached())
+        {
+            _hostLost = false;
+            Lobby.CoopSession.Notice("O host desconectou. Entre no portal pra terminar a partida.", 10f);
+            return;
+        }
+        _hostLostTimer += dt;
+        if (_hostLostTimer < HostLostDelay) return;
+        if (PauseSync.LocalReason != PauseReason.None)
+        {
+            if (!_hostLostWaitingLogged)
+            {
+                _hostLostWaitingLogged = true;
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] Host lost: waiting for the local {PauseSync.LocalReason} screen to close before ending.");
+                Lobby.CoopSession.Notice(PauseSync.LocalReason == PauseReason.LevelUp
+                    ? "O host desconectou. Escolha o upgrade pra encerrar a partida."
+                    : "O host desconectou. Feche a pausa (ou desista) pra encerrar.", 10f);
+            }
+            return;
+        }
+        _hostLost = false;
+        Plugin.StaticLog.LogInfo("[SoulstoneCoop][life] Host lost: ending the client's run (Surrender).");
+        RunEnding = true;
+        if (LocalDowned) { LocalDowned = false; RestoreCamera(); }
+        RunMirrored(() => GameManagerUtil.Surrender());
     }
 
     // =====================================================================================

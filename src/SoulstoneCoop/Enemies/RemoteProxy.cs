@@ -326,6 +326,13 @@ public static class RemoteProxy
     private static void RemoveProxy(string reason)
     {
         var e = _proxy;
+        if (e != null)
+        {
+            // Phase 8: enemies chasing the proxy would keep a pooled, inactive entity as target until their next
+            // refresh (seekers forever: RetargetSeeker stops once the proxy is gone). Point them back at the host.
+            try { ReleaseTargets(e); }
+            catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][proxy] Releasing the proxy's chasers: {ex.Message}"); }
+        }
         _proxy = null;
         _proxyPtr = IntPtr.Zero;
         _proxyCharacter = null;
@@ -340,6 +347,40 @@ public static class RemoteProxy
         {
             Plugin.StaticLog.LogError($"[SoulstoneCoop][proxy] RemoveProxy: {ex.Message}");
         }
+    }
+
+    /// <summary>Seekers (always after a player) go to the host like RetargetSeeker does; every other AI drops the
+    /// target, as when the client dies (DropAsTarget), and its next RefreshTarget picks the closest one.</summary>
+    private static void ReleaseTargets(Entity proxy)
+    {
+        var all = EntityRegistry.AllEntities;
+        if (all == null) return;
+        var host = GameState.LocalPlayerEntity;
+        int seekers = 0, dropped = 0;
+        for (int i = 0; i < all.Count; i++)
+        {
+            var ai = all[i] != null ? all[i]._basicAI : null;
+            if (ai == null) continue;
+            var t = ai._entityToFollow;
+            if (t == null || t.Pointer != proxy.Pointer) continue;
+            var seeker = ai.TryCast<PlayerSeekerAIComponent>();
+            if (seeker != null && host != null)
+            {
+                seeker._entityToFollow = host;
+                seeker._hasEntityToFollow = true;
+                seeker._transformToFollow = host.transform;
+                seeker._hasTransformToFollow = true;
+                var phys = host._physical;
+                seeker._entityToFollowRadius = phys != null ? phys.ColliderRadius : 0f;
+                seekers++;
+            }
+            else
+            {
+                ai.RemoveTarget();
+                dropped++;
+            }
+        }
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][proxy] Proxy going away: {seekers} seekers back on the host, {dropped} enemies dropped it as target.");
     }
 
     /// <summary>The instance goes back to the Dummy pool: undo what would leak into a cheat-spawned dummy.</summary>
