@@ -21,6 +21,7 @@ public enum PacketType : byte
     SkillCast = 14,    // either way: the sender's local player cast a skill, replayed visual-only on the RemoteCaster (ReliableOrdered)
     SkillChannelEnd = 15, // either way: a channel started by SkillCast stopped (ReliableOrdered, same channel as SkillCast)
     LootDrop = 16,     // host -> client: one LootUtil.ProcessLoot call's arguments, replayed locally (ReliableOrdered, before EnemyDied)
+    XpShare = 17,      // either way: raw XP the sender's player collected (team XP: the receiver adds it too) (ReliableOrdered)
 }
 
 public static class PacketRouter
@@ -76,6 +77,9 @@ public static class PacketRouter
                 break;
             case PacketType.LootDrop:
                 Loot.LootSync.OnLootDrop(reader);
+                break;
+            case PacketType.XpShare:
+                Loot.LootSync.OnXpShare(reader);
                 break;
             case PacketType.PauseState:
                 PauseSync.OnPauseStateReceived(reader);

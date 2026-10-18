@@ -14,6 +14,8 @@ namespace SoulstoneCoop.Loot;
 /// multipliers, and its player collects them (XpDropper and the collectables use PlayerEntities[0] = local).
 /// ProcessLoot already hands items/prestige/minor soulstones to every Players-team entity, so "each player gets
 /// their own" is the game's native N-player behaviour. See docs/fase4b-investigacao.md.
+/// XP is the exception (team XP): each drop's orbs exist in ONE world - the nearest living player's - and every
+/// AddExperience of the local player is shared with the partner (XpShare = 17). See docs/fase4b-notas.md.
 /// </summary>
 public static class LootSync
 {
@@ -59,12 +61,27 @@ public static class LootSync
     /// <summary>ProcessLoot prefix on the host. Layout: type u8 | netId u16 | pos 3*f32 | xp i32 | prestige f32 |
     /// flags u8 (1 instant, 2 currencies) | interval i32 | [6 * i32] | nItems u8 * (id i32, chance f32, min i32,
     /// max i32) | nPowerUps u8 * (level i32, source i32, flags u8).</summary>
-    internal static void CaptureOnHost(int experience, float prestige, PlayerProfileCurrencies? currencies,
+    internal static void CaptureOnHost(ref int experience, float prestige, PlayerProfileCurrencies? currencies,
         Il2CppList.List<ItemDropRuntimeData>? possibleItems, Il2CppList.List<PowerUpRequest>? powerUps,
         Vector3 sourcePosition, bool instant, int experienceInterval)
     {
         if (NetworkManager.RemotePeer == null) return;
         if (InPersonalLoot) { _skippedPersonal++; return; }
+
+        // Team XP: each orb exists in ONE world only - the nearest living player's - and whoever collects it
+        // shares the amount (XpShare). Client's: the host drops nothing and sends the XP; host's: sends 0.
+        int sendXp = 0;
+        if (experience > 0)
+        {
+            if (ClientOwnsXp(sourcePosition))
+            {
+                sendXp = experience;
+                experience = 0;
+                _xpToClient += sendXp;
+                _dropsToClient++;
+            }
+            else { _xpKeptHost += experience; _dropsKept++; }
+        }
 
         int[]? cur = null;
         if (currencies != null)
@@ -111,7 +128,7 @@ public static class LootSync
             }
         }
 
-        if (experience <= 0 && prestige <= 0f && cur == null && items.Count == 0 && pus.Count == 0) return;
+        if (sendXp <= 0 && prestige <= 0f && cur == null && items.Count == 0 && pus.Count == 0) return;
 
         ushort netId = Enemies.HostEnemySync.FindKilledAt(sourcePosition);
 
@@ -119,7 +136,7 @@ public static class LootSync
         w.Put((byte)PacketType.LootDrop);
         w.Put(netId);
         w.Put(sourcePosition.x); w.Put(sourcePosition.y); w.Put(sourcePosition.z);
-        w.Put(experience);
+        w.Put(sendXp);
         w.Put(prestige);
         w.Put((byte)((instant ? 1 : 0) | (cur != null ? 2 : 0)));
         w.Put(experienceInterval);
@@ -134,9 +151,99 @@ public static class LootSync
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
         _sent++;
         _sentBytes += w.Length;
-        _sentXp += Math.Max(0, experience);
+        _sentXp += sendXp;
         _sentItems += items.Count;
         _sentPowerUps += pus.Count;
+    }
+
+    /// <summary>Nearest living player owns the orb. No client player on our side (or dead) = the host's.</summary>
+    private static bool ClientOwnsXp(Vector3 pos)
+    {
+        if (!Enemies.RemoteProxy.RemoteAlive || !Enemies.RemoteProxy.TryGetRemotePosition(out var clientPos, out _)) return false;
+        var host = GameState.LocalPlayerEntity;
+        if (host == null) return true;
+        bool hostDead = host._health != null && host._health.HasBeenKilled;
+        if (hostDead) return true;
+        return (clientPos - pos).sqrMagnitude < (host.transform.position - pos).sqrMagnitude;
+    }
+
+    // ---------------- both: shared XP ----------------
+
+    private const float ShareFlushInterval = 0.1f;
+
+    /// <summary>Set while we add the partner's collected XP, so it isn't echoed back.</summary>
+    internal static bool ApplyingSharedXp;
+
+    private static float _shareOut, _shareIn, _shareFlushTimer;
+    private static int _sharePackets, _shareRecvPackets;
+    private static double _shareSentSum, _shareRecvSum;
+    private static long _xpToClient, _xpKeptHost;
+    private static int _dropsToClient, _dropsKept;
+    private static double _shareAppliedSum, _shareDiscardedSum;
+
+    /// <summary>ExperienceComponent.AddExperience prefix (the single funnel of XP collection: orbs in both XpDropper
+    /// modes, ExperienceProjectile). Raw amount, before the collector's XP stat: the partner applies its own.</summary>
+    internal static void OnLocalAddExperience(ExperienceComponent comp, float amount)
+    {
+        if (ApplyingSharedXp || amount <= 0f || NetworkManager.RemotePeer == null) return;
+        var local = GameState.LocalPlayerEntity;
+        if (local == null || comp.Entity == null || comp.Entity.Pointer != local.Pointer) return;
+        _shareOut += amount;
+    }
+
+    private static void FlushShare(float unscaledDeltaTime)
+    {
+        _shareFlushTimer += unscaledDeltaTime;
+        if (_shareFlushTimer < ShareFlushInterval) return;
+        _shareFlushTimer = 0f;
+        if (_shareOut <= 0f) return;
+        if (NetworkManager.RemotePeer == null) { _shareOut = 0f; return; }
+        var w = new NetDataWriter();
+        w.Put((byte)PacketType.XpShare);
+        w.Put(_shareOut);
+        NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
+        _sharePackets++;
+        _shareSentSum += _shareOut;
+        _shareOut = 0f;
+    }
+
+    /// <summary>Layout: type u8 | amount f32 (raw XP the partner collected since the last packet).</summary>
+    public static void OnXpShare(NetDataReader r)
+    {
+        float amount = r.GetFloat();
+        if (amount <= 0f) return;
+        _shareRecvPackets++;
+        _shareRecvSum += amount;
+        _shareIn += amount;
+        ApplyShareIn();
+    }
+
+    private static void ApplyShareIn()
+    {
+        if (_shareIn <= 0f) return;
+        if (!GameManagerUtil.HasGameManager) { _shareDiscardedSum += _shareIn; _shareIn = 0f; return; } // run over
+        var local = GameState.LocalPlayerEntity;
+        var xp = local != null ? local._experience : null;
+        if (xp == null) return; // keep it until our player is up
+        // Never on a dead (or, later, downed) player: AddExperience can open the level-up popup, which pins
+        // LevelUpTime at 0 and freezes both games through the synchronized pause. Held until it revives.
+        if (local!._health != null && local._health.HasBeenKilled) return;
+        float amount = _shareIn;
+        _shareIn = 0f;
+        try
+        {
+            ApplyingSharedXp = true;
+            xp.AddExperience(amount);
+            _shareAppliedSum += amount;
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogError($"[SoulstoneCoop][loot] Applying shared XP {amount:F0}: {ex.Message}");
+        }
+        finally
+        {
+            ApplyingSharedXp = false;
+        }
     }
 
     // ---------------- client: replay ----------------
@@ -196,6 +303,9 @@ public static class LootSync
                 }
             }
         }
+
+        FlushShare(unscaledDeltaTime);
+        ApplyShareIn();
 
         _telemetryTimer += unscaledDeltaTime;
         if (_telemetryTimer < TelemetryInterval) return;
@@ -287,25 +397,33 @@ public static class LootSync
     private static void LogTelemetry()
     {
         bool host = CoopRole.IsHostSide, client = CoopRole.IsClientSide;
-        if (host && (_sent > 0 || _skippedPersonal > 0 || _captureErrors > 0))
+        if (host && (_sent > 0 || _sharePackets > 0 || _shareRecvPackets > 0 || _skippedPersonal > 0 || _captureErrors > 0))
         {
             Plugin.StaticLog.LogInfo(
                 $"[SoulstoneCoop][loot] Host: sent={_sent} bytes={_sentBytes} xp={_sentXp} items={_sentItems} powerUps={_sentPowerUps} " +
-                $"skippedPersonal={_skippedPersonal} captureErrors={_captureErrors} {LocalProgress()}");
+                $"skippedPersonal={_skippedPersonal} captureErrors={_captureErrors} xpDropsToClient={_dropsToClient} ({_xpToClient}xp) xpDropsToHost={_dropsKept} ({_xpKeptHost}xp) {ShareStats()} {LocalProgress()}");
         }
-        else if (client && (_recv > 0 || _blockedPuppetLoot > 0 || Pending.Count > 0 || _replayErrors > 0))
+        else if (client && (_recv > 0 || _sharePackets > 0 || _shareRecvPackets > 0 || _blockedPuppetLoot > 0 || Pending.Count > 0 || _replayErrors > 0))
         {
             Plugin.StaticLog.LogInfo(
                 $"[SoulstoneCoop][loot] Client: recv={_recv} replayed={_replayed} pending={Pending.Count} dropped={_dropped} xp={_recvXp} " +
                 $"builtItems={_builtItems} itemFallbacks={_itemFallbacks} errors={_replayErrors} blockedPuppetLoot={_blockedPuppetLoot} " +
-                $"blockedPortal={_blockedPortal} {LocalProgress()}");
+                $"blockedPortal={_blockedPortal} {ShareStats()} {LocalProgress()}");
         }
         _sent = _sentBytes = _sentItems = _sentPowerUps = _skippedPersonal = 0;
         _sentXp = 0;
         _recv = _replayed = _builtItems = _itemFallbacks = _dropped = 0;
         _recvXp = 0;
         _blockedPuppetLoot = _blockedPortal = 0;
+        _xpToClient = _xpKeptHost = 0;
+        _dropsToClient = _dropsKept = 0;
+        _shareAppliedSum = _shareDiscardedSum = 0;
+        _sharePackets = _shareRecvPackets = 0;
+        _shareSentSum = _shareRecvSum = 0;
     }
+
+    private static string ShareStats() =>
+        $"xpShareSent={_shareSentSum:F0}/{_sharePackets}p xpShareRecv={_shareRecvSum:F0}/{_shareRecvPackets}p xpShareApplied={_shareAppliedSum:F0} xpShareHeld={_shareIn:F0} xpShareDiscarded={_shareDiscardedSum:F0}";
 
     private static string LocalProgress()
     {
@@ -339,7 +457,7 @@ public static class LootSync
 public static class LootSyncProcessLootPatch
 {
     [HarmonyPrefix]
-    public static bool Prefix(int experience, float prestige, PlayerProfileCurrencies currencies,
+    public static bool Prefix(ref int experience, float prestige, PlayerProfileCurrencies currencies,
         Il2CppList.List<ItemDropRuntimeData> possibleItems, Il2CppList.List<PowerUpRequest> powerUps,
         Vector3 sourcePosition, bool instant, int experienceInterval)
     {
@@ -347,7 +465,7 @@ public static class LootSyncProcessLootPatch
         {
             if (CoopRole.IsHostSide)
             {
-                LootSync.CaptureOnHost(experience, prestige, currencies, possibleItems, powerUps, sourcePosition, instant, experienceInterval);
+                LootSync.CaptureOnHost(ref experience, prestige, currencies, possibleItems, powerUps, sourcePosition, instant, experienceInterval);
             }
             else if (CoopRole.IsClientSide && Enemies.ClientPuppets.ApplyingNetworkDeath && !LootSync.ReplayingNetworkLoot)
             {
@@ -398,5 +516,17 @@ public static class LootSyncBossPortalPatch
         LootSync.CountBlockedPortal();
         Plugin.StaticLog.LogInfo("[SoulstoneCoop][loot] Client picked a boss power-up: OpenPortalAndObjective skipped (portal is the host's).");
         return false;
+    }
+}
+
+/// <summary>Both sides: team XP - whatever the local player collects is shared with the partner (XpShare).</summary>
+[HarmonyPatch(typeof(ExperienceComponent), nameof(ExperienceComponent.AddExperience))]
+public static class LootSyncAddExperiencePatch
+{
+    [HarmonyPrefix]
+    public static void Prefix(ExperienceComponent __instance, float experienceAmount)
+    {
+        try { LootSync.OnLocalAddExperience(__instance, experienceAmount); }
+        catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] LootSyncAddExperiencePatch: {ex.Message}"); }
     }
 }

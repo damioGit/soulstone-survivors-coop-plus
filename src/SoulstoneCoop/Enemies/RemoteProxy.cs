@@ -41,6 +41,9 @@ public static class RemoteProxy
     /// <summary>Proxy exists and the client's player is alive: only then is it a target / spawn / recycle reference.</summary>
     private static bool Targetable => _proxy != null && _remoteState.HasValue && !_remoteState.Value.Dead;
 
+    /// <summary>Phase 4B: the client's player exists on our side (proxy up) and isn't dead.</summary>
+    internal static bool RemoteAlive => Targetable;
+
     // ---------------- client state (ClientState packet) ----------------
 
     public struct RemotePlayerState
