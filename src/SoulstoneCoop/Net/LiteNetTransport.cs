@@ -17,7 +17,8 @@ public sealed class LiteNetTransport : ITransport
     public bool HasPeer => _peer != null;
     public NetStatus Status { get; private set; } = NetStatus.Idle;
     public string? LastError { get; private set; }
-    public int PingMs => _peer?.Ping ?? -1;
+    // LiteNetLib's Ping is half the (averaged) round trip; the interface, the panel and Steam show the whole trip.
+    public int PingMs => _peer != null ? _peer.Ping * 2 : -1;
     public float SilenceSeconds => _peer != null ? _peer.TimeSinceLastPacket / 1000f : 0f; // LiteNetLib counts in ms
     public bool WantsStop { get; private set; }
 
