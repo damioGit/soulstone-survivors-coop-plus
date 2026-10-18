@@ -263,13 +263,16 @@ public static class ClientPuppetEffectDamageBlockPatch
 {
     [HarmonyPrefix]
     [HarmonyPriority(Priority.First)]
-    public static bool Prefix(Entity attackerEntity, ref float effectiveHealthChange, ref float absorbedDamage, ref bool isImmune)
+    public static bool Prefix(Entity attackerEntity, Entity targetEntity, float healthChange,
+        ref float effectiveHealthChange, ref float absorbedDamage, ref bool isImmune)
     {
         try
         {
             if (!CoopRole.IsClientSide || attackerEntity == null || ClientIncomingDamage.ApplyingNetworkDamage) return true;
             if (!ClientPuppets.IsPuppet(attackerEntity)) return true;
             EnemyCasts.CountBlockedDamage();
+            // An enemy attacker only draws a number when the target is a player (DamageOnPlayer).
+            if (targetEntity != null && targetEntity.IsPlayer()) ReplicaCombatText.OnBlockedHit(targetEntity, healthChange);
             effectiveHealthChange = 0f;
             absorbedDamage = 0f;
             isImmune = false;

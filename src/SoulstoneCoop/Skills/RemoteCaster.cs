@@ -467,13 +467,15 @@ public static class RemoteCasterDamageBlockPatch
 {
     [HarmonyPrefix]
     [HarmonyPriority(Priority.First)]
-    public static bool Prefix(Entity attackerEntity, Entity targetEntity,
+    public static bool Prefix(Entity attackerEntity, Entity targetEntity, float healthChange,
         ref float effectiveHealthChange, ref float absorbedDamage, ref bool isImmune)
     {
         try
         {
-            if (!RemoteCaster.IsCaster(attackerEntity) && !RemoteCaster.IsCaster(targetEntity)) return true;
+            bool casterAttacks = RemoteCaster.IsCaster(attackerEntity);
+            if (!casterAttacks && !RemoteCaster.IsCaster(targetEntity)) return true;
             CastSync.CountBlockedDamage();
+            if (casterAttacks) ReplicaCombatText.OnBlockedHit(targetEntity, healthChange); // the effect still draws the number
             effectiveHealthChange = 0f;
             absorbedDamage = 0f;
             isImmune = false;
