@@ -15,6 +15,7 @@ public enum PacketType : byte
     EnemyDespawn = 8,  // host -> client: enemy recycled without dying (ReliableOrdered)
     EnemyDied = 9,     // host -> client: enemy killed, play the death (ReliableOrdered)
     EnemySnapshot = 10, // host -> client: positions/yaw/HP of live enemies, sliced (Unreliable)
+    ClientDamage = 11, // client -> host: damage the client dealt to puppets, summed per netId per tick (ReliableUnordered)
 }
 
 public static class PacketRouter
@@ -52,6 +53,9 @@ public static class PacketRouter
                 break;
             case PacketType.EnemySnapshot:
                 Enemies.ClientPuppets.OnSnapshot(reader, reader.RawDataSize);
+                break;
+            case PacketType.ClientDamage:
+                Enemies.HostEnemySync.OnClientDamage(reader);
                 break;
             case PacketType.PauseState:
                 PauseSync.OnPauseStateReceived(reader);

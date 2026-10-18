@@ -30,6 +30,7 @@ public static class HostEnemySync
 
     private static readonly Dictionary<IntPtr, Tracked> ByPtr = new();
     private static readonly List<Tracked> All = new();
+    private static readonly Dictionary<ushort, Tracked> ByNetId = new();
     private static ushort _nextNetId = 1;
     private static ushort _snapshotSeq;
     private static float _snapshotTimer;
@@ -97,6 +98,7 @@ public static class HostEnemySync
             IsElite = elite,
         };
         ByPtr[t.Ptr] = t;
+        ByNetId[t.NetId] = t;
         All.Add(t);
         if (All.Count > _maxTracked) _maxTracked = All.Count;
 
@@ -112,6 +114,7 @@ public static class HostEnemySync
     private static void Untrack(Tracked t, bool sendDespawn)
     {
         ByPtr.Remove(t.Ptr);
+        if (ByNetId.TryGetValue(t.NetId, out var cur) && cur == t) ByNetId.Remove(t.NetId);
         All.Remove(t);
         if (!sendDespawn || NetworkManager.RemotePeer == null) return;
 
@@ -130,9 +133,7 @@ public static class HostEnemySync
             ushort id = _nextNetId++;
             if (_nextNetId == 0) _nextNetId = 1;
             if (id == 0) continue;
-            bool used = false;
-            for (int i = 0; i < All.Count; i++) if (All[i].NetId == id) { used = true; break; }
-            if (!used) return id;
+            if (!ByNetId.ContainsKey(id)) return id;
         }
         return 1;
     }
@@ -199,6 +200,59 @@ public static class HostEnemySync
         }
     }
 
+    public static bool TryGet(ushort netId, out Entity entity)
+    {
+        entity = null!;
+        if (!ByNetId.TryGetValue(netId, out var t) || t.Entity == null) return false;
+        entity = t.Entity;
+        return true;
+    }
+
+    internal static bool TryGetNetId(Entity e, out ushort netId)
+    {
+        netId = 0;
+        if (e == null || !ByPtr.TryGetValue(e.Pointer, out var t)) return false;
+        netId = t.NetId;
+        return true;
+    }
+
+    private static int _clientDmgPackets, _clientDmgEntries, _clientDmgApplied, _clientKills, _clientDmgDropped, _clientDmgImmune;
+    private static double _clientDmgSum;
+
+    /// <summary>Phase 3a: damage the client's skills dealt to our enemies' puppets. Applied through the game's
+    /// own funnel with attacker = null (no on-kill procs for the host) and yieldLoot = true, so the kill, the
+    /// stats and the loot/XP happen here as usual; the death goes back to the client as EnemyDied.</summary>
+    public static void OnClientDamage(NetDataReader reader)
+    {
+        int count = reader.GetByte();
+        if (!CoopRole.IsHostSide) return;
+        _clientDmgPackets++;
+        for (int i = 0; i < count; i++)
+        {
+            ushort netId = reader.GetUShort();
+            float damage = reader.GetFloat();
+            _clientDmgEntries++;
+            _clientDmgSum += damage;
+            if (damage <= 0f || float.IsNaN(damage)) continue;
+            try
+            {
+                if (!ByNetId.TryGetValue(netId, out var t) || t.DiedSent || t.Entity == null) { _clientDmgDropped++; continue; }
+                var e = t.Entity;
+                var health = e._health;
+                if (health == null || health.HasBeenKilled || !e.gameObject.activeInHierarchy) { _clientDmgDropped++; continue; }
+
+                UnitUtil.ChangeEntityHealth(null!, e, -damage, true, out _, out _, out bool immune);
+                if (immune) _clientDmgImmune++;
+                else _clientDmgApplied++;
+                if (health.HasBeenKilled) _clientKills++;
+            }
+            catch (Exception ex)
+            {
+                Plugin.StaticLog.LogError($"[SoulstoneCoop][damage] Host: applying {damage:F1} to #{netId}: {ex.Message}");
+            }
+        }
+    }
+
     /// <summary>Per frame (unscaled): death detection, stale-entry cleanup, snapshots, telemetry.</summary>
     public static void Tick(float unscaledDeltaTime)
     {
@@ -247,8 +301,14 @@ public static class HostEnemySync
                     $"[SoulstoneCoop][enemies] Host: tracked={All.Count} peak={_maxTracked} snapshots={_snapshotsSent / secs:F1}/s " +
                     $"bytesPerSnapshot={(_snapshotsSent > 0 ? _snapshotBytes / _snapshotsSent : 0)} slicesPerSnapshot={(_snapshotsSent > 0 ? (float)_slicesSent / _snapshotsSent : 0):F2} " +
                     $"kbps={_snapshotBytes / secs / 1024f:F1} spawns={_spawnsSent} died={_diedSent} despawns={_despawnsSent}");
+                if (_clientDmgPackets > 0)
+                    Plugin.StaticLog.LogInfo(
+                        $"[SoulstoneCoop][damage] Host: from client packets={_clientDmgPackets} entries={_clientDmgEntries} damage={_clientDmgSum:F0} " +
+                        $"applied={_clientDmgApplied} kills={_clientKills} unknownOrDead={_clientDmgDropped} immune={_clientDmgImmune}");
             }
             _snapshotsSent = _slicesSent = _snapshotBytes = _spawnsSent = _diedSent = _despawnsSent = 0;
+            _clientDmgPackets = _clientDmgEntries = _clientDmgApplied = _clientKills = _clientDmgDropped = _clientDmgImmune = 0;
+            _clientDmgSum = 0;
         }
     }
 

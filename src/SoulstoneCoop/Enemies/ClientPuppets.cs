@@ -62,6 +62,14 @@ public static class ClientPuppets
     private static float _errMax;
     private static ushort _lastSnapshotSeqSeen;
 
+    // Phase 3a: damage dealt to puppets, summed per netId and flushed to the host at 15 Hz.
+    private const float DamageFlushInterval = 1f / 15f;
+    private const int MaxDamageEntriesPerPacket = 200; // 1 + 1 + 200 * 6 B
+    private static readonly Dictionary<ushort, float> DamageOut = new();
+    private static float _damageFlushTimer;
+    private static int _dmgHits, _dmgPackets, _dmgSkippedEnemyAttacker;
+    private static double _dmgSum;
+
     public static int AliveCount
     {
         get { int n = 0; foreach (var p in ByNetId.Values) if (!p.Dead) n++; return n; }
@@ -103,6 +111,7 @@ public static class ClientPuppets
         ByNetId.Clear();
         ByPtr.Clear();
         Pending.Clear();
+        DamageOut.Clear();
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][puppets] Despawned {n} puppets ({reason}).");
     }
 
@@ -187,6 +196,13 @@ public static class ClientPuppets
 
         ProcessPending();
 
+        _damageFlushTimer += unscaledDeltaTime;
+        if (_damageFlushTimer >= DamageFlushInterval)
+        {
+            _damageFlushTimer = 0f;
+            FlushDamage();
+        }
+
         bool paused = Time.timeScale < 0.0001f;
         float now = Time.unscaledTime;
 
@@ -226,8 +242,12 @@ public static class ClientPuppets
                     $"snapshots={_snapshotsRecv / secs:F1}/s bytesPerSnapshot={(_snapshotsRecv > 0 ? _snapshotBytes / _snapshotsRecv : 0)} " +
                     $"avgErr={(_errCount > 0 ? _errSum / _errCount : 0):F2}u maxErr={_errMax:F2}u teleports={_teleports} " +
                     $"unknownNetIds={_unknownNetIds} clampedHits={_clampedHits} localDeaths={_localDeaths} unresolved={unresolved}");
+                Plugin.StaticLog.LogInfo(
+                    $"[SoulstoneCoop][damage] Client: hits={_dmgHits} damage={_dmgSum:F0} packets={_dmgPackets} skippedEnemyAttacker={_dmgSkippedEnemyAttacker}");
             }
             _snapshotsRecv = _slicesRecv = _snapshotBytes = _unknownNetIds = _teleports = _clampedHits = 0;
+            _dmgHits = _dmgPackets = _dmgSkippedEnemyAttacker = 0;
+            _dmgSum = 0;
             _errSum = 0; _errCount = 0; _errMax = 0f;
         }
     }
@@ -489,6 +509,43 @@ public static class ClientPuppets
     }
 
     internal static void CountClampedHit() => _clampedHits++;
+
+    /// <summary>ChangeEntityHealth prefix, BEFORE the clamp: the full (already calculated) damage goes to the host.
+    /// Hits from enemy-team attackers (puppets hitting each other, the map's God-Entity) are skipped: the host
+    /// simulates those on its own enemies already.</summary>
+    internal static void RecordDamage(Entity? attacker, Entity target, float healthChange)
+    {
+        if (healthChange >= 0f || !ByPtr.TryGetValue(target.Pointer, out var p) || p.Dead) return;
+        if (attacker != null && ClientSpawnBlock.IsEnemyTeam(attacker)) { _dmgSkippedEnemyAttacker++; return; }
+        DamageOut.TryGetValue(p.NetId, out float sum);
+        DamageOut[p.NetId] = sum - healthChange;
+        _dmgHits++;
+        _dmgSum -= healthChange;
+    }
+
+    /// <summary>Layout: type u8 | count u8 | count * (netId u16 | damage f32). Damage is positive.</summary>
+    private static void FlushDamage()
+    {
+        if (DamageOut.Count == 0) return;
+        if (NetworkManager.RemotePeer == null) { DamageOut.Clear(); return; }
+
+        var entries = DamageOut.ToArray();
+        DamageOut.Clear();
+        for (int start = 0; start < entries.Length; start += MaxDamageEntriesPerPacket)
+        {
+            int count = Math.Min(MaxDamageEntriesPerPacket, entries.Length - start);
+            var w = new NetDataWriter();
+            w.Put((byte)PacketType.ClientDamage);
+            w.Put((byte)count);
+            for (int k = 0; k < count; k++)
+            {
+                w.Put(entries[start + k].Key);
+                w.Put(entries[start + k].Value);
+            }
+            NetworkManager.Send(w, LiteNetLib.DeliveryMethod.ReliableUnordered);
+            _dmgPackets++;
+        }
+    }
 }
 
 // ---------------- Harmony patches ----------------
@@ -512,18 +569,20 @@ public static class EnemySyncEntityRecyclePatch
     }
 }
 
-/// <summary>Client: a puppet can't die from local damage (phase 3 forwards that damage to the host).
-/// The hit still runs - damage number, flash, sound - but HP stays >= 1.</summary>
+/// <summary>Client: a puppet can't die from local damage. The full damage is forwarded to the host (phase 3a),
+/// which kills its real enemy and sends Died back. Locally the hit still runs - damage number, flash, sound -
+/// but HP stays >= 1.</summary>
 [HarmonyPatch(typeof(UnitUtil), nameof(UnitUtil.ChangeEntityHealth))]
 public static class ClientPuppetHealthClampPatch
 {
     [HarmonyPrefix]
-    public static void Prefix(Entity targetEntity, ref float healthChange)
+    public static void Prefix(Entity attackerEntity, Entity targetEntity, ref float healthChange)
     {
         try
         {
             if (healthChange >= 0f || ClientPuppets.ApplyingNetworkDeath || !CoopRole.IsClientSide) return;
             if (targetEntity == null || !ClientPuppets.IsPuppet(targetEntity)) return;
+            ClientPuppets.RecordDamage(attackerEntity, targetEntity, healthChange);
             var health = targetEntity._health;
             if (health == null) return;
             float floor = 1f - health.CurrentHealth; // most negative change that still leaves 1 HP
