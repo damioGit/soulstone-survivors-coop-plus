@@ -141,6 +141,7 @@ public class CoopBehaviour : MonoBehaviour
             Life.CoopLife.Tick(Time.unscaledDeltaTime);
             Enemies.EnemyCasts.Tick(Time.unscaledDeltaTime);
             Enemies.SpecialsDebug.Tick(Time.unscaledDeltaTime);
+            Enemies.ObjectiveSync.Tick(Time.unscaledDeltaTime);
             RebuildGhostIfModelInactive();
             HandleDebugHotkeys();
             LogSyncStats();

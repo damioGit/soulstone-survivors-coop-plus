@@ -58,6 +58,12 @@ public static class ClientPuppets
     /// <summary>Phase 4D effect blocks: is this the stats component of a puppet (pushback from its replayed casts)?</summary>
     internal static bool IsPuppetStats(StatsComponent? s) => s != null && ByStatsPtr.ContainsKey(s.Pointer);
 
+    /// <summary>Boss puppets still alive (ObjectiveSync waits for them before catching up the next objective).</summary>
+    internal static int LiveBossCount
+    {
+        get { int n = 0; foreach (var p in ByNetId.Values) if (p.IsBoss && !p.Dead && p.Entity != null) n++; return n; }
+    }
+
     internal static Puppet? TryGetLive(ushort netId) =>
         ByNetId.TryGetValue(netId, out var p) && !p.Dead && p.Entity != null ? p : null;
 

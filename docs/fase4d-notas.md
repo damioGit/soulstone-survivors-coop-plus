@@ -33,6 +33,23 @@ Testado com duas instâncias no mesmo PC (Desert). A investigação está em `do
 - O replay funcionou com `charging=True` em todas as skills de boss vistas: Medusa LightningStrike/LightningExplosion, Slayer Cleave/ShieldBash, AvatarOfIce Cleave/IceBomb e TormentedSoul-Attack do VoidPresence. Ficou com `rejected=0`, `errors=0`, e os hits das réplicas foram barrados (`blockedDamage`/`blockedPush`).
 - Nenhuma exceção nova e nenhum erro de trampoline. Só os avisos conhecidos de `SetupExtraSkillForEntity` da 4C.
 
+## Bug da 0.7.0: "0/15 bosses" no cliente a partida inteira
+
+Visto pelo usuário jogando com um amigo (Steam). O fim da run chegou nos dois (RunEnd da 4A), mas o contador de bosses do cliente ficou em 0/15.
+
+- **Qual objetivo:** é o `SurvivorsGameManager.MainObjective`, um `EliminateSpecificEntitiesObjective` com Total = número de bosses da `BossList` (`<CreateObjectives>d__37`, 0x43FE80).
+- **Causa:**
+  - O `Current` dele só sobe em `ObjectivesPanelReferences.RunEliminateSpecificEntitiesObjective` (0x618670): +1 para cada entidade da **própria lista** (`EntitiesToEliminate`) que morreu, que sai da lista em seguida. `IsComplete` (0x612B60) é `Total <= Current`.
+  - No host, o `SpawnBossRoutine` põe cada boss nessa lista. No cliente, a 4D deixou as marionetes de boss **fora** dela de propósito, para o fim da run continuar com o host. Resultado: a lista do cliente ficava vazia e o contador parado.
+  - O descompilado mostra que nada recalcula o `Current`: um valor escrito por fora fica.
+- **Correção (`Enemies/ObjectiveSync.cs`, `ObjectiveSync = 22`, host → cliente, ReliableOrdered):** quando algo muda (checado a cada 0,25 s) e a cada 2 s, o host manda as kills do `GameStats` (inimigos, elites e bosses), o `GameData.Tier`, o `Progression.CompletedProgressObjectiveProgression`, o `MainObjective` Current/Total e se ele tem um objetivo de kills ativo. O cliente:
+  - copia as kills para o `GameStats` dele. O `UpdateAll` do próprio cliente calcula o objetivo de kills a partir delas (`EliminateEnemiesNonCumulativeObjective`: `Current` = kills, completo quando `Current - Starting >= Total`), então o contador e a conclusão seguem o host;
+  - sobe o Tier e o número de objetivos completos até os do host (nunca baixa);
+  - sobe `MainObjective.Current` **limitado a Total - 1**. O espelho nunca completa o objetivo, porque isso rodaria a vitória local; o fim continua só pelo `RunEnd`;
+  - **rede de segurança do "próximo objetivo":** normalmente o `BossSpawnProcessor.OnUpdate` do cliente cria o próximo objetivo de kills quando o `_pendingBosses` espelhado chega a 0. Se o host já tem um, o cliente não tem e nenhuma marionete de boss está viva por 3 s, o cliente zera o contador de bosses pendentes e chama `CreateNextProgressionObjective`.
+- **Telemetria `[objectives]` a cada 10 s:** sent/recv/applied, mainRaised, catchUps, errors, o estado do host e, no cliente, o `main` local, a quantidade de objetivos de kills e os bosses vivos.
+- **Não testado em jogo** (compilado sem deploy). Passo de teste: host e cliente na mesma run. No host, F8 e matem os bosses. O painel do cliente deve mostrar o mesmo número de kills do host durante a run, o contador de bosses subindo a cada boss morto (até Total - 1; o último fecha pelo RunEnd) e um novo objetivo de kills logo depois de cada leva de bosses. No log do cliente, `[objectives] ... local main=X/15` deve bater com o `main=` do host.
+
 ## Pendências (o usuário pediu pra voltar depois)
 
 - **Não testados (entraram no commit sem rodar em jogo):**
@@ -41,7 +58,7 @@ Testado com duas instâncias no mesmo PC (Desert). A investigação está em `do
 - **Não vistos em jogo:**
   - a barra de boss sumindo ao matar (`released` ficou em 0 porque os bosses não foram mortos nos testes);
   - as invocações de boss (`sum:`);
-  - o objetivo "Eliminate X" e o próximo objetivo de kills no cliente.
+  - o objetivo "Eliminate X" e o próximo objetivo de kills no cliente (agora com a rede de segurança do `ObjectiveSync`, também não testada).
 - **Pendência da 4A, ainda aberta:** o cliente revivendo o host (F9 + 3 s perto) não foi testado.
 - **God Meteors:** a God-Entity lança em volta do host e o cliente não vê. A ideia é um evento `GodCast(posição)` com cast local na God-Entity do cliente.
 - **Baús e MapTasks** continuam só no host (interativos, não `Entity`).
@@ -49,4 +66,4 @@ Testado com duas instâncias no mesmo PC (Desert). A investigação está em `do
 
 ## Pacotes
 
-`EnemyCast = 21`. A 4D usa só o 21; de 22 a 29 continua livre.
+`EnemyCast = 21` e `ObjectiveSync = 22`. De 23 a 29 continua livre.
