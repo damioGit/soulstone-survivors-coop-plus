@@ -394,6 +394,7 @@ public static class EnemySyncStartMatchPatch
             EnemyPrefabKeys.Reset();
             HostEnemySync.CtxActive = false;
             ClientPuppets.OnMatchStarted(mapId);
+            RemoteProxy.OnMatchStarted();
         }
         catch (Exception ex)
         {

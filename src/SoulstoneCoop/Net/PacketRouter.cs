@@ -16,6 +16,8 @@ public enum PacketType : byte
     EnemyDied = 9,     // host -> client: enemy killed, play the death (ReliableOrdered)
     EnemySnapshot = 10, // host -> client: positions/yaw/HP of live enemies, sliced (Unreliable)
     ClientDamage = 11, // client -> host: damage the client dealt to puppets, summed per netId per tick (ReliableUnordered)
+    DamageToClient = 12, // host -> client: a hit on the client's proxy (healthChange f32, attacker netId u16) (ReliableOrdered)
+    ClientState = 13,  // client -> host: local player dead flag + hp/maxHp/armor/damageReduction/block, every 0.5 s (ReliableOrdered)
 }
 
 public static class PacketRouter
@@ -56,6 +58,12 @@ public static class PacketRouter
                 break;
             case PacketType.ClientDamage:
                 Enemies.HostEnemySync.OnClientDamage(reader);
+                break;
+            case PacketType.DamageToClient:
+                Enemies.ClientIncomingDamage.OnDamageToClient(reader);
+                break;
+            case PacketType.ClientState:
+                Enemies.RemoteProxy.OnClientState(reader);
                 break;
             case PacketType.PauseState:
                 PauseSync.OnPauseStateReceived(reader);

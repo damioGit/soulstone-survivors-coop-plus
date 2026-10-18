@@ -91,6 +91,10 @@ public static class ClientPuppets
     /// arrive first. They wait in Pending until the local match has started, so puppets get the match's
     /// scaling. Cleared whenever there's no game manager (menu between runs).</summary>
     private static bool _matchStarted;
+    internal static bool MatchStarted => _matchStarted;
+
+    internal static Entity? TryGetLivePuppet(ushort netId) =>
+        ByNetId.TryGetValue(netId, out var p) && !p.Dead && p.Entity != null ? p.Entity : null;
 
     public static void OnMatchStarted(string mapId)
     {

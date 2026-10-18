@@ -57,6 +57,7 @@ public class CoopBehaviour : MonoBehaviour
             PauseSync.EnsureHooked();
             Enemies.HostEnemySync.EnsureHooked();
             Enemies.ClientPuppets.EnsureHooked();
+            Enemies.RemoteProxy.EnsureHooked();
         }
     }
 
@@ -106,6 +107,8 @@ public class CoopBehaviour : MonoBehaviour
             WorldTelemetry.Tick(Time.unscaledDeltaTime);
             Enemies.HostEnemySync.Tick(Time.unscaledDeltaTime);
             Enemies.ClientPuppets.Tick(Time.unscaledDeltaTime);
+            Enemies.RemoteProxy.Tick(Time.unscaledDeltaTime);
+            Enemies.ClientIncomingDamage.Tick(Time.unscaledDeltaTime);
             RebuildGhostIfModelInactive();
             HandleDebugHotkeys();
             LogSyncStats();
