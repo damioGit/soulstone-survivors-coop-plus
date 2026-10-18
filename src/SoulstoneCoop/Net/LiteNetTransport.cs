@@ -17,8 +17,14 @@ public sealed class LiteNetTransport : ITransport
     public bool HasPeer => _peer != null;
     public NetStatus Status { get; private set; } = NetStatus.Idle;
     public string? LastError { get; private set; }
-    public int PingMs => _peer?.Ping ?? -1;
+    // LiteNetLib's Ping is half the (averaged) round trip; the interface, the panel and Steam show the whole trip.
+    public int PingMs => _peer != null ? _peer.Ping * 2 : -1;
+    public float SilenceSeconds => _peer != null ? _peer.TimeSinceLastPacket / 1000f : 0f; // LiteNetLib counts in ms
     public bool WantsStop { get; private set; }
+
+    /// <summary>Phase 8: LiteNetLib's default is 5 s, which a Wi-Fi hiccup on a real network can exceed. Its pings
+    /// run on its own thread, so a frozen game (scene load) doesn't count as silence.</summary>
+    private const int DisconnectTimeoutMs = 10000;
 
     private readonly TransportCallbacks _cb;
     private readonly EventBasedNetListener _listener = new();
@@ -28,8 +34,28 @@ public sealed class LiteNetTransport : ITransport
     private LiteNetTransport(TransportCallbacks cb)
     {
         _cb = cb;
-        _manager = new NetManager(_listener);
+        _manager = new NetManager(_listener) { DisconnectTimeout = DisconnectTimeoutMs };
         _listener.NetworkReceiveEvent += OnReceive;
+        ApplySimulation(_manager);
+    }
+
+    /// <summary>Phase 8: LiteNetLib's own simulation (compiled into the 1.3.1 release build), applied to what this
+    /// game RECEIVES: every UDP packet, acks and pings included, so reliable messages really get resent.</summary>
+    private static void ApplySimulation(NetManager m)
+    {
+        if (!NetSim.Enabled) return;
+        if (NetSim.LatencyMs > 0 || NetSim.JitterMs > 0)
+        {
+            m.SimulateLatency = true;
+            m.SimulationMinLatency = Math.Max(0, NetSim.LatencyMs - NetSim.JitterMs);
+            m.SimulationMaxLatency = NetSim.LatencyMs + NetSim.JitterMs;
+        }
+        if (NetSim.LossPercent > 0)
+        {
+            m.SimulatePacketLoss = true;
+            m.SimulationPacketLossChance = NetSim.LossPercent;
+        }
+        Plugin.StaticLog.LogWarning($"[SoulstoneCoop][netsim] IP transport: simulating {NetSim.Describe()} on incoming packets.");
     }
 
     /// <summary>Listen on the port. Returns null (with the error in <paramref name="error"/>) if it is taken.</summary>
@@ -160,7 +186,23 @@ public sealed class LiteNetTransport : ITransport
 
     public void Poll() => _manager.PollEvents();
 
-    public void Send(byte[] data, int length, DeliveryMethod method) => _peer?.Send(data, 0, length, method);
+    private int _oversizeWarnings;
+
+    /// <summary>Phase 8: LiteNetLib 1.3.1 keeps the MTU at 1024 (no MTU discovery by default) and throws
+    /// TooBigPacketException for an Unreliable/Sequenced packet above it. An oversized one goes reliable instead
+    /// (it fragments), so it is never lost and never throws into the caller's frame.</summary>
+    public void Send(byte[] data, int length, DeliveryMethod method)
+    {
+        var peer = _peer;
+        if (peer == null) return;
+        if ((method == DeliveryMethod.Unreliable || method == DeliveryMethod.Sequenced) && length > peer.GetMaxSinglePacketSize(method))
+        {
+            if (_oversizeWarnings++ < 5)
+                Plugin.StaticLog.LogWarning($"[SoulstoneCoop] {length} B {method} packet (type {data[0]}) is over the {peer.GetMaxSinglePacketSize(method)} B limit: sent ReliableUnordered.");
+            method = DeliveryMethod.ReliableUnordered;
+        }
+        peer.Send(data, 0, length, method);
+    }
 
     public void Stop()
     {

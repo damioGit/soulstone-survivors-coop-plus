@@ -444,13 +444,14 @@ public static class HostEnemySync
         var local = GameState.LocalPlayerEntity;
         Vector3 basePos = local != null ? local.transform.position : Vector3.zero;
         ushort seq = ++_snapshotSeq;
+        uint hostMs = RemoteClock.NowMs();
         int totalBytes = 0;
 
         for (int start = 0; start < SnapshotScratch.Count; start += EnemySnapshotFormat.MaxEntriesPerSlice)
         {
             int count = Math.Min(EnemySnapshotFormat.MaxEntriesPerSlice, SnapshotScratch.Count - start);
             var w = new NetDataWriter();
-            EnemySnapshotFormat.WriteHeader(w, seq, basePos, (byte)count);
+            EnemySnapshotFormat.WriteHeader(w, seq, hostMs, basePos, (byte)count);
             for (int k = 0; k < count; k++)
             {
                 var t = SnapshotScratch[start + k];

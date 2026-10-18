@@ -200,6 +200,7 @@ public class CoopBehaviour : MonoBehaviour
         string ghostPos = ghost != null ? ghost.transform.position.ToString() : "-";
         Plugin.StaticLog.LogInfo(
             $"[SoulstoneCoop][sync] role={NetworkManager.Role} peer={NetworkManager.HasPeer} " +
+            $"ping={NetworkManager.PingMs} silence={NetworkManager.SilenceSeconds:F1}s{(NetSim.Enabled ? " SIM" : "")} " +
             $"place={Lobby.CoopSession.LocalPlace}/{Lobby.CoopSession.RemotePlace} " +
             $"sent={PlayerSync.SentCount} recv={PlayerSync.ReceivedCount} lastRecv={PlayerSync.LastReceivedPosition} " +
             $"local={localPos} ghost={ghostPos} ghostActive={(ghost != null && ghost.activeInHierarchy)} " +
