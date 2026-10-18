@@ -193,16 +193,24 @@ PRIMEIRA ABERTURA
 FUNCIONOU?
 - No menu principal aparece uma aba "Co-op". Se apareceu, o mod está carregado.
 
-COMO JOGAR (por enquanto, por IP)
-- Quem hospeda (o host): aba Co-op > Hospedar. Se o Windows perguntar sobre o firewall,
-  clique em "Permitir acesso". Depois escolha o personagem e comece a partida normalmente.
-- Quem entra: aba Co-op > põe o IP do host no campo (ou copia o IP e usa o botão Colar) > Entrar.
-- Pra conectar pela internet, escolham UMA das opções:
-  a) Mais fácil: os dois instalam a mesma VPN de jogo (Tailscale, ZeroTier ou Radmin VPN), entram
-     na mesma rede, e quem entra usa o IP da VPN do host (ex.: 100.x.x.x no Tailscale).
-  b) O host abre (redireciona) a porta 7777 UDP no roteador pro PC dele, e quem entra usa o IP
-     público do host.
-- O convite pela Steam ainda está sendo feito; quando sair, não vai precisar de IP.
+COMO JOGAR (convite pela Steam, sem IP e sem abrir porta)
+- Os dois abrem o jogo PELA STEAM e ficam no menu principal.
+- Quem hospeda (o host): aba Co-op > Convidar amigo. Se abrir a janela da Steam, escolha o amigo.
+  Se não abrir: na lista de amigos da Steam (fora do jogo), botão direito no amigo >
+  "Convidar para o jogo".
+- Quem entra: aceita o convite no chat da Steam. O painel Co-op mostra
+  "Conectado com <nome> (Steam, x ms)". Se o jogo estiver fechado, aceitar o convite abre o jogo
+  e ele entra sozinho ao chegar no menu.
+- Se o convite não chegar: o host clica em Copiar código e manda o número no chat; quem entra
+  cola no campo do painel Co-op (botão Colar) > Entrar.
+- Depois de conectados: cada um escolhe o próprio personagem, e o HOST escolhe o mapa e aperta
+  Lutar. A partida de quem entrou começa sozinha, no mesmo mapa.
+
+ALTERNATIVA: POR IP
+- Host: aba Co-op > Hospedar por IP (se o Windows perguntar do firewall, "Permitir acesso").
+- Quem entra: põe o IP do host no campo > Entrar. Pela internet isso exige uma VPN de jogo
+  (Tailscale, ZeroTier ou Radmin VPN, usando o IP da VPN) ou a porta 7777 UDP aberta no roteador
+  do host.
 
 DESINSTALAR
 - Na pasta do jogo, apague: winhttp.dll, doorstop_config.ini, .doorstop_version, a pasta dotnet,
