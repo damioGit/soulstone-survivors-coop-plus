@@ -117,8 +117,10 @@
     </Reference>
   </ItemGroup>
 
-  <!-- Drop the built plugin straight into the game's plugins folder -->
-  <Target Name="DeployPlugin" AfterTargets="Build">
+  <!-- Drop the built plugin straight into the game's plugins folder.
+       Skipped with -p:SkipDeploy=true, or while %USERPROFILE%\.soulstone-no-deploy exists (the user is playing a
+       fixed build with a friend; it's global so builds from any worktree respect it). -->
+  <Target Name="DeployPlugin" AfterTargets="Build" Condition="'$(SkipDeploy)' != 'true' And !Exists('$(USERPROFILE)\.soulstone-no-deploy')">
     <ItemGroup>
       <DeployFiles Include="$(OutputPath)SoulstoneCoop.dll" />
       <DeployFiles Include="$(OutputPath)LiteNetLib.dll" />
