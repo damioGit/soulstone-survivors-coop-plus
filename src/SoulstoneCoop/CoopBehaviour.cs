@@ -52,6 +52,7 @@ public class CoopBehaviour : MonoBehaviour
             Enemies.RemoteProxy.EnsureHooked();
             Skills.RemoteCaster.EnsureHooked();
             Life.CoopLife.EnsureHooked();
+            Life.PartnerHealth.EnsureHooked();
         }
 
         try { Steam.SteamLobby.EnsureInit(); }
@@ -86,6 +87,8 @@ public class CoopBehaviour : MonoBehaviour
         {
             PlayerSync.ResetForNewGhost();
             _ghostRebuilds = 0;
+            _identityRebuilds = 0;
+            Life.PartnerHealth.Reset(); // the partner's 1 s refresh fills it again, and ours goes out now
             var t = local!.gameObject.transform;
             var spawnPos = t.position + t.right * 2f;
             GameState.RemoteGhostObject = VisualGhostFactory.Create(local, spawnPos, t.rotation, "SoulstoneCoop_RemoteGhost");
@@ -130,6 +133,8 @@ public class CoopBehaviour : MonoBehaviour
             UpdateGhostLifecycle();
             Ui.CoopUi.Tick();
             PlayerSync.Tick(Time.unscaledDeltaTime);
+            GhostOverhead.Tick(Time.unscaledDeltaTime);
+            Life.PartnerHealth.Tick(Time.unscaledDeltaTime);
             ClientSpawnBlock.Tick(Time.unscaledDeltaTime);
             WorldTelemetry.Tick(Time.unscaledDeltaTime);
             Enemies.HostEnemySync.Tick(Time.unscaledDeltaTime);
@@ -159,6 +164,9 @@ public class CoopBehaviour : MonoBehaviour
     /// player's model child (e.g. "HoundMasterRegular(Clone)", the one with the Animator) inactive - it's turned
     /// on later. The ghost cloned at that moment keeps the model off for good: only the blue ground ring shows
     /// clone again.
+    /// Phase 5: the partner's model is built from its prefab and switched on explicitly, so this mostly matters for the
+    /// local-clone fallback. The ghost is also rebuilt when the partner's identity (Hello) differs from the one it
+    /// was built for, e.g. the Hello arrived after the ghost was made from the fallback.
     /// </summary>
     private void RebuildGhostIfModelInactive()
     {
@@ -168,18 +176,42 @@ public class CoopBehaviour : MonoBehaviour
 
         var ghost = GameState.RemoteGhostObject;
         var local = GameState.LocalPlayerEntity;
-        if (ghost == null || local == null || _ghostRebuilds >= 3) return;
+        if (ghost == null || local == null) return;
 
-        var ghostAnimators = ghost.GetComponentsInChildren<Animator>(true);
+        var remote = Lobby.CoopSession.Remote;
+        string key = VisualGhostFactory.KeyFor(remote);
+        if (remote.Known && key != VisualGhostFactory.BuiltForKey && _identityRebuilds < 3)
+        {
+            _identityRebuilds++;
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop] Partner identity is now {key} (ghost built for {VisualGhostFactory.BuiltForKey}) - rebuilding the ghost (#{_identityRebuilds}).");
+            RebuildGhost(ghost, local);
+            return;
+        }
+
+        if (_ghostRebuilds >= 3) return;
+        var ghostAnimator = VisualGhostFactory.ModelAnimator;
+        if (ghostAnimator == null)
+        {
+            var ghostAnimators = ghost.GetComponentsInChildren<Animator>(true);
+            if (ghostAnimators.Length == 0) return;
+            ghostAnimator = ghostAnimators[0];
+        }
         var localAnimators = local.gameObject.GetComponentsInChildren<Animator>(true);
-        if (ghostAnimators.Length == 0 || localAnimators.Length == 0) return;
-        if (ghostAnimators[0].gameObject.activeInHierarchy || !localAnimators[0].gameObject.activeInHierarchy) return;
+        if (localAnimators.Length == 0) return;
+        if (ghostAnimator.gameObject.activeInHierarchy || !localAnimators[0].gameObject.activeInHierarchy) return;
 
         _ghostRebuilds++;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop] Ghost model '{ghostAnimator.gameObject.name}' was cloned inactive - rebuilding the ghost (#{_ghostRebuilds}).");
+        RebuildGhost(ghost, local);
+    }
+
+    private static int _identityRebuilds;
+
+    private static void RebuildGhost(GameObject ghost, Entity local)
+    {
         var t = ghost.transform;
         Vector3 pos = t.position;
         Quaternion rot = t.rotation;
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop] Ghost model '{ghostAnimators[0].gameObject.name}' was cloned inactive - rebuilding the ghost (#{_ghostRebuilds}).");
         UnityEngine.Object.Destroy(ghost);
         GameState.RemoteGhostObject = VisualGhostFactory.Create(local, pos, rot, "SoulstoneCoop_RemoteGhost");
     }

@@ -32,6 +32,8 @@ public enum PacketType : byte
     LobbyState = 31,   // either way: sender is in the menu / loading a run / in a run (phase 6, on change) (ReliableOrdered)
     RunStart = 32,     // host -> client: scene, mode, mastery tier/level, Survivors affixes: start the same run (phase 6) (ReliableOrdered)
     RunStartRefused = 33, // client -> host: could not follow RunStart, with the reason (phase 6) (ReliableOrdered)
+    // 50-59: phase 5
+    PartnerHealth = 50, // either way: sender's hp f32 | maxHp f32 | flags u8 (1 down, 2 dead), on change at <= 5 Hz + every 1 s (ReliableOrdered)
     // 70-79: small pending items (docs/pendencias-notas.md)
     GodCast = 70,      // host -> client: the God-Entity cast a meteor, replayed visual-only on the RemoteCaster (ReliableUnordered)
     ProxyStatus = 71,  // host -> client: a status/stun applied to the client's proxy, replayed on the local player (ReliableUnordered)
@@ -126,6 +128,9 @@ public static class PacketRouter
                 break;
             case PacketType.RunStartRefused:
                 Lobby.RunSync.OnRunStartRefused(reader);
+                break;
+            case PacketType.PartnerHealth:
+                Life.PartnerHealth.OnPacket(reader);
                 break;
             case PacketType.PauseState:
                 PauseSync.OnPauseStateReceived(reader);

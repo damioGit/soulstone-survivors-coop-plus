@@ -47,7 +47,7 @@ Correlato: os getters e setters de `Nullable<Vector3>` dentro de `SkillActivatio
 - **Mira contínua de channeling:** o `GetTargetFrontPosition` do receptor devolve o ponto do início do cast.
 - **Buffs em aliados** aplicados por efeito de skill (se existirem) não são bloqueados. Só dano, status e empurrão são.
 - Os números de dano das réplicas podem aparecer (o hit roda até o `ChangeEntityHealth`, que devolve 0).
-- O fantasma continua sendo um clone do jogador **local**, então a animação de cast só toca quando os dois usam o mesmo personagem.
+- O fantasma continua sendo um clone do jogador **local**, então a animação de cast só toca quando os dois usam o mesmo personagem. (Resolvido na fase 5: `docs/fase5-notas.md`.)
 
 ## Pacotes
 
