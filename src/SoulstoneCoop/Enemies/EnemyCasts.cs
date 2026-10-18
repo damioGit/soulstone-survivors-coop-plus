@@ -48,7 +48,7 @@ public static class EnemyCasts
 
     internal static void OnHostCast(HostEnemySync.Tracked t, Skill skill, SkillActivationParameters p)
     {
-        if (NetworkManager.RemotePeer == null || skill == null || p == null) return;
+        if (!NetworkManager.HasPeer || skill == null || p == null) return;
         if ((skill.SkillType & SkillType.Summon) != 0) { _hostSkippedSummon++; return; }
         float now = Time.unscaledTime;
         if (LastSent.TryGetValue(t.NetId, out float last) && now - last < MinIntervalPerEnemy) { _throttled++; return; }
@@ -242,7 +242,7 @@ public static class HostEnemyCastCapturePatch
     {
         try
         {
-            if (!__result || !CoopRole.IsHostSide || __instance == null || NetworkManager.RemotePeer == null) return;
+            if (!__result || !CoopRole.IsHostSide || __instance == null || !NetworkManager.HasPeer) return;
             var e = __instance.Entity;
             if (e == null || !HostEnemySync.TryGetTracked(e.Pointer, out var t) || !t.ReplayCasts || t.DiedSent) return;
             EnemyCasts.OnHostCast(t, skill, parameters);

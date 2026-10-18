@@ -94,7 +94,7 @@ public static class CoopLife
         if (_anchor != null) { UnityEngine.Object.Destroy(_anchor); _anchor = null; }
     }
 
-    private static bool Connected => NetworkManager.RemotePeer != null;
+    private static bool Connected => NetworkManager.HasPeer;
 
     private static bool InMatch =>
         _matchStarted && GameManagerUtil.HasGameManager && GameState.LocalPlayerEntity != null;
@@ -854,7 +854,7 @@ public static class CoopLifeEndlessPortalPatch
     [HarmonyPrefix]
     public static bool Prefix()
     {
-        if (NetworkManager.RemotePeer == null) return true;
+        if (!NetworkManager.HasPeer) return true;
         Plugin.StaticLog.LogWarning("[SoulstoneCoop][life] Endless portal is not supported in co-op yet (blocked).");
         return false;
     }
@@ -866,7 +866,7 @@ public static class CoopLifeBossRushPortalPatch
     [HarmonyPrefix]
     public static bool Prefix()
     {
-        if (NetworkManager.RemotePeer == null) return true;
+        if (!NetworkManager.HasPeer) return true;
         Plugin.StaticLog.LogWarning("[SoulstoneCoop][life] Boss Rush portal is not supported in co-op yet (blocked).");
         return false;
     }
@@ -881,7 +881,7 @@ public static class CoopLifeSurrenderPatch
     {
         try
         {
-            if (CoopLife.FromNetwork || NetworkManager.RemotePeer == null) return true;
+            if (CoopLife.FromNetwork || !NetworkManager.HasPeer) return true;
             if (CoopRole.IsClientSide)
             {
                 Plugin.StaticLog.LogInfo("[SoulstoneCoop][life] Surrender pressed: asking the host.");

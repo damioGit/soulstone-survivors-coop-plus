@@ -41,7 +41,7 @@ public static class CoopSession
     public static PlayerInfo Remote { get; private set; } = new();
     public static LobbyPlace RemotePlace { get; private set; } = LobbyPlace.Menu;
 
-    public static bool Connected => NetworkManager.RemotePeer != null;
+    public static bool Connected => NetworkManager.HasPeer;
 
     /// <summary>Our match is running (StartMatch seen, game manager still alive).</summary>
     public static bool LocalInRun { get; private set; }

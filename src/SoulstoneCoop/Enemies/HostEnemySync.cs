@@ -151,7 +151,7 @@ public static class HostEnemySync
         All.Add(t);
         if (All.Count > _maxTracked) _maxTracked = All.Count;
 
-        if (NetworkManager.RemotePeer != null) SendSpawn(t);
+        if (NetworkManager.HasPeer) SendSpawn(t);
     }
 
     private static readonly HashSet<string> LoggedSpecialKeys = new();
@@ -207,7 +207,7 @@ public static class HostEnemySync
         ByPtr.Remove(t.Ptr);
         if (ByNetId.TryGetValue(t.NetId, out var cur) && cur == t) ByNetId.Remove(t.NetId);
         All.Remove(t);
-        if (!sendDespawn || NetworkManager.RemotePeer == null) return;
+        if (!sendDespawn || !NetworkManager.HasPeer) return;
 
         var w = new NetDataWriter();
         w.Put((byte)PacketType.EnemyDespawn);
@@ -392,7 +392,7 @@ public static class HostEnemySync
             if (!t.DiedSent && e._health != null && e._health.HasBeenKilled)
             {
                 t.DiedSent = true;
-                if (NetworkManager.RemotePeer != null)
+                if (NetworkManager.HasPeer)
                 {
                     var w = new NetDataWriter();
                     w.Put((byte)PacketType.EnemyDied);
@@ -407,7 +407,7 @@ public static class HostEnemySync
         if (_snapshotTimer >= SnapshotInterval)
         {
             _snapshotTimer = 0f;
-            if (NetworkManager.RemotePeer != null) SendSnapshot();
+            if (NetworkManager.HasPeer) SendSnapshot();
         }
 
         _telemetryTimer += unscaledDeltaTime;
@@ -415,7 +415,7 @@ public static class HostEnemySync
         {
             float secs = _telemetryTimer;
             _telemetryTimer = 0f;
-            if (NetworkManager.RemotePeer != null || All.Count > 0)
+            if (NetworkManager.HasPeer || All.Count > 0)
             {
                 Plugin.StaticLog.LogInfo(
                     $"[SoulstoneCoop][enemies] Host: tracked={All.Count} peak={_maxTracked} snapshots={_snapshotsSent / secs:F1}/s " +

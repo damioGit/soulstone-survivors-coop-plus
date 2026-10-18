@@ -54,6 +54,9 @@ public class CoopBehaviour : MonoBehaviour
             Life.CoopLife.EnsureHooked();
         }
 
+        try { Steam.SteamLobby.EnsureInit(); }
+        catch (System.Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] SteamLobby.EnsureInit: {ex}"); }
+
         if (!_autoConnectDone && NetworkManager.Role == NetRole.None)
         {
             _autoConnectDone = true;
@@ -120,6 +123,8 @@ public class CoopBehaviour : MonoBehaviour
             Application.runInBackground = true;
 
             NetworkManager.PollEvents();
+            try { Steam.SteamLobby.Tick(Time.unscaledDeltaTime); }
+            catch (System.Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] SteamLobby.Tick: {ex}"); }
             try { Lobby.CoopSession.Tick(Time.unscaledDeltaTime); }
             catch (System.Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] CoopSession.Tick: {ex}"); }
             UpdateGhostLifecycle();
@@ -193,7 +198,7 @@ public class CoopBehaviour : MonoBehaviour
         string localPos = local != null ? local.gameObject.transform.position.ToString() : "-";
         string ghostPos = ghost != null ? ghost.transform.position.ToString() : "-";
         Plugin.StaticLog.LogInfo(
-            $"[SoulstoneCoop][sync] role={NetworkManager.Role} peer={(NetworkManager.RemotePeer != null)} " +
+            $"[SoulstoneCoop][sync] role={NetworkManager.Role} peer={NetworkManager.HasPeer} " +
             $"place={Lobby.CoopSession.LocalPlace}/{Lobby.CoopSession.RemotePlace} " +
             $"sent={PlayerSync.SentCount} recv={PlayerSync.ReceivedCount} lastRecv={PlayerSync.LastReceivedPosition} " +
             $"local={localPos} ghost={ghostPos} ghostActive={(ghost != null && ghost.activeInHierarchy)} " +

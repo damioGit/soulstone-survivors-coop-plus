@@ -177,7 +177,7 @@ public static class RemoteProxy
     internal static bool TryGetRemotePosition(out Vector3 pos, out Quaternion rot)
     {
         var ghost = GameState.RemoteGhostObject;
-        if (ghost == null || NetworkManager.RemotePeer == null || PlayerSync.ReceivedCount == 0)
+        if (ghost == null || !NetworkManager.HasPeer || PlayerSync.ReceivedCount == 0)
         {
             pos = default; rot = default;
             return false;
@@ -225,7 +225,7 @@ public static class RemoteProxy
         if (_telemetryTimer >= TelemetryInterval)
         {
             _telemetryTimer = 0f;
-            if (NetworkManager.RemotePeer != null)
+            if (NetworkManager.HasPeer)
             {
                 string where = _proxy != null ? _proxy.transform.position.ToString() : "-";
                 Plugin.StaticLog.LogInfo(
@@ -356,7 +356,7 @@ public static class RemoteProxy
     /// <summary>Patch #9: damage aimed at the proxy goes to the client; the proxy itself never changes.</summary>
     internal static void ForwardDamage(Entity? attacker, float healthChange)
     {
-        if (healthChange >= 0f || NetworkManager.RemotePeer == null) return;
+        if (healthChange >= 0f || !NetworkManager.HasPeer) return;
         ushort attackerNetId = 0;
         if (attacker != null) HostEnemySync.TryGetNetId(attacker, out attackerNetId);
         var w = new NetDataWriter();
@@ -509,7 +509,7 @@ public static class ClientIncomingDamage
         var local = GameState.LocalPlayerEntity;
         var h = local != null ? local._health : null;
         var st = local != null ? local._stats : null;
-        if (NetworkManager.RemotePeer == null || h == null || st == null || st.Stats == null || !ClientPuppets.MatchStarted) return;
+        if (!NetworkManager.HasPeer || h == null || st == null || st.Stats == null || !ClientPuppets.MatchStarted) return;
         // Phase 4A: downed counts as dead for the host (proxy out of the fight, XP ownership, revive/defeat logic).
         bool dead = h.HasBeenKilled || Life.CoopLife.LocalDowned;
         _stateTimer += unscaledDeltaTime;

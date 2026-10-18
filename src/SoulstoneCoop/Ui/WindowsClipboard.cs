@@ -14,6 +14,42 @@ internal static class WindowsClipboard
     [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr GetClipboardData(uint format);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr GlobalLock(IntPtr mem);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GlobalUnlock(IntPtr mem);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool EmptyClipboard();
+    [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr SetClipboardData(uint format, IntPtr mem);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr GlobalAlloc(uint flags, UIntPtr bytes);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr GlobalFree(IntPtr mem);
+
+    /// <summary>Phase 7: "Copiar código" puts the Steam lobby code on the clipboard.</summary>
+    public static bool TrySetText(string text)
+    {
+        try
+        {
+            if (!OpenClipboard(IntPtr.Zero)) return false;
+            try
+            {
+                EmptyClipboard();
+                int bytes = (text.Length + 1) * 2;
+                var mem = GlobalAlloc(0x0002 /* GMEM_MOVEABLE */, (UIntPtr)bytes);
+                if (mem == IntPtr.Zero) return false;
+                var p = GlobalLock(mem);
+                if (p == IntPtr.Zero) { GlobalFree(mem); return false; }
+                try
+                {
+                    var chars = (text + "\0").ToCharArray();
+                    Marshal.Copy(chars, 0, p, chars.Length);
+                }
+                finally { GlobalUnlock(mem); }
+                if (SetClipboardData(CF_UNICODETEXT, mem) == IntPtr.Zero) { GlobalFree(mem); return false; }
+                return true; // the clipboard owns mem now
+            }
+            finally { CloseClipboard(); }
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][ui] Clipboard write: {ex.Message}");
+            return false;
+        }
+    }
 
     public static string? TryGetText()
     {

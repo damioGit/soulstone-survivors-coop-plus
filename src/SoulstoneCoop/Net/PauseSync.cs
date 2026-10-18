@@ -25,7 +25,7 @@ public static class PauseSync
     /// <summary>The partner paused (or is choosing an upgrade) inside a run next to ours. Only counts while both are in
     /// a run: a state latched from the end screen must not freeze the next run or the menu (phase 6).</summary>
     public static bool RemotePaused =>
-        RemoteReason != PauseReason.None && NetworkManager.RemotePeer != null
+        RemoteReason != PauseReason.None && NetworkManager.HasPeer
         && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.RemoteInRun;
 
     /// <summary>A new run is starting: forget the partner's old state and resend ours.</summary>
@@ -58,7 +58,7 @@ public static class PauseSync
                     : TimeUtil.PauseTime < 0.001f ? PauseReason.Pause
                     : PauseReason.None;
 
-        if (NetworkManager.RemotePeer != null && (!_sentOnce || LocalReason != _lastSent))
+        if (NetworkManager.HasPeer && (!_sentOnce || LocalReason != _lastSent))
         {
             var writer = new NetDataWriter();
             writer.Put((byte)PacketType.PauseState);
@@ -74,7 +74,7 @@ public static class PauseSync
             Time.timeScale = 0f;
     }
 
-    public static void OnPauseStateReceived(NetPacketReader reader)
+    public static void OnPauseStateReceived(NetDataReader reader)
     {
         var reason = (PauseReason)reader.GetByte();
         if (reason != RemoteReason)

@@ -12,7 +12,7 @@ public class Plugin : BasePlugin
     public const string PluginGuid = "com.kolber.soulstonecoop";
     public const string PluginName = "Soulstone Coop";
     // Checked in the connection handshake (phase 6): host and client must match exactly.
-    public const string PluginVersion = "0.6.0";
+    public const string PluginVersion = "0.7.0";
 
     internal static ManualLogSource StaticLog = null!;
     internal static BepInEx.Configuration.ConfigEntry<bool> AutoHost = null!;
@@ -60,6 +60,19 @@ public class Plugin : BasePlugin
         catch (System.Exception ex)
         {
             Log.LogError($"Could not patch AffixGameplayData..ctor (the client keeps its own affixes): {ex}");
+        }
+
+        // Phase 7: take over the Steam callback pump (lobby invites, P2P sessions). By hand: if it fails, the game
+        // keeps pumping its own callbacks and only the Steam invite is lost.
+        try
+        {
+            harmony.Patch(
+                AccessTools.Method(typeof(Steamworks.SteamAPI), nameof(Steamworks.SteamAPI.RunCallbacks)),
+                prefix: new HarmonyMethod(typeof(Steam.SteamRunCallbacksPatch), nameof(Steam.SteamRunCallbacksPatch.Prefix)));
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogError($"Could not patch SteamAPI.RunCallbacks (Steam invites off, IP still works): {ex}");
         }
 
         // Force full stack traces for exceptions so we can actually tell which system is

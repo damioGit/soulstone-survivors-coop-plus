@@ -35,7 +35,7 @@ public enum PacketType : byte
 
 public static class PacketRouter
 {
-    public static void Handle(NetPeer peer, NetPacketReader reader)
+    public static void Handle(NetDataReader reader)
     {
         if (reader.AvailableBytes < 1) return;
         var type = (PacketType)reader.GetByte();

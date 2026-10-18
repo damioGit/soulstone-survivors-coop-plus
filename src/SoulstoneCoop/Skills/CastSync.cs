@@ -146,7 +146,7 @@ public static class CastSync
 
     internal static void OnLocalCast(Skill skill, SkillActivationParameters p)
     {
-        if (NetworkManager.RemotePeer == null || skill == null || p == null) return;
+        if (!NetworkManager.HasPeer || skill == null || p == null) return;
         var local = GameState.LocalPlayerEntity;
         if (local == null) return;
 
@@ -230,7 +230,7 @@ public static class CastSync
         foreach (var key in ended)
         {
             LocalChannels.Remove(key);
-            if (NetworkManager.RemotePeer == null) continue;
+            if (!NetworkManager.HasPeer) continue;
             var w = new NetDataWriter();
             w.Put((byte)PacketType.SkillChannelEnd);
             w.Put(key);

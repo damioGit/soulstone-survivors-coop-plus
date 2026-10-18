@@ -751,7 +751,7 @@ public static class ClientPuppets
     private static void FlushDamage()
     {
         if (DamageOut.Count == 0) return;
-        if (NetworkManager.RemotePeer == null) { DamageOut.Clear(); return; }
+        if (!NetworkManager.HasPeer) { DamageOut.Clear(); return; }
 
         var entries = DamageOut.ToArray();
         DamageOut.Clear();

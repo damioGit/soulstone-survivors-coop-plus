@@ -65,7 +65,7 @@ public static class LootSync
         Il2CppList.List<ItemDropRuntimeData>? possibleItems, Il2CppList.List<PowerUpRequest>? powerUps,
         Vector3 sourcePosition, bool instant, int experienceInterval)
     {
-        if (NetworkManager.RemotePeer == null) return;
+        if (!NetworkManager.HasPeer) return;
         if (InPersonalLoot) { _skippedPersonal++; return; }
 
         // Team XP: each orb exists in ONE world only - the nearest living player's - and whoever collects it
@@ -187,7 +187,7 @@ public static class LootSync
     /// partner, and is held for us like the partner's shared XP (applied on revive, no echo).</summary>
     internal static bool OnLocalAddExperience(ExperienceComponent comp, float amount)
     {
-        if (ApplyingSharedXp || amount <= 0f || NetworkManager.RemotePeer == null) return true;
+        if (ApplyingSharedXp || amount <= 0f || !NetworkManager.HasPeer) return true;
         var local = GameState.LocalPlayerEntity;
         if (local == null || comp.Entity == null || comp.Entity.Pointer != local.Pointer) return true;
         _shareOut += amount;
@@ -205,7 +205,7 @@ public static class LootSync
         if (_shareFlushTimer < ShareFlushInterval) return;
         _shareFlushTimer = 0f;
         if (_shareOut <= 0f) return;
-        if (NetworkManager.RemotePeer == null) { _shareOut = 0f; return; }
+        if (!NetworkManager.HasPeer) { _shareOut = 0f; return; }
         var w = new NetDataWriter();
         w.Put((byte)PacketType.XpShare);
         w.Put(_shareOut);

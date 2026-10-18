@@ -42,6 +42,7 @@ public static class CoopUi
     private static TextMeshProUGUI? _status;
     private static TMP_InputField? _ipField;
     private static Button? _hostButton, _joinButton, _leaveButton, _pasteButton;
+    private static Button? _inviteButton, _copyCodeButton; // phase 7 (Steam)
     private static RectTransform? _bannerRt;
     private static TextMeshProUGUI? _bannerText;
 
@@ -231,18 +232,31 @@ public static class CoopUi
     {
         var role = NetworkManager.Role;
         var status = NetworkManager.Status;
+        bool steam = NetworkManager.Kind == "Steam";
+        var lobbyState = Steam.SteamLobby.State;
         string text;
         if (role == NetRole.None)
-            text = NetworkManager.LastError != null ? $"<color=#ff8080>{NetworkManager.LastError}</color>" : "Fora do co-op.";
+        {
+            string? error = NetworkManager.LastError ?? Steam.SteamLobby.LastError;
+            if (lobbyState == Steam.SteamLobby.LobbyState.Creating) text = "Criando o lobby na Steam...";
+            else if (lobbyState == Steam.SteamLobby.LobbyState.Joining) text = "Entrando no lobby da Steam...";
+            else if (error != null) text = $"<color=#ff8080>{error}</color>";
+            else text = Steam.SteamLobby.Available ? "Fora do co-op." : "Fora do co-op. Steam indisponível: só por IP.";
+        }
         else if (status == NetStatus.Hosting)
-            text = $"Hospedando na porta {NetworkManager.Port}. Aguardando parceiro...";
+            text = steam
+                ? "Lobby aberto na Steam. Convide um amigo (ou mande o código)."
+                : $"Hospedando na porta {NetworkManager.Port}. Aguardando parceiro...";
         else if (status == NetStatus.Connecting)
-            text = $"Conectando a {NetworkManager.TargetAddress}:{NetworkManager.Port}...";
+            text = steam
+                ? $"Conectando com {Steam.SteamLobby.FriendName(Steam.SteamLobby.HostId)} pela Steam..."
+                : $"Conectando a {NetworkManager.TargetAddress}:{NetworkManager.Port}...";
         else if (status == NetStatus.Connected)
         {
             var r = CoopSession.Remote;
             string who = !r.Known ? "parceiro" : r.CharacterName.Length > 0 ? $"{r.Name} ({r.CharacterName})" : r.Name;
-            text = $"Conectado com <color=#f2cc73>{who}</color>.";
+            int ping = NetworkManager.PingMs;
+            text = $"Conectado com <color=#f2cc73>{who}</color> ({NetworkManager.Kind}{(ping >= 0 ? $", {ping} ms" : "")}).";
             if (role == NetRole.Client)
                 text += CoopSession.RemotePlace == LobbyPlace.Menu
                     ? "\nAguardando o host começar a partida."
@@ -255,6 +269,8 @@ public static class CoopUi
         else text = "...";
         if (role == NetRole.Host && NetworkManager.LastError != null && status == NetStatus.Hosting)
             text += $"\n<color=#ff8080>{NetworkManager.LastError}</color>";
+        if (role == NetRole.Host && steam && Steam.SteamLobby.LastError != null)
+            text += $"\n<color=#ff8080>{Steam.SteamLobby.LastError}</color>";
 
         if (text != _lastStatus)
         {
@@ -262,7 +278,11 @@ public static class CoopUi
             _status!.text = text;
         }
 
-        bool idle = role == NetRole.None;
+        bool busy = lobbyState == Steam.SteamLobby.LobbyState.Creating || lobbyState == Steam.SteamLobby.LobbyState.Joining;
+        bool idle = role == NetRole.None && !busy;
+        bool steamHosting = role == NetRole.Host && steam;
+        SetInteractable(_inviteButton!, Steam.SteamLobby.Available && (idle || steamHosting));
+        SetInteractable(_copyCodeButton!, steamHosting && Steam.SteamLobby.LobbyId != 0);
         SetInteractable(_hostButton!, idle);
         SetInteractable(_joinButton!, idle);
         SetInteractable(_pasteButton!, idle);
@@ -286,7 +306,7 @@ public static class CoopUi
         if (!show) return;
         if (_bannerText!.text != text) _bannerText.text = text;
         // Under the panel when it's open, else near the top of the screen.
-        float y = _inMenu && _panelOpen ? -600f : -140f;
+        float y = _inMenu && _panelOpen ? -700f : -140f;
         if (Mathf.Abs(_bannerRt.anchoredPosition.y - y) > 0.5f) _bannerRt.anchoredPosition = new Vector2(0f, y);
     }
 
@@ -324,7 +344,24 @@ public static class CoopUi
         if (addr.Length == 0) addr = DefaultAddress;
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Join pressed: {addr}");
         try { Plugin.LastAddress.Value = addr; } catch { }
-        NetworkManager.StartClient(addr);
+        // Phase 7: a long number is a Steam lobby code ("Copiar código" on the host), anything else an IP.
+        if (Steam.SteamLobby.TryParseCode(addr, out var lobby)) Steam.SteamLobby.Join(lobby);
+        else NetworkManager.StartClient(addr);
+    }
+
+    private static void OnInvite()
+    {
+        Plugin.StaticLog.LogInfo("[SoulstoneCoop][ui] Invite pressed.");
+        Steam.SteamLobby.HostAndInvite();
+    }
+
+    private static void OnCopyCode()
+    {
+        ulong lobby = Steam.SteamLobby.LobbyId;
+        if (lobby == 0) return;
+        bool ok = WindowsClipboard.TrySetText(lobby.ToString());
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Copy code pressed: {lobby} (clipboard {(ok ? "ok" : "failed")}).");
+        CoopSession.Notice(ok ? "Código do lobby copiado: mande pro amigo colar em Entrar" : "Não deu pra copiar o código", 5f);
     }
 
     private static void OnPaste()
@@ -350,6 +387,8 @@ public static class CoopUi
     {
         Plugin.StaticLog.LogInfo("[SoulstoneCoop][ui] Disconnect pressed.");
         NetworkManager.Stop();
+        Steam.SteamLobby.Leave(); // also cancels a lobby still being created or joined
+
     }
 
     private static void OnClose() => _panelOpen = false;
@@ -385,7 +424,7 @@ public static class CoopUi
 
         // Panel, centered under the top menu.
         var panel = MakeRect(rootRt, "CoopPanel");
-        Place(panel, new Vector2(0.5f, 1f), new Vector2(0f, -150f), new Vector2(720f, 420f));
+        Place(panel, new Vector2(0.5f, 1f), new Vector2(0f, -150f), new Vector2(720f, 520f));
         var bg = panel.gameObject.AddComponent<Image>();
         if (_frameSprite != null) { bg.sprite = _frameSprite; bg.color = PanelTint; }
         else bg.color = PanelFallbackColor;
@@ -404,26 +443,33 @@ public static class CoopUi
         var close = MakeTextButton(panel, "Close", "X", OnClose, 34f);
         PlaceTopLeft(close.GetComponent<RectTransform>(), 650f, 46f, 50f, 50f);
 
-        _hostButton = MakeButton(panel, "Host", "Hospedar", OnHost, 34f);
-        PlaceTopLeft(_hostButton.GetComponent<RectTransform>(), 60f, 70f, 600f, 70f);
+        // Phase 7: Steam invite first (the real way to play), IP below it (local tests, LAN, VPN).
+        _inviteButton = MakeButton(panel, "Invite", "Convidar amigo", OnInvite, 34f);
+        PlaceTopLeft(_inviteButton.GetComponent<RectTransform>(), 60f, 70f, 390f, 70f);
+
+        _copyCodeButton = MakeButton(panel, "CopyCode", "Copiar código", OnCopyCode, 28f);
+        PlaceTopLeft(_copyCodeButton.GetComponent<RectTransform>(), 460f, 70f, 200f, 70f);
+
+        _hostButton = MakeButton(panel, "Host", "Hospedar por IP", OnHost, 30f);
+        PlaceTopLeft(_hostButton.GetComponent<RectTransform>(), 60f, 152f, 600f, 62f);
 
         string lastAddress = DefaultAddress;
         try { if (!string.IsNullOrWhiteSpace(Plugin.LastAddress.Value)) lastAddress = Plugin.LastAddress.Value.Trim(); } catch { }
         _ipField = MakeInputField(panel, "Address", lastAddress);
-        PlaceTopLeft(_ipField.GetComponent<RectTransform>(), 60f, 156f, 290f, 62f);
+        PlaceTopLeft(_ipField.GetComponent<RectTransform>(), 60f, 230f, 290f, 62f);
 
         _pasteButton = MakeButton(panel, "Paste", "Colar", OnPaste, 30f);
-        PlaceTopLeft(_pasteButton.GetComponent<RectTransform>(), 360f, 152f, 120f, 70f);
+        PlaceTopLeft(_pasteButton.GetComponent<RectTransform>(), 360f, 226f, 120f, 70f);
 
         _joinButton = MakeButton(panel, "Join", "Entrar", OnJoin, 34f);
-        PlaceTopLeft(_joinButton.GetComponent<RectTransform>(), 490f, 152f, 170f, 70f);
+        PlaceTopLeft(_joinButton.GetComponent<RectTransform>(), 490f, 226f, 170f, 70f);
 
         _leaveButton = MakeButton(panel, "Leave", "Desconectar", OnLeave, 30f);
-        PlaceTopLeft(_leaveButton.GetComponent<RectTransform>(), 60f, 238f, 600f, 62f);
+        PlaceTopLeft(_leaveButton.GetComponent<RectTransform>(), 60f, 312f, 600f, 62f);
 
         _status = MakeText(panel, "Status", "", 24f, TextAlignmentOptions.Top);
         _status.enableWordWrapping = true;
-        PlaceTopLeft(_status.rectTransform, 60f, 314f, 600f, 92f);
+        PlaceTopLeft(_status.rectTransform, 60f, 388f, 600f, 116f);
 
         // Banner (menu and runs).
         _bannerRt = MakeRect(rootRt, "CoopBanner");
@@ -557,7 +603,7 @@ public static class CoopUi
         Stretch(area, 12f);
         area.gameObject.AddComponent<RectMask2D>();
 
-        var placeholder = MakeText(area, "Placeholder", "IP do host", 30f, TextAlignmentOptions.Left);
+        var placeholder = MakeText(area, "Placeholder", "IP ou código", 30f, TextAlignmentOptions.Left);
         placeholder.color = new Color(1f, 1f, 1f, 0.35f);
         placeholder.fontStyle = FontStyles.Italic;
         Stretch(placeholder.rectTransform, 0f);

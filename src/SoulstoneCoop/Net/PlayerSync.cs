@@ -65,7 +65,7 @@ public static class PlayerSync
         try { ApplyGhost(deltaTime); }
         catch (System.Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop][sync] ApplyGhost: {ex.Message}"); }
 
-        if (NetworkManager.RemotePeer == null) return;
+        if (!NetworkManager.HasPeer) return;
         var local = GameState.LocalPlayerEntity;
         if (local == null) return;
 
@@ -94,7 +94,7 @@ public static class PlayerSync
         _animGhostPtr = IntPtr.Zero;
     }
 
-    public static void OnPlayerStateReceived(NetPacketReader reader)
+    public static void OnPlayerStateReceived(NetDataReader reader)
     {
         var state = PlayerTransformState.Deserialize(reader);
         ReceivedCount++;

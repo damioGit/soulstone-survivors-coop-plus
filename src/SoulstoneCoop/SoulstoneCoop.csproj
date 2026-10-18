@@ -58,6 +58,11 @@
       <HintPath>$(Interop)\Il2CppSystem.Core.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- Phase 7: the game's (stripped) Steamworks.NET, only for the callback pump takeover (Steam/SteamCallbacks.cs) -->
+    <Reference Include="com.rlabrecque.steamworks.net">
+      <HintPath>$(Interop)\com.rlabrecque.steamworks.net.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Il2Cppmscorlib">
       <HintPath>$(Interop)\Il2Cppmscorlib.dll</HintPath>
       <Private>false</Private>
