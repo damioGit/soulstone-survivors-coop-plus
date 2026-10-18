@@ -77,6 +77,14 @@ public static class ClientPuppets
 
     internal static bool IsPuppet(Entity e) => ByPtr.ContainsKey(e.Pointer);
 
+    internal static bool TryGetNetId(Entity e, out ushort netId)
+    {
+        netId = 0;
+        if (e == null || !ByPtr.TryGetValue(e.Pointer, out var p) || p.Dead) return false;
+        netId = p.NetId;
+        return true;
+    }
+
     public static void EnsureHooked()
     {
         if (_hooked) return;
@@ -586,6 +594,7 @@ public static class ClientPuppetHealthClampPatch
         {
             if (healthChange >= 0f || ClientPuppets.ApplyingNetworkDeath || !CoopRole.IsClientSide) return;
             if (targetEntity == null || !ClientPuppets.IsPuppet(targetEntity)) return;
+            if (Skills.RemoteCaster.IsCaster(attackerEntity)) return; // visual-only replay, never sent as damage
             ClientPuppets.RecordDamage(attackerEntity, targetEntity, healthChange);
             var health = targetEntity._health;
             if (health == null) return;

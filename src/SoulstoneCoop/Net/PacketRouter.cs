@@ -18,6 +18,8 @@ public enum PacketType : byte
     ClientDamage = 11, // client -> host: damage the client dealt to puppets, summed per netId per tick (ReliableUnordered)
     DamageToClient = 12, // host -> client: a hit on the client's proxy (healthChange f32, attacker netId u16) (ReliableOrdered)
     ClientState = 13,  // client -> host: local player dead flag + hp/maxHp/armor/damageReduction/block, every 0.5 s (ReliableOrdered)
+    SkillCast = 14,    // either way: the sender's local player cast a skill, replayed visual-only on the RemoteCaster (ReliableOrdered)
+    SkillChannelEnd = 15, // either way: a channel started by SkillCast stopped (ReliableOrdered, same channel as SkillCast)
 }
 
 public static class PacketRouter
@@ -64,6 +66,12 @@ public static class PacketRouter
                 break;
             case PacketType.ClientState:
                 Enemies.RemoteProxy.OnClientState(reader);
+                break;
+            case PacketType.SkillCast:
+                Skills.CastSync.OnSkillCast(reader);
+                break;
+            case PacketType.SkillChannelEnd:
+                Skills.CastSync.OnSkillChannelEnd(reader);
                 break;
             case PacketType.PauseState:
                 PauseSync.OnPauseStateReceived(reader);

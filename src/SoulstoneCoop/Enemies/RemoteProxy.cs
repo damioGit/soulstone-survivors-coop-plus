@@ -551,6 +551,8 @@ public static class HostProxyDamagePatch
         try
         {
             if (!CoopRole.IsHostSide || targetEntity == null) return true;
+            // The remote caster's replays are visual only (RemoteCasterDamageBlockPatch skips the original too).
+            if (Skills.RemoteCaster.IsCaster(attackerEntity) || Skills.RemoteCaster.IsCaster(targetEntity)) return false;
             if (RemoteProxy.IsProxy(targetEntity))
             {
                 RemoteProxy.ForwardDamage(attackerEntity, healthChange);
