@@ -52,6 +52,7 @@ public class CoopBehaviour : MonoBehaviour
             Enemies.RemoteProxy.EnsureHooked();
             Skills.RemoteCaster.EnsureHooked();
             Life.CoopLife.EnsureHooked();
+            Life.PartnerHealth.EnsureHooked();
         }
 
         try { Steam.SteamLobby.EnsureInit(); }
@@ -87,6 +88,7 @@ public class CoopBehaviour : MonoBehaviour
             PlayerSync.ResetForNewGhost();
             _ghostRebuilds = 0;
             _identityRebuilds = 0;
+            Life.PartnerHealth.Reset(); // the partner's 1 s refresh fills it again, and ours goes out now
             var t = local!.gameObject.transform;
             var spawnPos = t.position + t.right * 2f;
             GameState.RemoteGhostObject = VisualGhostFactory.Create(local, spawnPos, t.rotation, "SoulstoneCoop_RemoteGhost");
@@ -131,7 +133,8 @@ public class CoopBehaviour : MonoBehaviour
             UpdateGhostLifecycle();
             Ui.CoopUi.Tick();
             PlayerSync.Tick(Time.unscaledDeltaTime);
-            GhostNameTag.Tick();
+            GhostOverhead.Tick(Time.unscaledDeltaTime);
+            Life.PartnerHealth.Tick(Time.unscaledDeltaTime);
             ClientSpawnBlock.Tick(Time.unscaledDeltaTime);
             WorldTelemetry.Tick(Time.unscaledDeltaTime);
             Enemies.HostEnemySync.Tick(Time.unscaledDeltaTime);

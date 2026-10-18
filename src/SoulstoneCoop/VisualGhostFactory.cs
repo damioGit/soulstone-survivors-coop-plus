@@ -91,7 +91,8 @@ public static class VisualGhostFactory
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop] VisualGhostFactory: '{name}' built as the partner: {what}.");
         }
 
-        GhostNameTag.Attach(cloneGo, EstimateHeight(cloneGo));
+        TintBodyEffects(cloneGo);
+        GhostOverhead.Attach(cloneGo, EstimateHeight(cloneGo));
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop] VisualGhostFactory: created '{name}' (visual-only, no Entity, key={BuiltForKey}).");
         return cloneGo;
     }
@@ -201,6 +202,50 @@ public static class VisualGhostFactory
         {
             Plugin.StaticLog.LogWarning($"[SoulstoneCoop] VisualGhostFactory: weapon spawn failed, the ghost goes without weapons: {ex.Message}");
             return "weapon spawn failed";
+        }
+    }
+
+    private static readonly string[] TintProperties = { "_BaseColor", "_Color", "_TintColor", "_MainColor" };
+
+    /// <summary>The body effects the clone kept from the local entity (the ground ring and friends: everything that
+    /// isn't the character model) get the ally color, so the ghost doesn't wear the same ring as the local player.
+    /// Material instances, so the local player's shared materials are untouched. Each tinted renderer is logged.</summary>
+    private static void TintBodyEffects(GameObject root)
+    {
+        try
+        {
+            Transform? modelRoot = null;
+            if (ModelAnimator != null)
+            {
+                var t = ModelAnimator.transform;
+                while (t.parent != null && t.parent.Pointer != root.transform.Pointer) t = t.parent;
+                if (t.parent != null) modelRoot = t;
+            }
+            var tinted = new List<string>();
+            foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r == null || r.TryCast<SkinnedMeshRenderer>() != null || r.TryCast<TrailRenderer>() != null || r.TryCast<LineRenderer>() != null) continue;
+                if (modelRoot != null && r.transform.IsChildOf(modelRoot)) continue;
+                bool any = false;
+                foreach (var m in r.materials)
+                {
+                    if (m == null) continue;
+                    foreach (var prop in TintProperties)
+                    {
+                        if (!m.HasProperty(prop)) continue;
+                        var c = m.GetColor(prop);
+                        var a = GhostOverhead.AllyColor;
+                        m.SetColor(prop, new Color(a.r, a.g, a.b, c.a));
+                        any = true;
+                    }
+                }
+                if (any) tinted.Add(r.gameObject.name);
+            }
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop] VisualGhostFactory: ally tint on {tinted.Count} body renderer(s): {string.Join(", ", tinted)}.");
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop] VisualGhostFactory: ally tint skipped: {ex.Message}");
         }
     }
 
