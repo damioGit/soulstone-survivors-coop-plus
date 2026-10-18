@@ -216,6 +216,20 @@ public static class HostEnemySync
         return true;
     }
 
+    /// <summary>Phase 4B: the tracked enemy that was just killed at this position (ProcessLoot gets the dying
+    /// entity's transform position), or 0. Only used as a fallback key for the puppet's own item list.</summary>
+    internal static ushort FindKilledAt(Vector3 pos)
+    {
+        for (int i = 0; i < All.Count; i++)
+        {
+            var t = All[i];
+            var e = t.Entity;
+            if (e == null || t.DiedSent || e._health == null || !e._health.HasBeenKilled) continue;
+            if ((e.transform.position - pos).sqrMagnitude < 0.0001f) return t.NetId;
+        }
+        return 0;
+    }
+
     private static int _clientDmgPackets, _clientDmgEntries, _clientDmgApplied, _clientKills, _clientDmgDropped, _clientDmgImmune;
     private static double _clientDmgSum;
 

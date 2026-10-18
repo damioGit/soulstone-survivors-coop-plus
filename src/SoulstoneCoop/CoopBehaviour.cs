@@ -111,6 +111,7 @@ public class CoopBehaviour : MonoBehaviour
             Enemies.RemoteProxy.Tick(Time.unscaledDeltaTime);
             Enemies.ClientIncomingDamage.Tick(Time.unscaledDeltaTime);
             Skills.CastSync.Tick(Time.unscaledDeltaTime);
+            Loot.LootSync.Tick(Time.unscaledDeltaTime);
             RebuildGhostIfModelInactive();
             HandleDebugHotkeys();
             LogSyncStats();

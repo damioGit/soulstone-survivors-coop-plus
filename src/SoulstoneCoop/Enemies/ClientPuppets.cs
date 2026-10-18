@@ -101,6 +101,10 @@ public static class ClientPuppets
     private static bool _matchStarted;
     internal static bool MatchStarted => _matchStarted;
 
+    /// <summary>Live or dying (still not recycled) puppet entity.</summary>
+    internal static Entity? TryGetPuppetEntity(ushort netId) =>
+        netId != 0 && ByNetId.TryGetValue(netId, out var p) && p.Entity != null ? p.Entity : null;
+
     internal static Entity? TryGetLivePuppet(ushort netId) =>
         ByNetId.TryGetValue(netId, out var p) && !p.Dead && p.Entity != null ? p.Entity : null;
 
@@ -253,11 +257,11 @@ public static class ClientPuppets
                     $"[SoulstoneCoop][puppets] alive={AliveCount} dying={ByNetId.Count - AliveCount} pending={Pending.Count} " +
                     $"snapshots={_snapshotsRecv / secs:F1}/s bytesPerSnapshot={(_snapshotsRecv > 0 ? _snapshotBytes / _snapshotsRecv : 0)} " +
                     $"avgErr={(_errCount > 0 ? _errSum / _errCount : 0):F2}u maxErr={_errMax:F2}u teleports={_teleports} " +
-                    $"unknownNetIds={_unknownNetIds} clampedHits={_clampedHits} localDeaths={_localDeaths} unresolved={unresolved}");
+                    $"unknownNetIds={_unknownNetIds} clampedHits={_clampedHits} localDeaths={_localDeaths} killCredits={_killCredits} unresolved={unresolved}");
                 Plugin.StaticLog.LogInfo(
                     $"[SoulstoneCoop][damage] Client: hits={_dmgHits} damage={_dmgSum:F0} packets={_dmgPackets} skippedEnemyAttacker={_dmgSkippedEnemyAttacker}");
             }
-            _snapshotsRecv = _slicesRecv = _snapshotBytes = _unknownNetIds = _teleports = _clampedHits = 0;
+            _snapshotsRecv = _slicesRecv = _snapshotBytes = _unknownNetIds = _teleports = _clampedHits = _killCredits = 0;
             _dmgHits = _dmgPackets = _dmgSkippedEnemyAttacker = 0;
             _dmgSum = 0;
             _errSum = 0; _errCount = 0; _errMax = 0f;
@@ -452,8 +456,11 @@ public static class ClientPuppets
     }
 
     /// <summary>Plays the death through the game's own funnel (sounds, ragdoll, death anim, dissolve,
-    /// then the game recycles it). No loot (yieldLoot=false) and no on-kill procs (attacker list cleared):
-    /// kill credit is phase 4.</summary>
+    /// then the game recycles it). Phase 4B: the AttackerList is kept - our local hits registered the local
+    /// player (and, through Entity.Summoner, its summons) - and yieldLoot=true, so the game itself runs the
+    /// on-kill procs (SkillTree/Runes/PassiveSkills) and the class resources (Rage, SoulHarvest...) for whoever
+    /// hit it here. The puppet's own ProcessLoot is blocked (LootSyncProcessLootPatch): the loot comes from the
+    /// host's LootDrop.</summary>
     private static void KillPuppet(Puppet p)
     {
         p.Dead = true;
@@ -462,10 +469,10 @@ public static class ClientPuppets
         if (health == null) { RemoveTracking(p); return; }
         try
         {
-            health.AttackerList?.Clear();
+            if (HasLocalAttacker(health)) _killCredits++;
             health.InvulnerabilityTime = 0f;
             ApplyingNetworkDeath = true;
-            UnitUtil.ChangeEntityHealth(null!, e, -(health.CurrentHealth + 1f), false, out _, out _, out _);
+            UnitUtil.ChangeEntityHealth(null!, e, -(health.CurrentHealth + 1f), true, out _, out _, out _);
         }
         catch (Exception ex)
         {
@@ -483,6 +490,29 @@ public static class ClientPuppets
             RemoveTracking(p);
             DespawnPuppet(p);
         }
+    }
+
+    private static int _killCredits, _killCreditErrors;
+
+    /// <summary>Telemetry only: did the local player (or something it summoned) register on this puppet?</summary>
+    private static bool HasLocalAttacker(HealthComponent health)
+    {
+        try
+        {
+            var list = health.AttackerList;
+            var local = GameState.LocalPlayerEntity;
+            if (list == null || local == null) return false;
+            for (int i = 0; i < list.Count; i++)
+            {
+                var a = list[i].Entity;
+                if (a != null && a.Pointer == local.Pointer) return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (_killCreditErrors++ == 0) Plugin.StaticLog.LogWarning($"[SoulstoneCoop][puppets] Reading AttackerList: {ex.Message}");
+        }
+        return false;
     }
 
     private static void DespawnPuppet(Puppet p)
