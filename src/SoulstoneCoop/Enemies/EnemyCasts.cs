@@ -33,11 +33,12 @@ public static class EnemyCasts
     private static float _telemetryTimer;
     private static int _sent, _bytes, _throttled, _hostSkippedSummon, _captureErrors;
     private static int _recv, _played, _noPuppet, _noSkill, _inactive, _rejected, _errors, _skippedSummon;
-    private static int _blockedDamage, _blockedStatus, _blockedPush;
+    private static int _blockedDamage, _blockedStatus, _blockedPush, _blockedGodProxy;
 
     internal static void CountBlockedDamage() => _blockedDamage++;
     internal static void CountBlockedStatus() => _blockedStatus++;
     internal static void CountBlockedPush() => _blockedPush++;
+    internal static void CountBlockedGodProxy() => _blockedGodProxy++;
     internal static void CountCaptureError() => _captureErrors++;
 
     internal static void ForgetPuppet(IntPtr puppetPtr) => SkillsByPuppet.Remove(puppetPtr);
@@ -216,14 +217,14 @@ public static class EnemyCasts
         _telemetryTimer += unscaledDeltaTime;
         if (_telemetryTimer < TelemetryInterval) return;
         _telemetryTimer = 0f;
-        if (_sent + _recv + _captureErrors + _blockedDamage + _blockedStatus + _blockedPush > 0)
+        if (_sent + _recv + _captureErrors + _blockedDamage + _blockedStatus + _blockedPush + _blockedGodProxy > 0)
             Plugin.StaticLog.LogInfo(
                 $"[SoulstoneCoop][enemycasts] {NetworkManager.Role}: sent={_sent} ({_bytes} B) throttled={_throttled} hostSkippedSummon={_hostSkippedSummon} " +
                 $"captureErrors={_captureErrors} recv={_recv} played={_played} noPuppet={_noPuppet} noSkill={_noSkill} inactive={_inactive} " +
-                $"rejected={_rejected} errors={_errors} skippedSummon={_skippedSummon} blockedDamage={_blockedDamage} blockedStatus={_blockedStatus} blockedPush={_blockedPush}");
+                $"rejected={_rejected} errors={_errors} skippedSummon={_skippedSummon} blockedDamage={_blockedDamage} blockedStatus={_blockedStatus} blockedPush={_blockedPush} blockedGodProxy={_blockedGodProxy}");
         _sent = _bytes = _throttled = _hostSkippedSummon = _captureErrors = 0;
         _recv = _played = _noPuppet = _noSkill = _inactive = _rejected = _errors = _skippedSummon = 0;
-        _blockedDamage = _blockedStatus = _blockedPush = 0;
+        _blockedDamage = _blockedStatus = _blockedPush = _blockedGodProxy = 0;
     }
 
     private static void PutV3(NetDataWriter w, Vector3 v) { w.Put(v.x); w.Put(v.y); w.Put(v.z); }
@@ -321,6 +322,35 @@ public static class ClientPuppetPushbackBlockPatch
         catch (Exception ex)
         {
             Plugin.StaticLog.LogError($"[SoulstoneCoop] ClientPuppetPushbackBlockPatch: {ex}");
+        }
+    }
+}
+
+/// <summary>Client: some boss skills are ProxyGodSkill - DoActivate (0x55C5B0) doesn't attack by itself, it calls
+/// GameManagerUtil.TryCastGodSkill(GodSkillName, ...), so the map's God-Entity casts it. On a replayed puppet cast that
+/// would be the client's LOCAL God-Entity: not a puppet, so none of the blocks above apply, and the client would take
+/// the hit twice (for real from the host through the proxy, plus locally). The DoActivate can run late (after the charge,
+/// from Skill.ActivateChargedAttack), so the block is here and not around the replayed CastSkill. The puppet still
+/// shows the charge/telegraph and the animation; only the God-Entity part is skipped.
+/// SkillActivationParameters is 0x68 bytes (passed by pointer): safe for the trampoline.</summary>
+[HarmonyPatch(typeof(ProxyGodSkill), "DoActivate")]
+public static class ClientPuppetProxyGodSkillBlockPatch
+{
+    [HarmonyPrefix]
+    public static bool Prefix(ProxyGodSkill __instance)
+    {
+        try
+        {
+            if (!CoopRole.IsClientSide || __instance == null) return true;
+            var caster = __instance.CasterEntity;
+            if (caster == null || !ClientPuppets.IsPuppet(caster)) return true;
+            EnemyCasts.CountBlockedGodProxy();
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogError($"[SoulstoneCoop] ClientPuppetProxyGodSkillBlockPatch: {ex}");
+            return true;
         }
     }
 }

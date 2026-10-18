@@ -50,6 +50,13 @@ Visto pelo usuário jogando com um amigo (Steam). O fim da run chegou nos dois (
 - **Telemetria `[objectives]` a cada 10 s:** sent/recv/applied, mainRaised, catchUps, errors, o estado do host e, no cliente, o `main` local, a quantidade de objetivos de kills e os bosses vivos.
 - **Não testado em jogo** (compilado sem deploy). Passo de teste: host e cliente na mesma run. No host, F8 e matem os bosses. O painel do cliente deve mostrar o mesmo número de kills do host durante a run, o contador de bosses subindo a cada boss morto (até Total - 1; o último fecha pelo RunEnd) e um novo objetivo de kills logo depois de cada leva de bosses. No log do cliente, `[objectives] ... local main=X/15` deve bater com o `main=` do host.
 
+## Correção: skills de boss que lançam pela God-Entity (ProxyGodSkill)
+
+- **Risco** (achado pela sessão de pendências, confirmado no descompilado): `ProxyGodSkill.DoActivate` (0x55C5B0) não ataca sozinho. Ele chama `GameManagerUtil.TryCastGodSkill(GodSkillName, params, Options)`, e quem lança é a God-Entity do mapa. No replay do `EnemyCasts`, isso faria a God-Entity **local** do cliente lançar. Ela não é marionete e nenhum bloqueio da 4D se aplica a ela, então o cliente tomaria o golpe duas vezes: uma de verdade, vinda do host pelo proxy (`DamageToClient`), e outra local.
+- **Correção:** um prefix em `ProxyGodSkill.DoActivate` no cliente (`ClientPuppetProxyGodSkillBlockPatch`) devolve false quando o `CasterEntity` é marionete. O bloqueio fica no `DoActivate`, e não em volta do `CastSkill` replayado, porque com carga ele roda atrasado, pela corrotina `Skill.ActivateChargedAttack`. A marionete continua mostrando a carga, o aviso e a animação; só a parte da God-Entity é pulada. O dano real continua chegando pelo `DamageToClient`. Contador: `blockedGodProxy` no log `[enemycasts]`.
+- **Fica de fora (a sessão de pendências já trata):** mostrar no cliente o efeito que a God-Entity do host lança. O `GodCast = 70` dela replica os God Meteors pelo `RemoteCaster`. O que a God-Entity do host lança por um `ProxyGodSkill` de boss só aparece no cliente se esse caminho também for coberto.
+- **Não testado em jogo** (compilado sem deploy). Passo de teste: num boss com `ProxyGodSkill`, o cliente tem que tomar só o dano que chega pelo host (um número por golpe), e `blockedGodProxy` deve subir no log do cliente.
+
 ## Pendências (o usuário pediu pra voltar depois)
 
 - **Não testados (entraram no commit sem rodar em jogo):**
