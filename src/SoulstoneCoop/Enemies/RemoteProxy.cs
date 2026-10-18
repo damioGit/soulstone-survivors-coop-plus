@@ -44,6 +44,9 @@ public static class RemoteProxy
     /// <summary>Phase 4B: the client's player exists on our side (proxy up) and isn't dead.</summary>
     internal static bool RemoteAlive => Targetable;
 
+    /// <summary>Phase 4A: the client said it's down (or dead). ClientState.dead covers both.</summary>
+    internal static bool RemoteDownOrDead => _remoteState.HasValue && _remoteState.Value.Dead;
+
     // ---------------- client state (ClientState packet) ----------------
 
     public struct RemotePlayerState
@@ -385,7 +388,8 @@ public static class RemoteProxy
         // Only reference points that are the host player (other callers pass their own areas).
         if ((referencePoint - local.transform.position).sqrMagnitude > 4f) return;
         _spawnCalls++;
-        if ((++_spawnAlternator & 1) == 0) return;
+        // Downed host (phase 4A): every spawn goes around the client, the only one still fighting.
+        if ((++_spawnAlternator & 1) == 0 && !Life.CoopLife.LocalDowned) return;
         InSpawnRedirect = true;
         try { result = GameManagerUtil.GetRandomSpawnPointOutsideOfView(remote, extraDistanceMultiplier); }
         finally { InSpawnRedirect = false; }
@@ -436,7 +440,9 @@ public static class RemoteProxy
         Vector3 p = self.position;
         float dHost = (host.transform.position - p).sqrMagnitude;
         float dProxy = (_proxy.transform.position - p).sqrMagnitude;
-        var want = Targetable && dProxy < dHost ? _proxy : host;
+        bool hostDown = Life.CoopLife.LocalDowned; // phase 4A: a downed host isn't worth chasing
+        if (hostDown && !Targetable) return;
+        var want = Targetable && (hostDown || dProxy < dHost) ? _proxy : host;
         var cur = ai._entityToFollow;
         if (cur != null && cur.Pointer == want.Pointer) return;
         ai._entityToFollow = want;
@@ -504,7 +510,8 @@ public static class ClientIncomingDamage
         var h = local != null ? local._health : null;
         var st = local != null ? local._stats : null;
         if (NetworkManager.RemotePeer == null || h == null || st == null || st.Stats == null || !ClientPuppets.MatchStarted) return;
-        bool dead = h.HasBeenKilled;
+        // Phase 4A: downed counts as dead for the host (proxy out of the fight, XP ownership, revive/defeat logic).
+        bool dead = h.HasBeenKilled || Life.CoopLife.LocalDowned;
         _stateTimer += unscaledDeltaTime;
         if (_stateTimer < 0.5f && dead == _lastSentDead) return;
         _stateTimer = 0f;

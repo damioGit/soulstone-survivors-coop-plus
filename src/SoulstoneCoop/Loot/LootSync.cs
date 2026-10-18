@@ -162,7 +162,7 @@ public static class LootSync
         if (!Enemies.RemoteProxy.RemoteAlive || !Enemies.RemoteProxy.TryGetRemotePosition(out var clientPos, out _)) return false;
         var host = GameState.LocalPlayerEntity;
         if (host == null) return true;
-        bool hostDead = host._health != null && host._health.HasBeenKilled;
+        bool hostDead = (host._health != null && host._health.HasBeenKilled) || Life.CoopLife.LocalDowned;
         if (hostDead) return true;
         return (clientPos - pos).sqrMagnitude < (host.transform.position - pos).sqrMagnitude;
     }
@@ -182,14 +182,22 @@ public static class LootSync
     private static double _shareAppliedSum, _shareDiscardedSum;
 
     /// <summary>ExperienceComponent.AddExperience prefix (the single funnel of XP collection: orbs in both XpDropper
-    /// modes, ExperienceProjectile). Raw amount, before the collector's XP stat: the partner applies its own.</summary>
-    internal static void OnLocalAddExperience(ExperienceComponent comp, float amount)
+    /// modes, ExperienceProjectile). Raw amount, before the collector's XP stat: the partner applies its own.
+    /// Returns false (skip the original) for XP our own DOWNED player picks up (phase 4A): it still goes to the
+    /// partner, and is held for us like the partner's shared XP (applied on revive, no echo).</summary>
+    internal static bool OnLocalAddExperience(ExperienceComponent comp, float amount)
     {
-        if (ApplyingSharedXp || amount <= 0f || NetworkManager.RemotePeer == null) return;
+        if (ApplyingSharedXp || amount <= 0f || NetworkManager.RemotePeer == null) return true;
         var local = GameState.LocalPlayerEntity;
-        if (local == null || comp.Entity == null || comp.Entity.Pointer != local.Pointer) return;
+        if (local == null || comp.Entity == null || comp.Entity.Pointer != local.Pointer) return true;
         _shareOut += amount;
+        if (!Life.CoopLife.LocalDowned) return true;
+        _shareIn += amount;
+        _ownHeldWhileDown += amount;
+        return false;
     }
+
+    private static double _ownHeldWhileDown;
 
     private static void FlushShare(float unscaledDeltaTime)
     {
@@ -227,7 +235,7 @@ public static class LootSync
         if (xp == null) return; // keep it until our player is up
         // Never on a dead (or, later, downed) player: AddExperience can open the level-up popup, which pins
         // LevelUpTime at 0 and freezes both games through the synchronized pause. Held until it revives.
-        if (local!._health != null && local._health.HasBeenKilled) return;
+        if ((local!._health != null && local._health.HasBeenKilled) || Life.CoopLife.LocalDowned) return;
         float amount = _shareIn;
         _shareIn = 0f;
         try
@@ -423,7 +431,7 @@ public static class LootSync
     }
 
     private static string ShareStats() =>
-        $"xpShareSent={_shareSentSum:F0}/{_sharePackets}p xpShareRecv={_shareRecvSum:F0}/{_shareRecvPackets}p xpShareApplied={_shareAppliedSum:F0} xpShareHeld={_shareIn:F0} xpShareDiscarded={_shareDiscardedSum:F0}";
+        $"xpShareSent={_shareSentSum:F0}/{_sharePackets}p xpShareRecv={_shareRecvSum:F0}/{_shareRecvPackets}p xpShareApplied={_shareAppliedSum:F0} xpShareHeld={_shareIn:F0} xpShareDiscarded={_shareDiscardedSum:F0} ownXpHeldWhileDown={_ownHeldWhileDown:F0}";
 
     private static string LocalProgress()
     {
@@ -524,9 +532,9 @@ public static class LootSyncBossPortalPatch
 public static class LootSyncAddExperiencePatch
 {
     [HarmonyPrefix]
-    public static void Prefix(ExperienceComponent __instance, float experienceAmount)
+    public static bool Prefix(ExperienceComponent __instance, float experienceAmount)
     {
-        try { LootSync.OnLocalAddExperience(__instance, experienceAmount); }
-        catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] LootSyncAddExperiencePatch: {ex.Message}"); }
+        try { return LootSync.OnLocalAddExperience(__instance, experienceAmount); }
+        catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] LootSyncAddExperiencePatch: {ex.Message}"); return true; }
     }
 }

@@ -59,6 +59,7 @@ public class CoopBehaviour : MonoBehaviour
             Enemies.ClientPuppets.EnsureHooked();
             Enemies.RemoteProxy.EnsureHooked();
             Skills.RemoteCaster.EnsureHooked();
+            Life.CoopLife.EnsureHooked();
         }
     }
 
@@ -112,6 +113,7 @@ public class CoopBehaviour : MonoBehaviour
             Enemies.ClientIncomingDamage.Tick(Time.unscaledDeltaTime);
             Skills.CastSync.Tick(Time.unscaledDeltaTime);
             Loot.LootSync.Tick(Time.unscaledDeltaTime);
+            Life.CoopLife.Tick(Time.unscaledDeltaTime);
             RebuildGhostIfModelInactive();
             HandleDebugHotkeys();
             LogSyncStats();
@@ -159,9 +161,10 @@ public class CoopBehaviour : MonoBehaviour
 
     private void OnGUI()
     {
-        if (_onGuiFailed || !PauseSync.RemotePaused) return;
+        if (_onGuiFailed) return;
         try
         {
+            if (!PauseSync.RemotePaused) return;
             if (_pauseLabelStyle == null)
             {
                 _pauseLabelStyle = new GUIStyle(GUI.skin.label) { fontSize = 28, alignment = TextAnchor.MiddleCenter };

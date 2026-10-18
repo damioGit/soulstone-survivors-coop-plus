@@ -9,7 +9,7 @@ public enum PacketType : byte
     PlayerState = 2,   // host -> client: authoritative transform/anim state for the remote player entity
     WorldSnapshot = 3, // host -> client: batched enemy/drop state
     LevelUpChoice = 4, // client -> host: chosen skill on level up
-    Revive = 5,        // either way: a down player was revived
+    Revive = 5,        // host -> client: target u8 (1 = client) is revived (phase 4A, ReliableOrdered)
     PauseState = 6,    // either way: sender's LOCAL pause reason (none / pause / level-up)
     EnemySpawn = 7,    // host -> client: enemy netId + prefab key + initial state (ReliableOrdered)
     EnemyDespawn = 8,  // host -> client: enemy recycled without dying (ReliableOrdered)
@@ -22,6 +22,9 @@ public enum PacketType : byte
     SkillChannelEnd = 15, // either way: a channel started by SkillCast stopped (ReliableOrdered, same channel as SkillCast)
     LootDrop = 16,     // host -> client: one LootUtil.ProcessLoot call's arguments, replayed locally (ReliableOrdered, before EnemyDied)
     XpShare = 17,      // either way: raw XP the sender's player collected (team XP: the receiver adds it too) (ReliableOrdered)
+    CoopLife = 18,     // host -> client: hostDown u8 | clientDown u8 | revive progress f32, on change and 5 Hz while someone is down (ReliableOrdered)
+    RunEnd = 19,       // host -> client: the run ends (Defeat / Victory / Surrender / PortalHome) for both (ReliableOrdered)
+    RunEndRequest = 20, // client -> host: the client surrendered or took the Home portal (ReliableOrdered)
 }
 
 public static class PacketRouter
@@ -46,7 +49,16 @@ public static class PacketRouter
                 // Task #7: co-op level-up patches, not wired yet.
                 break;
             case PacketType.Revive:
-                // Task #7: revive mechanic, not wired yet.
+                Life.CoopLife.OnRevive(reader);
+                break;
+            case PacketType.CoopLife:
+                Life.CoopLife.OnLife(reader);
+                break;
+            case PacketType.RunEnd:
+                Life.CoopLife.OnRunEnd(reader);
+                break;
+            case PacketType.RunEndRequest:
+                Life.CoopLife.OnRunEndRequest(reader);
                 break;
             case PacketType.EnemySpawn:
                 Enemies.ClientPuppets.OnSpawn(reader);

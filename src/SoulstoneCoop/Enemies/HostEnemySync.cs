@@ -410,6 +410,7 @@ public static class EnemySyncStartMatchPatch
             ClientPuppets.OnMatchStarted(mapId);
             RemoteProxy.OnMatchStarted();
             Skills.RemoteCaster.OnMatchStarted();
+            Life.CoopLife.OnMatchStarted();
         }
         catch (Exception ex)
         {
