@@ -147,6 +147,7 @@ public static class RemoteProxy
         if (team != null) team.Team = Team.Players;
     }
     internal static bool IsProxy(Entity e) => _proxyPtr != IntPtr.Zero && e.Pointer == _proxyPtr;
+    internal static Entity? ProxyEntity => _proxy; // pendências: ProxyStatusForward caches its components
 
     public static void EnsureHooked()
     {

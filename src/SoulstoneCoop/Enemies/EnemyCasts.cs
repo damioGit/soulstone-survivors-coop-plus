@@ -208,6 +208,7 @@ public static class EnemyCasts
     {
         if (NetworkManager.Role == NetRole.None) return;
         GodCasts.Tick(unscaledDeltaTime); // own try/catch
+        ProxyStatusForward.Tick(unscaledDeltaTime); // own try/catch
         if (!GameManagerUtil.HasGameManager && (SkillsByPuppet.Count > 0 || LastSent.Count > 0))
         {
             SkillsByPuppet.Clear();
@@ -298,6 +299,7 @@ public static class ClientPuppetStatusBlockPatch
         try
         {
             if (!CoopRole.IsClientSide || applyingEntity == null || !ClientPuppets.IsPuppet(applyingEntity)) return true;
+            if (ProxyStatusForward.ApplyingNetworkStatus) return true; // the host's status on our proxy, forwarded
             EnemyCasts.CountBlockedStatus();
             return false;
         }

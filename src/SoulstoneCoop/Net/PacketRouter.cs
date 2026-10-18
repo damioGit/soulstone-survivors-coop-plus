@@ -33,6 +33,7 @@ public enum PacketType : byte
     RunStartRefused = 33, // client -> host: could not follow RunStart, with the reason (phase 6) (ReliableOrdered)
     // 70-79: small pending items (docs/pendencias-notas.md)
     GodCast = 70,      // host -> client: the God-Entity cast a meteor, replayed visual-only on the RemoteCaster (ReliableUnordered)
+    ProxyStatus = 71,  // host -> client: a status/stun applied to the client's proxy, replayed on the local player (ReliableUnordered)
 }
 
 public static class PacketRouter
@@ -82,6 +83,9 @@ public static class PacketRouter
                 break;
             case PacketType.GodCast:
                 Enemies.GodCasts.OnGodCast(reader);
+                break;
+            case PacketType.ProxyStatus:
+                Enemies.ProxyStatusForward.OnProxyStatus(reader);
                 break;
             case PacketType.EnemySnapshot:
                 Enemies.ClientPuppets.OnSnapshot(reader, reader.RawDataSize);
