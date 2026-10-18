@@ -20,3 +20,6 @@ tools/*.zip
 tools/ghidra_*_PUBLIC/
 tools/Il2CppDumper/
 tools/unityexplorer_extracted/
+
+# Packaged builds (tools/package.ps1)
+dist/
