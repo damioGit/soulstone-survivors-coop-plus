@@ -13,6 +13,7 @@ tools/ghidra_project/
 tools/api_*.txt
 tools/decompiled_*.txt
 tools/callers_*.txt
+tools/rva_fase*.txt
 
 # Third-party tools - download separately
 tools/*.zip
