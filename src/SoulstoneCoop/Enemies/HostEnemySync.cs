@@ -26,7 +26,26 @@ public static class HostEnemySync
         public sbyte Tier = -1;
         public bool IsElite;
         public bool DiedSent;
+        // Phase 4D
+        public bool IsBoss;
+        public bool ReplayCasts; // bosses, elites and specials: their casts go to the client (EnemyCasts)
+        public sbyte BossTier = -1, BossSkillsTier = -1, BossLootTier = -1;
+        public float BossMultMaxHealth;
+        public sbyte HostPendingBosses;
+        public bool HostHasPendingBosses;
     }
+
+    // Phase 4D: captured right before Entity.Setup by the patches at the end of this file.
+    internal static readonly Dictionary<IntPtr, (Entity Caster, Entity? Prefab)> SummonCtx = new();
+    internal static readonly Dictionary<IntPtr, (int Tier, int Skills, int Loot)> BossTierCtx = new();
+
+    internal static void ResetMatchContext()
+    {
+        SummonCtx.Clear();
+        BossTierCtx.Clear();
+    }
+
+    internal static bool TryGetTracked(IntPtr entityPtr, out Tracked t) => ByPtr.TryGetValue(entityPtr, out t!);
 
     private static readonly Dictionary<IntPtr, Tracked> ByPtr = new();
     private static readonly List<Tracked> All = new();
@@ -64,6 +83,26 @@ public static class HostEnemySync
         return true;
     }
 
+    private static readonly HashSet<string> LoggedUntracked = new();
+
+    /// <summary>Phase 4D: minerals / healing crystals (and maybe pillars) are not on the enemy team, so IsTrackable
+    /// skips them (first test: the F7 mineral never reached the client). Track a non-allied, non-player entity when its
+    /// prefab lives under Resources/Minerals or Resources/Pillars; log every other untracked name once.</summary>
+    private static bool IsNeutralSpecial(Entity e)
+    {
+        if (e == null || e.IsPlayer()) return false;
+        var team = e._team;
+        if (team == null || ((int)team.Team & 3) != 0) return false; // Players | Summons
+        if (e.EntityName == "EntityNameGod" || e == GameManagerUtil.GameData?.GodEntity) return false;
+        string key = EnemyPrefabKeys.HostKeyFor(e, null);
+        bool ok = key.StartsWith(EnemyPrefabKeys.ResPrefix + "Minerals/", StringComparison.OrdinalIgnoreCase)
+               || key.StartsWith(EnemyPrefabKeys.ResPrefix + "Pillars/", StringComparison.OrdinalIgnoreCase);
+        string name = EnemyPrefabKeys.StripClone(e.gameObject.name);
+        if (LoggedUntracked.Add(name))
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][enemies] Host: non-enemy-team entity '{name}' team={team.Team} key={key} -> {(ok ? "tracked" : "not tracked")}");
+        return ok;
+    }
+
     /// <param name="realSetup">Entity.Setup's body only runs when HasBeenSetUp was false (Entity.Recycle clears
     /// it). A real Setup on an instance we still track means it came back from the pool without our Recycle
     /// prefix seeing it: treat it as a despawn + new spawn, so the client never keeps the old prefab.</param>
@@ -75,7 +114,7 @@ public static class HostEnemySync
             Plugin.StaticLog.LogWarning($"[SoulstoneCoop][enemies] Host: #{existing.NetId} ({existing.Key}) set up again without Recycle - respawning.");
             Untrack(existing, sendDespawn: true);
         }
-        if (!IsTrackable(e)) return;
+        if (!IsTrackable(e) && !IsNeutralSpecial(e)) return;
 
         Entity? prefab = null;
         sbyte tier = -1;
@@ -88,21 +127,73 @@ public static class HostEnemySync
             CtxActive = false; // one Setup per SpawnEnemyEntity
         }
 
+        // Phase 4D: a summon (UnitUtil.SetupSummonStats ran just before this Setup) knows its prefab and owner.
+        ushort ownerNetId = 0;
+        if (SummonCtx.TryGetValue(e.Pointer, out var sum))
+        {
+            SummonCtx.Remove(e.Pointer);
+            if (prefab == null) prefab = sum.Prefab;
+            if (sum.Caster != null && ByPtr.TryGetValue(sum.Caster.Pointer, out var owner)) ownerNetId = owner.NetId;
+        }
+
         var t = new Tracked
         {
             NetId = AllocNetId(),
             Entity = e,
             Ptr = e.Pointer,
-            Key = EnemyPrefabKeys.HostKeyFor(e, prefab),
+            Key = EnemyPrefabKeys.HostKeyFor(e, prefab, ownerNetId),
             Tier = tier,
             IsElite = elite,
         };
+        FillPhase4D(t);
         ByPtr[t.Ptr] = t;
         ByNetId[t.NetId] = t;
         All.Add(t);
         if (All.Count > _maxTracked) _maxTracked = All.Count;
 
         if (NetworkManager.RemotePeer != null) SendSpawn(t);
+    }
+
+    private static readonly HashSet<string> LoggedSpecialKeys = new();
+
+    /// <summary>Boss block (what SpawnBossRoutine did before Setup) and which enemies get their casts replayed.</summary>
+    private static void FillPhase4D(Tracked t)
+    {
+        try
+        {
+            var e = t.Entity;
+            var hType = e._health != null ? e._health.GameStatsHealthType : GameStatsHealthType.None;
+            t.IsBoss = hType == GameStatsHealthType.Boss;
+            bool special = !t.Key.Contains('/') || t.Key.StartsWith(EnemyPrefabKeys.ResPrefix, StringComparison.Ordinal)
+                || t.Key.StartsWith(EnemyPrefabKeys.SumPrefix, StringComparison.Ordinal);
+            t.ReplayCasts = t.IsBoss || t.IsElite || hType == GameStatsHealthType.Elite || special;
+            if (t.IsBoss)
+            {
+                if (BossTierCtx.TryGetValue(e.Pointer, out var tiers))
+                {
+                    BossTierCtx.Remove(e.Pointer);
+                    t.BossTier = (sbyte)Mathf.Clamp(tiers.Tier, -1, 127);
+                    t.BossSkillsTier = (sbyte)Mathf.Clamp(tiers.Skills, -1, 127);
+                    t.BossLootTier = (sbyte)Mathf.Clamp(tiers.Loot, -1, 127);
+                }
+                var mult = e._stats != null ? e._stats.MultiplicativeStats : null;
+                t.BossMultMaxHealth = mult != null ? mult.MaxHealth : 0f;
+                var bsp = GameManagerUtil.GameData?.BossSpawnDetails;
+                if (bsp != null)
+                {
+                    t.HostPendingBosses = (sbyte)Mathf.Clamp(bsp._pendingBosses, -100, 100);
+                    t.HostHasPendingBosses = bsp._hasPendingBosses;
+                }
+            }
+            if ((t.IsBoss || special) && LoggedSpecialKeys.Add(t.Key))
+                Plugin.StaticLog.LogInfo(
+                    $"[SoulstoneCoop][enemies] Host: special '{t.Key}' ({e.gameObject.name}) boss={t.IsBoss} type={hType} " +
+                    $"tiers={t.BossTier}/{t.BossSkillsTier}/{t.BossLootTier} multHP={t.BossMultMaxHealth:F2} pending={t.HostPendingBosses}/{t.HostHasPendingBosses}");
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][enemies] Host: phase 4D info for #{t.NetId}: {ex.Message}");
+        }
     }
 
     internal static void OnEntityRecycle(Entity e)
@@ -155,6 +246,13 @@ public static class HostEnemySync
             Yaw = tr.eulerAngles.y,
             MaxHealth = max,
             HealthPercent = pct,
+            HasBoss = t.IsBoss,
+            BossTier = t.BossTier,
+            BossSkillsTier = t.BossSkillsTier,
+            BossLootTier = t.BossLootTier,
+            BossMultMaxHealth = t.BossMultMaxHealth,
+            HostPendingBosses = t.HostPendingBosses,
+            HostHasPendingBosses = t.HostHasPendingBosses,
         };
         var w = new NetDataWriter();
         msg.Write(w);
@@ -407,6 +505,8 @@ public static class EnemySyncStartMatchPatch
         {
             EnemyPrefabKeys.Reset();
             HostEnemySync.CtxActive = false;
+            HostEnemySync.ResetMatchContext();
+            ClientPuppets.ResetMatchContext();
             ClientPuppets.OnMatchStarted(mapId);
             RemoteProxy.OnMatchStarted();
             Skills.RemoteCaster.OnMatchStarted();
@@ -444,5 +544,79 @@ public static class HostSpawnEnemyEntityPatch
     {
         HostEnemySync.CtxActive = false;
         HostEnemySync.CtxPrefab = null;
+    }
+}
+
+/// <summary>Phase 4D, host: every summon (SummonEntityEffect / SummonEntityPositionalEffect /
+/// SummonEntityAndForgetPositionalEffect) goes through UnitUtil.SetupSummonStats(caster, summoned, originalPrefab, ...)
+/// right before its Entity.Setup. Remember who summoned what, so the key can be res: or sum:&lt;owner&gt;:&lt;name&gt;.
+/// Signature is trampoline-safe: only references and bools.</summary>
+[HarmonyPatch(typeof(UnitUtil), nameof(UnitUtil.SetupSummonStats))]
+public static class HostSummonCapturePatch
+{
+    [HarmonyPrefix]
+    public static void Prefix(Entity casterEntity, Entity summonedEntity, Entity originalSummonPrefab)
+    {
+        try
+        {
+            if (!CoopRole.IsHostSide || summonedEntity == null) return;
+            HostEnemySync.SummonCtx[summonedEntity.Pointer] = (casterEntity, originalSummonPrefab);
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogError($"[SoulstoneCoop] HostSummonCapturePatch: {ex}");
+        }
+    }
+}
+
+/// <summary>Phase 4D, host: the tiers SpawnBossRoutine (and the boss MapTasks) pass to the boss AI before Setup.</summary>
+[HarmonyPatch(typeof(PlaguebringerComponent), nameof(PlaguebringerComponent.SetupWithTier))]
+public static class HostPlaguebringerTierPatch
+{
+    [HarmonyPrefix]
+    public static void Prefix(Entity entity, int currentTier, int skillsTier, int lootTier)
+    {
+        try
+        {
+            if (CoopRole.IsHostSide && entity != null) HostEnemySync.BossTierCtx[entity.Pointer] = (currentTier, skillsTier, lootTier);
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogError($"[SoulstoneCoop] HostPlaguebringerTierPatch: {ex}");
+        }
+    }
+}
+
+[HarmonyPatch(typeof(MasteryBossComponent), nameof(MasteryBossComponent.SetupWithTier))]
+public static class HostMasteryBossTierPatch
+{
+    [HarmonyPrefix]
+    public static void Prefix(Entity entity, int currentTier, int skillsTier, int lootTier)
+    {
+        try
+        {
+            if (CoopRole.IsHostSide && entity != null) HostEnemySync.BossTierCtx[entity.Pointer] = (currentTier, skillsTier, lootTier);
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogError($"[SoulstoneCoop] HostMasteryBossTierPatch: {ex}");
+        }
+    }
+}
+
+[HarmonyPatch(typeof(BossAIBasedOnCurseLevelComponent), nameof(BossAIBasedOnCurseLevelComponent.SetupWithTier))]
+public static class HostCurseBossTierPatch
+{
+    [HarmonyPrefix]
+    public static void Prefix(Entity entity, int currentTier, int skillsTier, int lootTier)
+    {
+        try
+        {
+            if (CoopRole.IsHostSide && entity != null) HostEnemySync.BossTierCtx[entity.Pointer] = (currentTier, skillsTier, lootTier);
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogError($"[SoulstoneCoop] HostCurseBossTierPatch: {ex}");
+        }
     }
 }

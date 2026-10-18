@@ -42,7 +42,24 @@ public static class ClientPuppets
 
         public bool Dead;        // host said Died; playing the local death, local dissolve recycles it
         public bool Despawning;  // we called Recycle ourselves
+
+        // Phase 4D
+        public bool IsBoss;
+        public bool BossRegistered; // in GameManagerUtil.BossEntities (the boss health bar): must be deregistered by us
+        public IntPtr StatsPtr;
     }
+
+    private static readonly Dictionary<IntPtr, Puppet> ByStatsPtr = new();
+    private static readonly Dictionary<ushort, float> RetryUntil = new();
+    private const float SummonResolveWindow = 3f; // s: a sum: key may arrive before its owner is a puppet
+
+    internal static void ResetMatchContext() => RetryUntil.Clear();
+
+    /// <summary>Phase 4D effect blocks: is this the stats component of a puppet (pushback from its replayed casts)?</summary>
+    internal static bool IsPuppetStats(StatsComponent? s) => s != null && ByStatsPtr.ContainsKey(s.Pointer);
+
+    internal static Puppet? TryGetLive(ushort netId) =>
+        ByNetId.TryGetValue(netId, out var p) && !p.Dead && p.Entity != null ? p : null;
 
     private static readonly Dictionary<ushort, Puppet> ByNetId = new();
     private static readonly Dictionary<IntPtr, Puppet> ByPtr = new();
@@ -126,7 +143,9 @@ public static class ClientPuppets
         }
         ByNetId.Clear();
         ByPtr.Clear();
+        ByStatsPtr.Clear();
         Pending.Clear();
+        RetryUntil.Clear();
         DamageOut.Clear();
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][puppets] Despawned {n} puppets ({reason}).");
     }
@@ -229,6 +248,7 @@ public static class ClientPuppets
                 var e = p.Entity;
                 if (e == null || !e.gameObject.activeInHierarchy)
                 {
+                    ReleaseBoss(p);
                     RemoveTracking(p);
                     continue;
                 }
@@ -258,6 +278,10 @@ public static class ClientPuppets
                     $"snapshots={_snapshotsRecv / secs:F1}/s bytesPerSnapshot={(_snapshotsRecv > 0 ? _snapshotBytes / _snapshotsRecv : 0)} " +
                     $"avgErr={(_errCount > 0 ? _errSum / _errCount : 0):F2}u maxErr={_errMax:F2}u teleports={_teleports} " +
                     $"unknownNetIds={_unknownNetIds} clampedHits={_clampedHits} localDeaths={_localDeaths} killCredits={_killCredits} unresolved={unresolved}");
+                if (_bossesCreated + _bossesReleased + _bossErrors + _maxHealthMatched > 0 || RetryUntil.Count > 0)
+                    Plugin.StaticLog.LogInfo(
+                        $"[SoulstoneCoop][puppets] bosses created={_bossesCreated} released={_bossesReleased} errors={_bossErrors} " +
+                        $"bossBars={GameManagerUtil.BossEntities?.Count ?? -1} summonRetries={RetryUntil.Count} maxHealthMatched={_maxHealthMatched}");
                 Plugin.StaticLog.LogInfo(
                     $"[SoulstoneCoop][damage] Client: hits={_dmgHits} damage={_dmgSum:F0} packets={_dmgPackets} skippedEnemyAttacker={_dmgSkippedEnemyAttacker}");
             }
@@ -331,7 +355,8 @@ public static class ClientPuppets
         if (!_matchStarted || GameState.LocalPlayerEntity == null || !EnemyPrefabKeys.ListsReady()) return;
 
         int created = 0;
-        while (Pending.Count > 0 && created < MaxCreatesPerFrame)
+        int budget = Pending.Count; // retried summons go back to the end: visit each entry at most once per frame
+        while (Pending.Count > 0 && created < MaxCreatesPerFrame && budget-- > 0)
         {
             var msg = Pending[0];
             Pending.RemoveAt(0);
@@ -348,6 +373,14 @@ public static class ClientPuppets
             Plugin.StaticLog.LogError($"[SoulstoneCoop][puppets] Resolving '{msg.Key}': {ex.Message}");
             res = null;
         }
+        if (res == null && msg.Key.StartsWith(EnemyPrefabKeys.SumPrefix, StringComparison.Ordinal))
+        {
+            // The owner (boss) may still be in the queue, or its prefab not loaded yet: try again for a while.
+            float now = Time.unscaledTime;
+            if (!RetryUntil.TryGetValue(msg.NetId, out float until)) RetryUntil[msg.NetId] = until = now + SummonResolveWindow;
+            if (now < until) { Pending.Add(msg); return false; }
+        }
+        RetryUntil.Remove(msg.NetId);
         if (res == null)
         {
             Unresolved.TryGetValue(msg.Key, out int n);
@@ -376,6 +409,17 @@ public static class ClientPuppets
                 UnitUtil.ApplyGenericEnemyScaling(inst, msg.IsElite, true, true, true);
                 UnitUtil.ApplyGenericGameModeEnemyScaling(inst);
             }
+            else
+            {
+                // Phase 4D: the recipe of the special spawners (SpawnAffixSpecialEntities, SpawnVoidHunter,
+                // SpawnBossRoutine): stats straight from the prefab, multiplicative stats reset.
+                inst.CacheReferences();
+                var stats = inst._stats;
+                var prefabStats = res.Prefab._stats;
+                if (stats?.Stats != null && prefabStats?.Stats != null) stats.Stats.CopyStats(prefabStats.Stats);
+                if (stats?.MultiplicativeStats != null) stats.MultiplicativeStats.SetToOne();
+                if (msg.HasBoss) SetupBossBeforeSetup(inst, msg);
+            }
 
             // Before Setup: RegisterEntity reads these.
             inst.CanBeRecycledByDistance = false;
@@ -383,6 +427,7 @@ public static class ClientPuppets
 
             inst.Setup();
             DisableAI(inst);
+            if (!fromTierLists) MatchHostMaxHealth(inst, msg);
 
             var p = new Puppet
             {
@@ -396,18 +441,24 @@ public static class ClientPuppets
                 Yaw = msg.Yaw,
             };
             p.UsePathFollowing = p.Character != null && p.Character._hasPathFollowingBehaviour;
+            p.StatsPtr = inst._stats != null ? inst._stats.Pointer : IntPtr.Zero;
             ByNetId[p.NetId] = p;
             ByPtr[p.Ptr] = p;
+            if (p.StatsPtr != IntPtr.Zero) ByStatsPtr[p.StatsPtr] = p;
             ApplyHealth(p);
 
-            RequestHealthBar(inst, msg.IsElite);
+            var hType = inst._health != null ? inst._health.GameStatsHealthType : GameStatsHealthType.None;
+            p.IsBoss = hType == GameStatsHealthType.Boss;
+            if (p.IsBoss) SetupBossAfterSetup(p, msg);
+            else RequestHealthBar(inst, msg.IsElite || hType == GameStatsHealthType.Elite); // bosses only get the big bar, like SpawnBossRoutine
 
             if (LoggedKeys.Add(msg.Key))
             {
                 float localMax = inst._stats != null ? inst._stats.GetMaxHealth() : 0f;
                 Plugin.StaticLog.LogInfo(
-                    $"[SoulstoneCoop][puppets] First '{msg.Key}' -> {inst.gameObject.name} tier={msg.Tier} elite={msg.IsElite} " +
-                    $"prefabData={(res.PrefabData != null)} pathFollowing={p.UsePathFollowing} hostMaxHP={msg.MaxHealth:F0} localMaxHP={localMax:F0}");
+                    $"[SoulstoneCoop][puppets] First '{msg.Key}' -> {inst.gameObject.name} tier={msg.Tier} elite={msg.IsElite} type={hType} " +
+                    $"boss={p.IsBoss} bossBar={p.BossRegistered} prefabData={(res.PrefabData != null)} pathFollowing={p.UsePathFollowing} " +
+                    $"hostMaxHP={msg.MaxHealth:F0} localMaxHP={localMax:F0}");
             }
             return true;
         }
@@ -423,6 +474,123 @@ public static class ClientPuppets
         finally
         {
             ClientSpawnBlock.NetworkSpawnInProgress = false;
+        }
+    }
+
+    /// <summary>Specials skip the tier-list scaling and their spawners differ (the affix applies the generic enemy
+    /// scaling, void hunters don't...): instead of copying each recipe, scale the multiplicative max health so the
+    /// local max equals the host's. HP% already comes from the snapshot; this keeps the numbers equal too
+    /// (first test: VoidPresence 4.25M on the host, 1M here).</summary>
+    private static void MatchHostMaxHealth(Entity inst, EnemySpawnMsg msg)
+    {
+        try
+        {
+            var stats = inst._stats;
+            var mult = stats != null ? stats.MultiplicativeStats : null;
+            if (mult == null || msg.MaxHealth <= 0f) return;
+            float local = stats!.GetMaxHealth();
+            if (local <= 0f || Mathf.Abs(local - msg.MaxHealth) <= msg.MaxHealth * 0.01f) return;
+            mult.MaxHealth *= msg.MaxHealth / local;
+            _maxHealthMatched++;
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][puppets] Matching max health of #{msg.NetId}: {ex.Message}");
+        }
+    }
+
+    private static int _maxHealthMatched;
+
+    // ---------------- phase 4D: bosses ----------------
+
+    private static int _bossesCreated, _bossesReleased, _bossErrors;
+
+    /// <summary>What SpawnBossRoutine (0x813BC0) does between CopyStats and Entity.Setup: the AI's SetupWithTier
+    /// (stats, loot and the skill set of that tier) and the HealthMultiplier on MultiplicativeStats.MaxHealth.</summary>
+    private static void SetupBossBeforeSetup(Entity inst, EnemySpawnMsg msg)
+    {
+        try
+        {
+            if (msg.BossTier >= 0)
+            {
+                var ai = inst._basicAI;
+                var plague = ai != null ? ai.TryCast<PlaguebringerComponent>() : null;
+                var mastery = ai != null ? ai.TryCast<MasteryBossComponent>() : null;
+                if (plague != null) plague.SetupWithTier(inst, msg.BossTier, msg.BossSkillsTier, msg.BossLootTier);
+                else if (mastery != null) mastery.SetupWithTier(inst, msg.BossTier, msg.BossSkillsTier, msg.BossLootTier);
+            }
+            var mult = inst._stats != null ? inst._stats.MultiplicativeStats : null;
+            if (mult != null && msg.BossMultMaxHealth > 0f) mult.MaxHealth = msg.BossMultMaxHealth;
+        }
+        catch (Exception ex)
+        {
+            _bossErrors++;
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][puppets] Boss setup before Setup (#{msg.NetId} '{msg.Key}'): {ex.Message}");
+        }
+    }
+
+    /// <summary>The boss health bar: PlaguebringerComponent.Setup (inside Entity.Setup) already registered it; the
+    /// Mastery boss doesn't, so register if missing. The game deregisters it from the AI's DoOnUpdate, which a puppet
+    /// never runs: ReleaseBoss does it. The host's pending-boss counter is mirrored so the client's own
+    /// BossSpawnProcessor.OnUpdate creates the next progress objective and plays the boss music when they die.
+    /// Also the "Eliminate &lt;boss&gt;" objective, as SpawnBossRoutine adds it (not to MainObjective: the run end
+    /// stays with the host, phase 4A RunEnd).</summary>
+    private static void SetupBossAfterSetup(Puppet p, EnemySpawnMsg msg)
+    {
+        var inst = p.Entity;
+        try
+        {
+            var list = GameManagerUtil.BossEntities;
+            if (list != null && !list.Contains(inst)) GameManagerUtil.RegisterBossEntity(inst);
+            list = GameManagerUtil.BossEntities;
+            p.BossRegistered = list != null && list.Contains(inst);
+            _bossesCreated++;
+
+            var bsp = GameManagerUtil.GameData?.BossSpawnDetails;
+            if (bsp != null && msg.HasBoss)
+            {
+                bsp._pendingBosses = Math.Max(bsp._pendingBosses, (int)msg.HostPendingBosses);
+                if (msg.HostHasPendingBosses) bsp._hasPendingBosses = true;
+            }
+
+            var sgm = bsp?.SurvivorsGameManager;
+            var objectives = sgm != null ? sgm.EliminationObjectives : null;
+            if (objectives != null)
+            {
+                var obj = new EliminateSpecificEntitiesObjective("Eliminate" + inst.EntityName + "Objective", 1);
+                obj.EntitiesToEliminate?.Add(inst);
+                objectives.Add(obj);
+            }
+        }
+        catch (Exception ex)
+        {
+            _bossErrors++;
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][puppets] Boss setup after Setup (#{p.NetId} '{p.Key}'): {ex.Message}");
+        }
+    }
+
+    /// <summary>Take the boss bar down (GameManagerUtil.DeregisterBossEntity), once, on death, despawn or recycle.</summary>
+    private static void ReleaseBoss(Puppet p)
+    {
+        if (!p.IsBoss || !p.BossRegistered) return;
+        p.BossRegistered = false;
+        try
+        {
+            var e = p.Entity;
+            if (e == null) return;
+            var ai = e._basicAI;
+            var plague = ai != null ? ai.TryCast<PlaguebringerComponent>() : null;
+            if (plague != null) plague.HealthBarRegistered = false;
+            var mastery = ai != null ? ai.TryCast<MasteryBossComponent>() : null;
+            if (mastery != null) mastery.BossRegistered = false;
+            var list = GameManagerUtil.BossEntities;
+            if (list != null && list.Contains(e)) GameManagerUtil.DeregisterBossEntity(e);
+            _bossesReleased++;
+        }
+        catch (Exception ex)
+        {
+            _bossErrors++;
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][puppets] Releasing boss #{p.NetId}: {ex.Message}");
         }
     }
 
@@ -482,6 +650,7 @@ public static class ClientPuppets
         {
             ApplyingNetworkDeath = false;
         }
+        ReleaseBoss(p);
 
         if (!health.HasBeenKilled)
         {
@@ -519,6 +688,7 @@ public static class ClientPuppets
     {
         var e = p.Entity;
         if (e == null) return;
+        ReleaseBoss(p);
         try
         {
             p.Despawning = true;
@@ -536,6 +706,8 @@ public static class ClientPuppets
     {
         if (ByNetId.TryGetValue(p.NetId, out var cur) && cur == p) ByNetId.Remove(p.NetId);
         ByPtr.Remove(p.Ptr);
+        if (p.StatsPtr != IntPtr.Zero && ByStatsPtr.TryGetValue(p.StatsPtr, out var sp) && sp == p) ByStatsPtr.Remove(p.StatsPtr);
+        EnemyCasts.ForgetPuppet(p.Ptr);
     }
 
     /// <summary>Entity.Recycle prefix: the pooled instance may come back as a different puppet, so drop it now.</summary>
@@ -547,6 +719,7 @@ public static class ClientPuppets
             _localDeaths++;
             Plugin.StaticLog.LogWarning($"[SoulstoneCoop][puppets] #{p.NetId} ({p.Key}) recycled locally without the host saying so.");
         }
+        ReleaseBoss(p);
         RemoveTracking(p);
     }
 

@@ -145,6 +145,29 @@ public static class ClientSpawnSpecificBossPatch
     }
 }
 
+/// <summary>Phase 4D: the client never creates ethereal bosses itself (they come as puppets). Reachable from
+/// BossSpawnProcessor.UnregisterBossEntity, which the client runs when a boss puppet's bar is taken down.
+/// (string, Vector3): the Vector3 is 12 bytes, passed by pointer, safe for the trampoline.</summary>
+[HarmonyPatch(typeof(BossSpawnProcessor), nameof(BossSpawnProcessor.SpawnEtherealEntity))]
+public static class ClientSpawnEtherealPatch
+{
+    [HarmonyPrefix]
+    public static bool Prefix(string lastBossEntityName)
+    {
+        try
+        {
+            if (!CoopRole.IsClientSide) return true;
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][spawn] Client: blocked BossSpawnProcessor.SpawnEtherealEntity({lastBossEntityName}).");
+            return false;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.StaticLog.LogError($"[SoulstoneCoop] ClientSpawnEtherealPatch: {ex}");
+            return true;
+        }
+    }
+}
+
 /// <summary>Diagnostic: any enemy-team Entity set up on the client that the network didn't create is
 /// a spawn path we haven't blocked yet.</summary>
 [HarmonyPatch(typeof(Entity), nameof(Entity.Setup))]

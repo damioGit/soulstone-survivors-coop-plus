@@ -25,6 +25,7 @@ public enum PacketType : byte
     CoopLife = 18,     // host -> client: hostDown u8 | clientDown u8 | revive progress f32, on change and 5 Hz while someone is down (ReliableOrdered)
     RunEnd = 19,       // host -> client: the run ends (Defeat / Victory / Surrender / PortalHome) for both (ReliableOrdered)
     RunEndRequest = 20, // client -> host: the client surrendered or took the Home portal (ReliableOrdered)
+    EnemyCast = 21,    // host -> client: a boss/elite/special enemy cast, replayed visual-only on its puppet (phase 4D, ReliableUnordered)
 }
 
 public static class PacketRouter
@@ -68,6 +69,9 @@ public static class PacketRouter
                 break;
             case PacketType.EnemyDied:
                 Enemies.ClientPuppets.OnDied(reader);
+                break;
+            case PacketType.EnemyCast:
+                Enemies.EnemyCasts.OnEnemyCast(reader);
                 break;
             case PacketType.EnemySnapshot:
                 Enemies.ClientPuppets.OnSnapshot(reader, reader.RawDataSize);

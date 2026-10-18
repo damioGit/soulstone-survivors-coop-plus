@@ -49,6 +49,7 @@ public static class RemoteCaster
     private static readonly Dictionary<string, bool> Channeling = new();
 
     public static bool Active => _caster != null;
+    internal static Entity? CasterEntity => _caster; // phase 4D: stand-in target for enemy casts aimed at the host player
     public static int CopyCount => Copies.Count;
     public static int OpenChannels { get { int n = 0; foreach (var on in Channeling.Values) if (on) n++; return n; } }
 

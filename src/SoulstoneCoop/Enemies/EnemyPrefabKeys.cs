@@ -7,12 +7,23 @@ namespace SoulstoneCoop.Enemies;
 /// Stable cross-machine key for an enemy prefab. Both sides run EnemyPrefabsUtil.Setup for the same
 /// map, so the tier lists (EnemyPrefabByPowerWithData.PrefabAddress / group PrefabAddresses) match.
 /// Key formats:
-///   "Some/Prefab/Address" - a PrefabAddress from the tier lists (preferred; carries PrefabData).
-///   "@PrefabName"         - fallback for entities spawned outside the tier lists (bosses, summons...).
+///   "Some/Prefab/Address"    - a PrefabAddress from the tier lists (preferred; carries PrefabData).
+///   "res:Some/Resources/Path" - phase 4D: anything else that lives under Resources (bosses, ethereals, void
+///                               hunters, VoidPresence, loot goblin, minerals, pillars). Loaded with
+///                               ResourcesUtil.Load&lt;Entity&gt; on the client.
+///   "sum:&lt;ownerNetId&gt;:Name"  - phase 4D: a summon whose prefab is a direct reference in the owner's skill
+///                               (SummonEntity*Effect.PossiblePrefabs), not a Resources path.
+///   "@PrefabName"             - last resort (name lookup in the lists and in loaded assets).
+/// See docs/fase4d-investigacao.md, section 6.
 /// </summary>
 public static class EnemyPrefabKeys
 {
     public const string NamePrefix = "@";
+    public const string ResPrefix = "res:";
+    public const string SumPrefix = "sum:";
+
+    // Where the game keeps the non-list prefabs (docs/fase4d-investigacao.md, section 2).
+    private static readonly string[] ProbeFolders = { "Creeps/", "Bosses/", "Bosses/Ethereals/", "Minerals/", "Pillars/" };
 
     public sealed class Resolved
     {
@@ -23,10 +34,18 @@ public static class EnemyPrefabKeys
     private static readonly Dictionary<IntPtr, string> HostKeyByPrefabPtr = new();
     private static readonly Dictionary<string, Resolved> ClientCache = new();
 
+    // Host: prefab name -> Resources path, from the game's own data (strings only), plus probe results.
+    private static readonly Dictionary<string, string> ResIndex = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, string?> ResProbeCache = new(StringComparer.OrdinalIgnoreCase);
+    private static bool _resIndexBuilt;
+
     public static void Reset()
     {
         HostKeyByPrefabPtr.Clear();
         ClientCache.Clear();
+        ResIndex.Clear();
+        ResProbeCache.Clear();
+        _resIndexBuilt = false;
     }
 
     public static string StripClone(string name)
@@ -68,19 +87,106 @@ public static class EnemyPrefabKeys
 
     /// <summary>Host: key for an entity. <paramref name="prefab"/> is the prefab captured from
     /// EnemyPrefabsUtil.SpawnEnemyEntity when available.</summary>
-    public static string HostKeyFor(Entity instance, Entity? prefab)
+    public static string HostKeyFor(Entity instance, Entity? prefab, ushort summonOwnerNetId = 0)
     {
         if (prefab != null)
         {
-            if (HostKeyByPrefabPtr.TryGetValue(prefab.Pointer, out var cached)) return cached;
-            string? key = FindAddressByLoadedPrefab(prefab) ?? FindAddressByName(StripClone(prefab.name));
-            key ??= NamePrefix + StripClone(prefab.name);
+            if (HostKeyByPrefabPtr.TryGetValue(prefab.Pointer, out var cached))
+                return cached.StartsWith(NamePrefix, StringComparison.Ordinal) && summonOwnerNetId != 0
+                    ? SumKey(summonOwnerNetId, cached.Substring(NamePrefix.Length)) : cached;
+            string pname = StripClone(prefab.name);
+            string? key = FindAddressByLoadedPrefab(prefab) ?? FindAddressByName(pname) ?? FindResPath(pname, prefab);
+            key ??= NamePrefix + pname;
             HostKeyByPrefabPtr[prefab.Pointer] = key;
-            return key;
+            return key.StartsWith(NamePrefix, StringComparison.Ordinal) && summonOwnerNetId != 0 ? SumKey(summonOwnerNetId, pname) : key;
         }
 
         string name = StripClone(instance.gameObject.name);
-        return FindAddressByName(name) ?? NamePrefix + name;
+        string? k = FindAddressByName(name) ?? FindResPath(name, null);
+        if (k != null) return k;
+        return summonOwnerNetId != 0 ? SumKey(summonOwnerNetId, name) : NamePrefix + name;
+    }
+
+    private static string SumKey(ushort owner, string name) => $"{SumPrefix}{owner}:{name}";
+
+    /// <summary>"res:&lt;path&gt;" for a prefab that lives under Resources, or null. First the game's own data
+    /// (Global.BossPrefabs, Global.VoidHunterPrefabs, the active special-entities affix, the loot goblin), then
+    /// a probe of the folders those spawners use; the probe only accepts the asset if it is the same prefab
+    /// (when we know it) or at least has the same name.</summary>
+    private static string? FindResPath(string name, Entity? prefab)
+    {
+        if (string.IsNullOrEmpty(name)) return null;
+        if (!_resIndexBuilt) BuildResIndex();
+        if (ResIndex.TryGetValue(name, out var path)) return ResPrefix + path;
+        if (ResProbeCache.TryGetValue(name, out var probed)) return probed;
+
+        string? found = null;
+        foreach (var folder in ProbeFolders)
+        {
+            Entity? loaded = null;
+            try { loaded = ResourcesUtil.Load<Entity>(folder + name); } catch { /* not there */ }
+            if (loaded == null) continue;
+            if (prefab != null && loaded.Pointer != prefab.Pointer) continue;
+            if (!string.Equals(StripClone(loaded.name), name, StringComparison.OrdinalIgnoreCase)) continue;
+            found = ResPrefix + folder + name;
+            break;
+        }
+        ResProbeCache[name] = found;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][enemies] Host: key for '{name}' -> {found ?? "(not under Resources)"}");
+        return found;
+    }
+
+    private static void AddRes(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return;
+        string last = LastSegment(path!);
+        if (!ResIndex.ContainsKey(last)) ResIndex[last] = path!;
+    }
+
+    private static void BuildResIndex()
+    {
+        _resIndexBuilt = true;
+        try
+        {
+            var bosses = Global.BossPrefabs?.BossPrefabs;
+            if (bosses != null)
+                for (int i = 0; i < bosses.Length; i++)
+                {
+                    var names = bosses[i]?.Addresses;
+                    if (names == null) continue;
+                    for (int j = 0; j < names.Count; j++)
+                    {
+                        // Same concatenation as EnemyPrefabsUtil.FillBossPools (0x6E0C70).
+                        AddRes("Bosses/" + names[j]);
+                        AddRes("Bosses/Ethereals/" + names[j] + "-Ethereal");
+                    }
+                }
+            var hunters = Global.VoidHunterPrefabs?.VoidHunterPrefabs;
+            if (hunters != null)
+                for (int i = 0; i < hunters.Length; i++)
+                {
+                    var addrs = hunters[i]?.PrefabAddresses;
+                    if (addrs == null) continue;
+                    for (int j = 0; j < addrs.Length; j++) AddRes("Creeps/" + addrs[j]); // GetVoidHunterPrefabsExcludingId
+                }
+            var comps = GameManagerUtil.GameData?.GameManagerComponents;
+            if (comps != null)
+                for (int i = 0; i < comps.Count; i++)
+                {
+                    var c = comps[i];
+                    if (c == null) continue;
+                    var affix = c.TryCast<GameManagerAffixSpecialEntitiesComponent>()?._affix;
+                    var addrs = affix?.Addresses;
+                    if (addrs != null) for (int j = 0; j < addrs.Length; j++) AddRes(addrs[j]);
+                    var goblin = c.TryCast<GameManagerLootEnemySpawnerComponent>();
+                    if (goblin != null) AddRes(goblin._prefabAddress);
+                }
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][enemies] Host: Resources key index built ({ResIndex.Count} names).");
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][enemies] Host: building the Resources key index: {ex.Message}");
+        }
     }
 
     private static string? FindAddressByLoadedPrefab(Entity prefab)
@@ -133,12 +239,76 @@ public static class EnemyPrefabKeys
     {
         if (ClientCache.TryGetValue(key, out var cached) && cached.Prefab != null) return cached;
 
-        Resolved? r = key.StartsWith(NamePrefix, StringComparison.Ordinal)
-            ? ResolveByName(key.Substring(NamePrefix.Length))
-            : ResolveByAddress(key) ?? ResolveByName(LastSegment(key));
+        Resolved? r;
+        if (key.StartsWith(ResPrefix, StringComparison.Ordinal))
+        {
+            string path = key.Substring(ResPrefix.Length);
+            var prefab = ResourcesUtil.Load<Entity>(path);
+            r = prefab != null ? new Resolved { Prefab = prefab } : ResolveByName(LastSegment(path));
+        }
+        else if (key.StartsWith(SumPrefix, StringComparison.Ordinal))
+        {
+            r = ResolveSummon(key.Substring(SumPrefix.Length));
+            if (r == null) return null; // the owner may not be a puppet yet: don't cache the miss
+        }
+        else if (key.StartsWith(NamePrefix, StringComparison.Ordinal))
+            r = ResolveByName(key.Substring(NamePrefix.Length));
+        else
+            r = ResolveByAddress(key) ?? ResolveByName(LastSegment(key));
 
         if (r != null) ClientCache[key] = r;
         return r;
+    }
+
+    /// <summary>"&lt;ownerNetId&gt;:Name": the prefab is in the owner puppet's summon skills (its PossiblePrefabs are
+    /// loaded with it), else anything already loaded with that name.</summary>
+    private static Resolved? ResolveSummon(string rest)
+    {
+        int colon = rest.IndexOf(':');
+        if (colon <= 0) return null;
+        string name = rest.Substring(colon + 1);
+        if (ushort.TryParse(rest.Substring(0, colon), out ushort owner))
+        {
+            var ownerEntity = ClientPuppets.TryGetPuppetEntity(owner);
+            if (ownerEntity != null)
+            {
+                var p = FindInSummonEffects(ownerEntity, name);
+                if (p != null) return new Resolved { Prefab = p };
+            }
+        }
+        return ResolveByName(name);
+    }
+
+    private static Entity? FindInSummonEffects(Entity owner, string name)
+    {
+        foreach (var e in owner.GetComponentsInChildren<SummonEntityEffect>(true))
+        {
+            var p = Match(e.PossiblePrefabs, name);
+            if (p != null) return p;
+            var seq = e.TryCast<SummonSequenceEffect>();
+            if (seq?.AvailablePrefabs != null)
+                for (int i = 0; i < seq.AvailablePrefabs.Count; i++)
+                    if (seq.AvailablePrefabs[i] != null && StripClone(seq.AvailablePrefabs[i].name) == name) return seq.AvailablePrefabs[i];
+        }
+        foreach (var e in owner.GetComponentsInChildren<SummonEntityPositionalEffect>(true))
+        {
+            var p = Match(e.PossiblePrefabs, name);
+            if (p != null) return p;
+        }
+        foreach (var e in owner.GetComponentsInChildren<SummonEntityAndForgetPositionalEffect>(true))
+        {
+            var p = Match(e.PossiblePrefabs, name);
+            if (p != null) return p;
+        }
+        return null;
+    }
+
+    private static Entity? Match(Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppReferenceArray<Entity>? arr, string name)
+    {
+        if (arr == null) return null;
+        for (int i = 0; i < arr.Length; i++)
+            if (arr[i] != null && StripClone(arr[i].name) == name) return arr[i];
+        return null;
     }
 
     private static EnemyPrefabData? PrefabDataAt(int index)
