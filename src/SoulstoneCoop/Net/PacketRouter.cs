@@ -26,6 +26,11 @@ public enum PacketType : byte
     RunEnd = 19,       // host -> client: the run ends (Defeat / Victory / Surrender / PortalHome) for both (ReliableOrdered)
     RunEndRequest = 20, // client -> host: the client surrendered or took the Home portal (ReliableOrdered)
     EnemyCast = 21,    // host -> client: a boss/elite/special enemy cast, replayed visual-only on its puppet (phase 4D, ReliableUnordered)
+    // 22-29 reserved for phase 4D
+    Hello = 30,        // either way: name, character, weapon, skins, mod version (phase 6, on connect and when it changes) (ReliableOrdered)
+    LobbyState = 31,   // either way: sender is in the menu / loading a run / in a run (phase 6, on change) (ReliableOrdered)
+    RunStart = 32,     // host -> client: scene, mode, mastery tier/level, Survivors affixes: start the same run (phase 6) (ReliableOrdered)
+    RunStartRefused = 33, // client -> host: could not follow RunStart, with the reason (phase 6) (ReliableOrdered)
 }
 
 public static class PacketRouter
@@ -96,6 +101,18 @@ public static class PacketRouter
                 break;
             case PacketType.XpShare:
                 Loot.LootSync.OnXpShare(reader);
+                break;
+            case PacketType.Hello:
+                Lobby.CoopSession.OnHello(reader);
+                break;
+            case PacketType.LobbyState:
+                Lobby.CoopSession.OnLobbyState(reader);
+                break;
+            case PacketType.RunStart:
+                Lobby.RunSync.OnRunStart(reader);
+                break;
+            case PacketType.RunStartRefused:
+                Lobby.RunSync.OnRunStartRefused(reader);
                 break;
             case PacketType.PauseState:
                 PauseSync.OnPauseStateReceived(reader);

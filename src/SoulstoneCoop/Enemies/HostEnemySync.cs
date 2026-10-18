@@ -260,6 +260,14 @@ public static class HostEnemySync
         _spawnsSent++;
     }
 
+    /// <summary>Phase 6: the connection is made in the menu, so "the client entered my run" is now CoopSession's
+    /// LobbyState, not PeerConnected. Same full resend.</summary>
+    internal static void ResyncToPeer(string why)
+    {
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][enemies] Host: resync ({why}).");
+        OnPeerConnected();
+    }
+
     private static void OnPeerConnected()
     {
         try
@@ -511,6 +519,7 @@ public static class EnemySyncStartMatchPatch
             RemoteProxy.OnMatchStarted();
             Skills.RemoteCaster.OnMatchStarted();
             Life.CoopLife.OnMatchStarted();
+            Lobby.CoopSession.OnLocalMatchStarted();
         }
         catch (Exception ex)
         {

@@ -22,7 +22,18 @@ public static class PauseSync
 {
     public static PauseReason LocalReason { get; private set; }
     public static PauseReason RemoteReason { get; private set; }
-    public static bool RemotePaused => RemoteReason != PauseReason.None && NetworkManager.RemotePeer != null;
+    /// <summary>The partner paused (or is choosing an upgrade) inside a run next to ours. Only counts while both are in
+    /// a run: a state latched from the end screen must not freeze the next run or the menu (phase 6).</summary>
+    public static bool RemotePaused =>
+        RemoteReason != PauseReason.None && NetworkManager.RemotePeer != null
+        && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.RemoteInRun;
+
+    /// <summary>A new run is starting: forget the partner's old state and resend ours.</summary>
+    internal static void ResetForRun()
+    {
+        RemoteReason = PauseReason.None;
+        _sentOnce = false;
+    }
 
     private static bool _sentOnce;
     private static PauseReason _lastSent;
@@ -58,7 +69,8 @@ public static class PauseSync
             _sentOnce = true;
         }
 
-        if (RemotePaused)
+        // Phase 6: also hold our match while the partner's is still loading (RunSync, bounded).
+        if (RemotePaused || Lobby.RunSync.HoldForPartner)
             Time.timeScale = 0f;
     }
 

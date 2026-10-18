@@ -83,6 +83,17 @@ public static class PlayerSync
         SentCount++;
     }
 
+    /// <summary>Phase 6: a new ghost for a new run. Samples from the previous run (or from the menu) must not place it,
+    /// and RemoteProxy waits for ReceivedCount > 0, i.e. a position from this run.</summary>
+    public static void ResetForNewGhost()
+    {
+        Buffer.Clear();
+        ReceivedCount = 0;
+        _hasLastGhostPos = false;
+        _ghostAnimators = null;
+        _animGhostPtr = IntPtr.Zero;
+    }
+
     public static void OnPlayerStateReceived(NetPacketReader reader)
     {
         var state = PlayerTransformState.Deserialize(reader);

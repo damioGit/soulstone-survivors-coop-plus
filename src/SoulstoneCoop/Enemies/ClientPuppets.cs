@@ -132,6 +132,15 @@ public static class ClientPuppets
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][puppets] StartMatch({mapId}): creating puppets now ({Pending.Count} pending, {ByNetId.Count} live).");
     }
 
+    /// <summary>Phase 6, client: the host started a new run. Drop everything from the previous one (the scene and
+    /// its puppets are already gone), so stale spawns waiting in Pending never reach the new match.</summary>
+    internal static void ResetForNewRun()
+    {
+        DespawnAll("new run");
+        _matchStarted = false;
+        Unresolved.Clear();
+    }
+
     private static void DespawnAll(string reason)
     {
         int n = 0;

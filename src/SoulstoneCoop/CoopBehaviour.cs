@@ -20,10 +20,43 @@ public class CoopBehaviour : MonoBehaviour
 
     public CoopBehaviour(System.IntPtr ptr) : base(ptr) { }
 
+    private static bool _autoConnectDone;
+
+    /// <summary>Creates the persistent tick object (first menu, or first run in an old save flow) and, once per game
+    /// session, applies the launch args / AutoHost. Phase 6: this now runs in the main menu (MenuManager.Awake), so
+    /// the connection is up before any run and survives the following ones.</summary>
     public static void EnsureCreated()
     {
-        if (NetworkManager.Role == NetRole.None)
+        // Without this the unfocused instance stops updating and stops sending its position.
+        Application.runInBackground = true;
+
+        if (_instance == null)
         {
+            if (!ClassInjector.IsTypeRegisteredInIl2Cpp<CoopBehaviour>())
+                ClassInjector.RegisterTypeInIl2Cpp<CoopBehaviour>();
+
+            var go = new GameObject("SoulstoneCoop");
+            UnityEngine.Object.DontDestroyOnLoad(go);
+            _instance = go.AddComponent<CoopBehaviour>();
+            Plugin.StaticLog.LogInfo("[SoulstoneCoop] CoopBehaviour created and attached.");
+        }
+
+        if (!_networkEventsHooked)
+        {
+            _networkEventsHooked = true;
+            NetworkManager.PeerDisconnected += DestroyGhost;
+            Lobby.CoopSession.EnsureHooked();
+            PauseSync.EnsureHooked();
+            Enemies.HostEnemySync.EnsureHooked();
+            Enemies.ClientPuppets.EnsureHooked();
+            Enemies.RemoteProxy.EnsureHooked();
+            Skills.RemoteCaster.EnsureHooked();
+            Life.CoopLife.EnsureHooked();
+        }
+
+        if (!_autoConnectDone && NetworkManager.Role == NetRole.None)
+        {
+            _autoConnectDone = true;
             if (Plugin.ConnectAddressArg != null)
             {
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop] Auto-connect to {Plugin.ConnectAddressArg}.");
@@ -35,58 +68,41 @@ public class CoopBehaviour : MonoBehaviour
                 NetworkManager.StartHost();
             }
         }
-
-        // Without this the unfocused instance stops updating and stops sending its position.
-        Application.runInBackground = true;
-
-        if (_instance != null) return;
-
-        if (!ClassInjector.IsTypeRegisteredInIl2Cpp<CoopBehaviour>())
-            ClassInjector.RegisterTypeInIl2Cpp<CoopBehaviour>();
-
-        var go = new GameObject("SoulstoneCoop");
-        UnityEngine.Object.DontDestroyOnLoad(go);
-        _instance = go.AddComponent<CoopBehaviour>();
-        Plugin.StaticLog.LogInfo("[SoulstoneCoop] CoopBehaviour created and attached.");
-
-        if (!_networkEventsHooked)
-        {
-            _networkEventsHooked = true;
-            NetworkManager.PeerConnected += OnPeerConnected;
-            NetworkManager.PeerDisconnected += OnPeerDisconnected;
-            PauseSync.EnsureHooked();
-            Enemies.HostEnemySync.EnsureHooked();
-            Enemies.ClientPuppets.EnsureHooked();
-            Enemies.RemoteProxy.EnsureHooked();
-            Skills.RemoteCaster.EnsureHooked();
-            Life.CoopLife.EnsureHooked();
-        }
     }
 
-    private static void OnPeerConnected()
-    {
-        // Whichever side we are, a peer connecting means "someone else just showed up" -
-        // represent them with a ghost clone of our own local player, right next to us.
-        if (GameState.RemoteGhostObject != null) return;
+    private static int _ghostRebuilds;
 
+    /// <summary>Phase 6: the ghost lives exactly while both players are in a run together. It used to be created on
+    /// PeerConnected, which no longer happens inside a run (the connection is made in the menu).</summary>
+    private static void UpdateGhostLifecycle()
+    {
         var local = GameState.LocalPlayerEntity;
-        if (local == null)
+        bool want = Lobby.CoopSession.Connected && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.RemoteInRun && local != null;
+        var ghost = GameState.RemoteGhostObject;
+        if (want && ghost == null)
         {
-            Plugin.StaticLog.LogWarning("[SoulstoneCoop] Peer connected but no local player entity yet - ghost not spawned.");
-            return;
+            PlayerSync.ResetForNewGhost();
+            _ghostRebuilds = 0;
+            var t = local!.gameObject.transform;
+            var spawnPos = t.position + t.right * 2f;
+            GameState.RemoteGhostObject = VisualGhostFactory.Create(local, spawnPos, t.rotation, "SoulstoneCoop_RemoteGhost");
+            Plugin.StaticLog.LogInfo("[SoulstoneCoop] Both players in the run - remote ghost created.");
         }
-
-        var t = local.gameObject.transform;
-        var spawnPos = t.position + t.right * 2f;
-        GameState.RemoteGhostObject = VisualGhostFactory.Create(local, spawnPos, t.rotation, "SoulstoneCoop_RemoteGhost");
+        else if (!want && GameState.RemoteGhostObject is not null)
+        {
+            // Also covers a ghost destroyed with the previous scene (Unity-null but not C#-null).
+            DestroyGhost();
+        }
     }
 
-    private static void OnPeerDisconnected()
+    private static void DestroyGhost()
     {
-        if (GameState.RemoteGhostObject != null)
+        var ghost = GameState.RemoteGhostObject;
+        GameState.RemoteGhostObject = null;
+        if (ghost != null)
         {
-            UnityEngine.Object.Destroy(GameState.RemoteGhostObject);
-            GameState.RemoteGhostObject = null;
+            UnityEngine.Object.Destroy(ghost);
+            Plugin.StaticLog.LogInfo("[SoulstoneCoop] Remote ghost removed.");
         }
     }
 
@@ -104,6 +120,10 @@ public class CoopBehaviour : MonoBehaviour
             Application.runInBackground = true;
 
             NetworkManager.PollEvents();
+            try { Lobby.CoopSession.Tick(Time.unscaledDeltaTime); }
+            catch (System.Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] CoopSession.Tick: {ex}"); }
+            UpdateGhostLifecycle();
+            Ui.CoopUi.Tick();
             PlayerSync.Tick(Time.unscaledDeltaTime);
             ClientSpawnBlock.Tick(Time.unscaledDeltaTime);
             WorldTelemetry.Tick(Time.unscaledDeltaTime);
@@ -127,7 +147,6 @@ public class CoopBehaviour : MonoBehaviour
     }
 
     private float _ghostCheckTimer;
-    private int _ghostRebuilds;
 
     /// <summary>
     /// The client connects at GameplayUIManager.Setup, before its own StartMatch, while the game still has the
@@ -158,30 +177,7 @@ public class CoopBehaviour : MonoBehaviour
         UnityEngine.Object.Destroy(ghost);
         GameState.RemoteGhostObject = VisualGhostFactory.Create(local, pos, rot, "SoulstoneCoop_RemoteGhost");
     }
-    private GUIStyle? _pauseLabelStyle;
-    private bool _onGuiFailed;
-
-    private void OnGUI()
-    {
-        if (_onGuiFailed) return;
-        try
-        {
-            if (!PauseSync.RemotePaused) return;
-            if (_pauseLabelStyle == null)
-            {
-                _pauseLabelStyle = new GUIStyle(GUI.skin.label) { fontSize = 28, alignment = TextAnchor.MiddleCenter };
-                _pauseLabelStyle.normal.textColor = Color.white;
-            }
-            string text = PauseSync.RemoteReason == PauseReason.LevelUp ? "Parceiro escolhendo upgrade..." : "Parceiro pausou o jogo";
-            GUI.Label(new Rect(0f, Screen.height * 0.15f, Screen.width, 60f), text, _pauseLabelStyle);
-        }
-        catch (System.Exception ex)
-        {
-            // IMGUI may be stripped in this build; the notice is optional, so give up on it for good.
-            _onGuiFailed = true;
-            Plugin.StaticLog.LogWarning($"[SoulstoneCoop] OnGUI pause notice disabled: {ex.Message}");
-        }
-    }
+    // The pause notice (phase 1) moved to the co-op banner (Ui/CoopUi): IMGUI is partly stripped in this build.
 
     private float _statsTimer;
 
@@ -198,6 +194,7 @@ public class CoopBehaviour : MonoBehaviour
         string ghostPos = ghost != null ? ghost.transform.position.ToString() : "-";
         Plugin.StaticLog.LogInfo(
             $"[SoulstoneCoop][sync] role={NetworkManager.Role} peer={(NetworkManager.RemotePeer != null)} " +
+            $"place={Lobby.CoopSession.LocalPlace}/{Lobby.CoopSession.RemotePlace} " +
             $"sent={PlayerSync.SentCount} recv={PlayerSync.ReceivedCount} lastRecv={PlayerSync.LastReceivedPosition} " +
             $"local={localPos} ghost={ghostPos} ghostActive={(ghost != null && ghost.activeInHierarchy)} " +
             $"runInBg={Application.runInBackground} timeScale={Time.timeScale} focused={Application.isFocused}");
@@ -206,6 +203,7 @@ public class CoopBehaviour : MonoBehaviour
     private void HandleDebugHotkeys()
     {
         if (Keyboard.current == null) return;
+        if (Ui.CoopUi.IsTyping) return; // Delete/Insert are also editing keys in the IP field
 
         // Insert = host, Delete = connect to localhost. Debug-only until there's a real UI.
         bool insertNow = Keyboard.current.insertKey.isPressed;

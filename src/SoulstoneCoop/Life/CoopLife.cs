@@ -594,6 +594,7 @@ public static class CoopLife
     {
         var kind = (EndKind)r.GetByte();
         if (!CoopRole.IsClientSide) return;
+        if (!InMatch) { Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] RunEnd {kind} ignored: not in a match (phase 6: late packet after the run)."); return; }
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] RunEnd from host: {kind}.");
         try { ApplyEnd(kind); }
         catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop][life] ApplyEnd({kind}): {ex}"); }
@@ -603,6 +604,7 @@ public static class CoopLife
     {
         var kind = (EndKind)r.GetByte();
         if (!CoopRole.IsHostSide) return;
+        if (!InMatch) { Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] RunEndRequest {kind} ignored: not in a match."); return; }
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] RunEndRequest from client: {kind}.");
         try
         {
