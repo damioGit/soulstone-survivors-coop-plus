@@ -36,6 +36,8 @@ public static class CoopUi
     // overlay canvas
     private static GameObject? _root;
     private static TMP_FontAsset? _font;
+    /// <summary>The game's menu font once the UI found it (phase 5: the ghost's name tag uses it too).</summary>
+    internal static TMP_FontAsset? GameFont => _font;
     private static Sprite? _frameSprite, _titleSprite, _tabSprite, _tabSelectedSprite;
     private static GameObject? _fallbackButton;
     private static GameObject? _panel;

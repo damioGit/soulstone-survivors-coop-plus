@@ -1,4 +1,5 @@
 using Il2CppInterop.Runtime;
+using SoulstoneCoop.Lobby;
 using UnityEngine;
 
 namespace SoulstoneCoop;
@@ -15,19 +16,209 @@ namespace SoulstoneCoop;
 /// something fixable by stripping individual components, since it's the game's own core loop,
 /// not any one system we touched. A visual-only clone never has an Entity component at all, so it
 /// never registers as a player and never reaches that code path.
+///
+/// Phase 5: the clone's character model (the PlayerPrefabReferences child) is the LOCAL player's, so it's swapped
+/// for the partner's, following CharacterModelHolder.SpawnCharacter (RVA 0x5AD130) for the real player:
+/// CharacterSkinCollection.GetSkinById, CharacterSkinData.LoadCharacterSkin ("Characters/&lt;skin id&gt;"), Instantiate,
+/// scale by CharacterSkinSize, and the weapons from CharacterModelHolder.SpawnWeaponsAsyncRoutine, which only touches
+/// the model. PlayerPrefabReferences.Setup is never called, because it writes into the Entity. The model is instantiated under an
+/// inactive holder and stripped before it's ever activated, so none of its gameplay scripts run. If the partner's
+/// character can't be resolved the local model stays (the pre-phase-5 ghost) and the reason is logged.
+/// See docs/fase5-investigacao.md.
 /// </summary>
 public static class VisualGhostFactory
 {
+    /// <summary>The partner identity the current ghost was built for (KeyFor(CoopSession.Remote) at build time).</summary>
+    public static string BuiltForKey { get; private set; } = "";
+    /// <summary>The ghost shows the partner's own character (false: the local-clone fallback).</summary>
+    public static bool BuiltFromRemote { get; private set; }
+    /// <summary>The character model's own Animator on the current ghost (cast CrossFade, rebuild check).</summary>
+    public static Animator? ModelAnimator { get; private set; }
+
+    public static string KeyFor(PlayerInfo p) => p.Known ? $"{p.CharacterId}|{p.SkinId}|{p.WeaponId}" : "unknown";
+
+    private static GameObject? _buildHolder;
+
     public static GameObject Create(Entity source, Vector3 position, Quaternion rotation, string name)
     {
         var sourceGo = source.gameObject;
         var cloneGo = UnityEngine.Object.Instantiate(sourceGo, position, rotation);
         cloneGo.name = name;
 
+        var remote = CoopSession.Remote;
+        BuiltForKey = KeyFor(remote);
+        BuiltFromRemote = false;
+        ModelAnimator = null;
+
+        string what;
+        try
+        {
+            var model = TryBuildRemoteModel(remote, out what, out var modelAnimator);
+            if (model != null)
+            {
+                // Out with the local character (and any ascension model the game parked next to it)...
+                foreach (var p in cloneGo.GetComponentsInChildren<PlayerPrefabReferences>(true))
+                {
+                    if (p != null) UnityEngine.Object.DestroyImmediate(p.gameObject);
+                }
+                // ...in with the partner's, already stripped, where SpawnCharacter puts it (child of the entity).
+                model.transform.SetParent(cloneGo.transform, false);
+                model.SetActive(true);
+                BuiltFromRemote = true;
+                ModelAnimator = modelAnimator;
+            }
+        }
+        catch (Exception ex)
+        {
+            what = $"building the partner's model threw: {ex.Message}";
+        }
+        finally
+        {
+            if (_buildHolder != null) UnityEngine.Object.Destroy(_buildHolder);
+            _buildHolder = null;
+        }
+
         StripToVisualOnly(cloneGo);
 
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop] VisualGhostFactory: created '{name}' (visual-only, no Entity).");
+        if (!BuiltFromRemote)
+        {
+            var animators = cloneGo.GetComponentsInChildren<Animator>(true);
+            ModelAnimator = animators.Length > 0 ? animators[0] : null;
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop] VisualGhostFactory: '{name}' uses the LOCAL character as fallback ({what}).");
+        }
+        else
+        {
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop] VisualGhostFactory: '{name}' built as the partner: {what}.");
+        }
+
+        GhostNameTag.Attach(cloneGo, EstimateHeight(cloneGo));
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop] VisualGhostFactory: created '{name}' (visual-only, no Entity, key={BuiltForKey}).");
         return cloneGo;
+    }
+
+    /// <summary>The partner's model, stripped and still under the inactive build holder (null + reason if not possible).</summary>
+    private static GameObject? TryBuildRemoteModel(PlayerInfo r, out string what, out Animator? modelAnimator)
+    {
+        modelAnimator = null;
+        if (!r.Known) { what = "partner's Hello not received yet"; return null; }
+        if (r.CharacterId == 0) { what = "the Hello has no character (partner's profile not loaded?)"; return null; }
+        var ct = (CharactersType)r.CharacterId;
+
+        var skins = Global.CharacterSkinCollection;
+        if (skins == null) { what = "Global.CharacterSkinCollection is null"; return null; }
+
+        string skinNote = "";
+        CharacterSkinData? skin = null;
+        if (!string.IsNullOrEmpty(r.SkinId))
+        {
+            if (skins.TryGetCharacterSkinById(r.SkinId, out var s, out var skinCharacter) && s != null)
+            {
+                if (skinCharacter != ct) skinNote = $" (skin '{r.SkinId}' belongs to {skinCharacter}, using the default)";
+                else if (s.IsMod()) skinNote = $" (skin '{r.SkinId}' is a mod skin, not loadable here; using the default)";
+                else if (s.IsSprite2D) skinNote = $" (skin '{r.SkinId}' is 2D, needs CharacterSkin2DController; using the default)";
+                else skin = s;
+            }
+            else skinNote = $" (skin '{r.SkinId}' not in this game's collection, using the default)";
+        }
+        if (skin == null)
+        {
+            skin = skins.GetDefaultCharacterSkinByCharacterId(ct);
+            if (skin == null) { what = $"no default skin for {ct}"; return null; }
+            if (skin.IsMod() || skin.IsSprite2D) { what = $"default skin of {ct} is mod/2D"; return null; }
+        }
+
+        var prefab = skin.LoadCharacterSkin(false);
+        if (prefab == null) { what = $"Resources 'Characters/{skin.CharacterSkinID}' not found"; return null; }
+
+        WeaponDefinition? weapon = null;
+        var weapons = Global.WeaponCollection;
+        if (weapons != null)
+        {
+            if (!string.IsNullOrEmpty(r.WeaponId)
+                && weapons.TryGetWeaponDefinitionById(r.WeaponId, out var wd, out var weaponCharacter)
+                && wd != null && weaponCharacter == ct)
+                weapon = wd;
+            weapon ??= weapons.GetDefaultWeaponDefinitionByCharacterId(ct);
+        }
+
+        _buildHolder = new GameObject("SoulstoneCoop_GhostModelBuild");
+        _buildHolder.SetActive(false); // nothing instantiated under it gets Awake/OnEnable until we've stripped it
+        var refs = UnityEngine.Object.Instantiate(prefab, _buildHolder.transform);
+        if (refs == null) { what = "Instantiate of the character prefab returned null"; return null; }
+        var modelGo = refs.gameObject;
+        float size = skin.CharacterSkinSize > 0.01f ? skin.CharacterSkinSize : 1f;
+        modelGo.transform.localScale = Vector3.one * size;
+
+        // The fields SpawnCharacter fills before Setup. SpawnWeaponsAsyncRoutine reads WeaponDefinition (0xA8).
+        refs.SpawnedCharacterId = ct;
+        refs.SpawnedCharacterSkinId = skin.CharacterSkinID;
+        string weaponNote = weapon == null ? "no weapon definition" : SpawnWeapons(refs, weapon, skin.CharacterSkinID);
+
+        try
+        {
+            var list = refs.AnimatorComponent != null ? refs.AnimatorComponent.Animators : null;
+            if (list != null && list.Count > 0) modelAnimator = list[0];
+        }
+        catch { /* fall back below */ }
+        modelAnimator ??= modelGo.GetComponentInChildren<Animator>(true);
+
+        StripToVisualOnly(modelGo);
+
+        // PlayerAnimator (stripped) drives these on the real player. With nothing handling OnAnimatorMove, the clips'
+        // root motion would slide the model away from the ghost's root.
+        foreach (var a in modelGo.GetComponentsInChildren<Animator>(true))
+        {
+            try { if (a != null) a.applyRootMotion = false; } catch { }
+        }
+
+        what = $"{ct} skin '{skin.CharacterSkinID}'{skinNote}, weapon '{(weapon != null ? weapon.WeaponId : "-")}' ({weaponNote}), size {size:0.##}";
+        return modelGo;
+    }
+
+    /// <summary>The game's own weapon spawn for a character model (non-mod path): TryLoadWeaponReferences main/offhand,
+    /// Instantiate under the attachments, hand offsets from the default rig, BaseWeaponScaler. The non-mod path does
+    /// everything in its first step, so it's driven to the end right here. The weapon skin id is sent empty on purpose:
+    /// a mod weapon skin takes ModManager's async path, and its failure branch rewrites the LOCAL profile's weapon skin.</summary>
+    private static string SpawnWeapons(PlayerPrefabReferences refs, WeaponDefinition weapon, string characterSkinId)
+    {
+        try
+        {
+            refs.WeaponDefinition = weapon;
+            var skinData = new SkinData();
+            skinData.CharacterSkinId = characterSkinId;
+            skinData.WeaponSkinId = "";
+            var it = CharacterModelHolder.SpawnWeaponsAsyncRoutine(skinData, false, refs, false);
+            int steps = 0;
+            while (steps < 8 && it.MoveNext())
+            {
+                steps++;
+                if (it.Current != null) return "weapon routine yielded a sub-routine, stopped";
+            }
+            bool main = refs.MainWeaponInstance != null, off = refs.OffhandWeaponInstance != null;
+            return $"main={main} offhand={off}";
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop] VisualGhostFactory: weapon spawn failed, the ghost goes without weapons: {ex.Message}");
+            return "weapon spawn failed";
+        }
+    }
+
+    /// <summary>Top of the model's renderers above the ghost root, for the name tag.</summary>
+    private static float EstimateHeight(GameObject root)
+    {
+        float baseY = root.transform.position.y, top = float.MinValue;
+        try
+        {
+            foreach (var r in root.GetComponentsInChildren<Renderer>(false))
+            {
+                if (r == null || r.TryCast<ParticleSystemRenderer>() != null || r.TryCast<TrailRenderer>() != null || r.TryCast<LineRenderer>() != null) continue;
+                top = Mathf.Max(top, r.bounds.max.y);
+            }
+        }
+        catch { /* default below */ }
+        float h = top > float.MinValue ? top - baseY : 0f;
+        return h < 1.2f || h > 8f ? 2.6f : h + 0.4f;
     }
 
     private static void StripToVisualOnly(GameObject root)

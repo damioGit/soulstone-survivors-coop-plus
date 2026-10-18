@@ -158,6 +158,7 @@ public static class RemoteCaster
                 $"[SoulstoneCoop][casts] Created remote caster '{inst.gameObject.name}' at {pos}: team {_originalTeam}->{team.Team} " +
                 $"isPlayer={inst.IsPlayer()} skillCaster={(inst._skillCaster != null)} animator={inst.Animator.HasReference} " +
                 $"stats={(stats != null)} areaStat={(stats?.Stats != null ? stats.Stats.AreaModifier : -1f)}");
+            PreloadPartnerWeaponSkills();
         }
         catch (Exception ex)
         {
@@ -167,6 +168,37 @@ public static class RemoteCaster
             {
                 try { RestoreForPool(inst); inst.Recycle(); } catch { /* best effort */ }
             }
+        }
+    }
+
+    /// <summary>Phase 5: the partner's weapon skills (WeaponDefinition.MainSkillId/OffhandSkillId of the weapon in their
+    /// Hello) are loaded now, so the first cast doesn't hit the disk, and logged: a skill of another character that
+    /// isn't under Skill-Prefabs shows up here instead of as a silent noSkill later. Copies are still made on the first
+    /// cast, which carries the SkillType Skill.Setup needs.</summary>
+    private static void PreloadPartnerWeaponSkills()
+    {
+        try
+        {
+            var r = Lobby.CoopSession.Remote;
+            if (!r.Known || string.IsNullOrEmpty(r.WeaponId)) return;
+            var weapons = Global.WeaponCollection;
+            if (weapons == null || !weapons.TryGetWeaponDefinitionById(r.WeaponId, out var wd, out _) || wd == null)
+            {
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][casts] Partner's weapon '{r.WeaponId}' is not in this game's collection.");
+                return;
+            }
+            var parts = new List<string>();
+            foreach (var id in new[] { wd.MainSkillId, wd.OffhandSkillId, wd.ArtifactPowerSkillId })
+            {
+                if (string.IsNullOrEmpty(id)) continue;
+                var prefab = ResourcesUtil.Load<Skill>(SkillPrefabFolder + id + "-Skill");
+                parts.Add($"{id}={(prefab != null ? "ok" : "MISSING")}");
+            }
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][casts] Partner plays {r.CharacterName} with '{r.WeaponId}': {string.Join(", ", parts)}.");
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][casts] Preloading the partner's weapon skills: {ex.Message}");
         }
     }
 
@@ -180,6 +212,9 @@ public static class RemoteCaster
         Copies.Clear();
         FailedKeys.Clear();
         Channeling.Clear();
+        MissingStateLogged.Clear();
+        _ghostAnimators = null;
+        _animGhostPtr = IntPtr.Zero;
     }
 
     private static void RemoveCaster(string reason)
@@ -257,30 +292,31 @@ public static class RemoteCaster
         }
     }
 
-    /// <summary>The game's own "give this entity a skill" helper first: UnitUtil.SetupExtraSkillForEntity does
-    /// LoadSkillPrefab ("Skill-Prefabs/&lt;id&gt;-Skill") + Instantiate under the caster + Skill.Setup with the caster's
-    /// references, and has no Nullable in its signature. It needs the power-up in this match's MatchPowerUpData;
-    /// when it isn't there (another character's skill), fall back to doing those steps by hand.</summary>
+    /// <summary>The skill the partner cast, straight from its prefab: "Skill-Prefabs/&lt;key&gt;" is the same asset on both
+    /// machines whatever character either side plays, so a skill the local character doesn't have resolves the same way.
+    /// Phase 5 dropped the UnitUtil.SetupExtraSkillForEntity attempt that came first. It looks the id up in THIS match's
+    /// MatchPowerUpData (the local character's power-ups), so it returned null for any other character's skill. For a
+    /// shared skill it instantiated a copy and then threw on the Dummy (no PowerUpComponent at Entity+0x3C8), leaking
+    /// that copy: those were the Buckshot/PowerBlast NREs of the 4C test.</summary>
     private static Skill CreateSkillInstance(string key, SkillType skillType, out string how)
     {
-        string id = key.EndsWith("-Skill", StringComparison.Ordinal) ? key.Substring(0, key.Length - "-Skill".Length) : key;
-        Skill? inst = null;
-        try { inst = UnitUtil.SetupExtraSkillForEntity(_caster!, id, new SkillModifiers(), 0f); }
-        catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][casts] SetupExtraSkillForEntity('{id}'): {ex.Message}"); }
-        if (inst != null && inst.IsSetUp) { how = "SetupExtraSkillForEntity"; return inst; }
-
-        if (inst == null)
-        {
-            var prefab = ResourcesUtil.Load<Skill>(SkillPrefabFolder + key);
-            if (prefab == null) throw new Exception($"no power-up '{id}' and no prefab at Resources '{SkillPrefabFolder}{key}'");
-            inst = UnityEngine.Object.Instantiate(prefab, _caster!.transform);
-            if (inst == null) throw new Exception("Instantiate returned null");
-        }
+        var prefab = ResourcesUtil.Load<Skill>(SkillPrefabFolder + key);
+        if (prefab == null) throw new Exception($"no skill prefab at Resources '{SkillPrefabFolder}{key}'");
+        var inst = UnityEngine.Object.Instantiate(prefab, _caster!.transform);
+        if (inst == null) throw new Exception("Instantiate returned null");
         var phys = _caster!.Physical;
         Collider? col = phys.HasReference && phys.Reference != null ? phys.Reference.Collider : null;
-        inst.Setup(_caster, skillType, _caster.Team, _caster.Stats, _caster.PassiveSkills, _caster.Animator, col!,
-            new Il2CppSystem.Nullable<float>(), new Il2CppSystem.Nullable<bool>());
-        how = "manual Setup";
+        try
+        {
+            inst.Setup(_caster, skillType, _caster.Team, _caster.Stats, _caster.PassiveSkills, _caster.Animator, col!,
+                new Il2CppSystem.Nullable<float>(), new Il2CppSystem.Nullable<bool>());
+        }
+        catch
+        {
+            UnityEngine.Object.Destroy(inst.gameObject); // a half set-up copy must not stay under the caster
+            throw;
+        }
+        how = "prefab + Skill.Setup";
         return inst;
     }
 
@@ -417,11 +453,15 @@ public static class RemoteCaster
         c.AppliedScale = m.Scale;
     }
 
-    private static GameObject? _animGhost;
-    private static Animator? _ghostAnimator;
+    private static IntPtr _animGhostPtr;
+    private static Animator[]? _ghostAnimators;
+    private static readonly HashSet<string> MissingStateLogged = new();
+    internal static int GhostAnimPlayed, GhostAnimMissing;
 
-    /// <summary>Bonus: the cast animation on the ghost (SkillAnimationTrait.Activate does a CrossFade on the
-    /// caster's AnimatorComponent; the ghost only has a plain Animator).</summary>
+    /// <summary>Bonus: the cast animation on the ghost. SkillAnimationTrait.Activate does a CrossFade on the caster's
+    /// AnimatorComponent, i.e. on every Animator of its list (the character's and a weapon's that syncs with it); the
+    /// ghost only has plain Animators, so the same CrossFade goes to each one whose controller has the state. Phase 5:
+    /// the ghost is the partner's character, so the states are there for any character (logged once if not).</summary>
     private static void PlayGhostAnimation(Skill s)
     {
         try
@@ -432,17 +472,27 @@ public static class RemoteCaster
             if (trait == null || string.IsNullOrEmpty(trait.AnimationName)) return;
             var ghost = GameState.RemoteGhostObject;
             if (ghost == null) return;
-            if (_animGhost == null || _animGhost.Pointer != ghost.Pointer || _ghostAnimator == null)
+            if (_ghostAnimators == null || ghost.Pointer != _animGhostPtr)
             {
-                _animGhost = ghost;
-                var animators = ghost.GetComponentsInChildren<Animator>(true);
-                _ghostAnimator = animators.Length > 0 ? animators[0] : null;
+                _animGhostPtr = ghost.Pointer;
+                _ghostAnimators = ghost.GetComponentsInChildren<Animator>(true);
             }
-            var anim = _ghostAnimator;
-            if (anim == null || !anim.isActiveAndEnabled) return;
-            int layer = Mathf.Clamp(trait.AnimationLayer, 0, Mathf.Max(0, anim.layerCount - 1));
-            if (!anim.HasState(layer, Animator.StringToHash(trait.AnimationName))) return; // the ghost may be another character
-            anim.CrossFade(trait.AnimationName, trait.Fade, layer);
+            int hash = Animator.StringToHash(trait.AnimationName);
+            bool played = false;
+            foreach (var anim in _ghostAnimators)
+            {
+                if (anim == null || !anim.isActiveAndEnabled) continue;
+                int layer = Mathf.Clamp(trait.AnimationLayer, 0, Mathf.Max(0, anim.layerCount - 1));
+                if (!anim.HasState(layer, hash)) continue;
+                anim.CrossFade(trait.AnimationName, trait.Fade, layer);
+                played = true;
+            }
+            if (played) { GhostAnimPlayed++; return; }
+            GhostAnimMissing++;
+            if (MissingStateLogged.Add(trait.AnimationName))
+                Plugin.StaticLog.LogInfo(
+                    $"[SoulstoneCoop][casts] Ghost has no animator state '{trait.AnimationName}' (layer {trait.AnimationLayer}) for '{s.gameObject.name}' " +
+                    $"(ghost built from partner={VisualGhostFactory.BuiltFromRemote}, {_ghostAnimators.Length} animators).");
         }
         catch (Exception ex)
         {

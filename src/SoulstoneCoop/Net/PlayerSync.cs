@@ -56,6 +56,8 @@ public static class PlayerSync
     private static readonly int OnGround = Animator.StringToHash("OnGround");
     private static IntPtr _animGhostPtr;
     private static Animator[]? _ghostAnimators;
+    private static int[]? _ghostParams; // per animator: which of the three parameters its controller has
+    private const int ParamsUnchecked = -1, HasForward = 1, HasSideways = 2, HasOnGround = 4, HasAll = 7;
     private static Vector3 _lastGhostPos;
     private static bool _hasLastGhostPos;
     private static bool _animFailed;
@@ -164,6 +166,8 @@ public static class PlayerSync
             // The ghost is rebuilt now and then (CoopBehaviour.RebuildGhostIfModelInactive): re-cache.
             _animGhostPtr = ghost.Pointer;
             _ghostAnimators = ghost.GetComponentsInChildren<Animator>(true);
+            _ghostParams = new int[_ghostAnimators.Length];
+            for (int i = 0; i < _ghostParams.Length; i++) _ghostParams[i] = ParamsUnchecked;
             _hasLastGhostPos = false;
         }
         var t = ghost.transform;
@@ -183,18 +187,58 @@ public static class PlayerSync
         float animDt = Time.deltaTime > 0f ? Time.deltaTime : dt;
         try
         {
-            foreach (var a in _ghostAnimators!)
+            for (int i = 0; i < _ghostAnimators!.Length; i++)
             {
+                var a = _ghostAnimators[i];
                 if (a == null || !a.isActiveAndEnabled) continue;
-                a.SetFloat(ForwardMovement, fwd, 0.1f, animDt);
-                a.SetFloat(SidewaysMovement, side, 0.1f, animDt);
-                a.SetBool(OnGround, true);
+                // Phase 5: the ghost can be any character (and its weapons have Animators of their own): only write the
+                // parameters this controller has, instead of a "parameter does not exist" warning every frame.
+                var has = _ghostParams![i];
+                if (has == ParamsUnchecked) has = _ghostParams[i] = ReadParams(a);
+                if ((has & HasForward) != 0) a.SetFloat(ForwardMovement, fwd, 0.1f, animDt);
+                if ((has & HasSideways) != 0) a.SetFloat(SidewaysMovement, side, 0.1f, animDt);
+                if ((has & HasOnGround) != 0) a.SetBool(OnGround, true);
             }
         }
         catch (System.Exception ex)
         {
             _animFailed = true;
             Plugin.StaticLog.LogWarning($"[SoulstoneCoop][sync] Ghost animation disabled: {ex.Message}");
+        }
+    }
+
+    /// <summary>Which locomotion parameters the animator's controller declares (checked once per animator, logged).
+    /// If the list can't be read (not initialized yet, or the getter fails) all three are written, as before phase 5.</summary>
+    private static int ReadParams(Animator a)
+    {
+        int has = 0;
+        string name = "?";
+        try
+        {
+            name = a.gameObject.name;
+            if (!a.isInitialized || a.runtimeAnimatorController == null) return ParamsUnchecked;
+            var ps = a.parameters;
+            if (ps == null || ps.Length == 0)
+            {
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][sync] Ghost animator '{name}': controller lists no parameters - writing all three.");
+                return HasAll;
+            }
+            foreach (var p in ps)
+            {
+                if (p == null) continue;
+                if (p.nameHash == ForwardMovement && p.type == AnimatorControllerParameterType.Float) has |= HasForward;
+                else if (p.nameHash == SidewaysMovement && p.type == AnimatorControllerParameterType.Float) has |= HasSideways;
+                else if (p.nameHash == OnGround && p.type == AnimatorControllerParameterType.Bool) has |= HasOnGround;
+            }
+            Plugin.StaticLog.LogInfo(
+                $"[SoulstoneCoop][sync] Ghost animator '{name}' ({a.runtimeAnimatorController.name}): ForwardMovement={(has & HasForward) != 0} " +
+                $"SidewaysMovement={(has & HasSideways) != 0} OnGround={(has & HasOnGround) != 0} ({ps.Length} params).");
+            return has;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][sync] Reading the parameters of ghost animator '{name}': {ex.Message} - writing all three.");
+            return HasAll;
         }
     }
 }
