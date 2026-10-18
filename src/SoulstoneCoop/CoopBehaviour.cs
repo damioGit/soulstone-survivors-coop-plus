@@ -54,6 +54,7 @@ public class CoopBehaviour : MonoBehaviour
             _networkEventsHooked = true;
             NetworkManager.PeerConnected += OnPeerConnected;
             NetworkManager.PeerDisconnected += OnPeerDisconnected;
+            PauseSync.EnsureHooked();
         }
     }
 
@@ -99,12 +100,38 @@ public class CoopBehaviour : MonoBehaviour
 
             NetworkManager.PollEvents();
             PlayerSync.Tick(Time.unscaledDeltaTime);
+            ClientSpawnBlock.Tick(Time.unscaledDeltaTime);
+            WorldTelemetry.Tick(Time.unscaledDeltaTime);
             HandleDebugHotkeys();
             LogSyncStats();
         }
         catch (System.Exception ex)
         {
             Plugin.StaticLog.LogError($"[SoulstoneCoop] Exception in Update(): {ex}");
+        }
+    }
+
+    private GUIStyle? _pauseLabelStyle;
+    private bool _onGuiFailed;
+
+    private void OnGUI()
+    {
+        if (_onGuiFailed || !PauseSync.RemotePaused) return;
+        try
+        {
+            if (_pauseLabelStyle == null)
+            {
+                _pauseLabelStyle = new GUIStyle(GUI.skin.label) { fontSize = 28, alignment = TextAnchor.MiddleCenter };
+                _pauseLabelStyle.normal.textColor = Color.white;
+            }
+            string text = PauseSync.RemoteReason == PauseReason.LevelUp ? "Parceiro escolhendo upgrade..." : "Parceiro pausou o jogo";
+            GUI.Label(new Rect(0f, Screen.height * 0.15f, Screen.width, 60f), text, _pauseLabelStyle);
+        }
+        catch (System.Exception ex)
+        {
+            // IMGUI may be stripped in this build; the notice is optional, so give up on it for good.
+            _onGuiFailed = true;
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop] OnGUI pause notice disabled: {ex.Message}");
         }
     }
 

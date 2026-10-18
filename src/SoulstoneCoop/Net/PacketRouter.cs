@@ -10,6 +10,7 @@ public enum PacketType : byte
     WorldSnapshot = 3, // host -> client: batched enemy/drop state
     LevelUpChoice = 4, // client -> host: chosen skill on level up
     Revive = 5,        // either way: a down player was revived
+    PauseState = 6,    // either way: sender's LOCAL pause reason (none / pause / level-up)
 }
 
 public static class PacketRouter
@@ -35,6 +36,9 @@ public static class PacketRouter
                 break;
             case PacketType.Revive:
                 // Task #7: revive mechanic, not wired yet.
+                break;
+            case PacketType.PauseState:
+                PauseSync.OnPauseStateReceived(reader);
                 break;
             default:
                 Plugin.StaticLog.LogWarning($"[SoulstoneCoop] Unknown packet type {type}");
