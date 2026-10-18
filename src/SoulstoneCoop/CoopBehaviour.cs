@@ -55,6 +55,8 @@ public class CoopBehaviour : MonoBehaviour
             NetworkManager.PeerConnected += OnPeerConnected;
             NetworkManager.PeerDisconnected += OnPeerDisconnected;
             PauseSync.EnsureHooked();
+            Enemies.HostEnemySync.EnsureHooked();
+            Enemies.ClientPuppets.EnsureHooked();
         }
     }
 
@@ -102,6 +104,9 @@ public class CoopBehaviour : MonoBehaviour
             PlayerSync.Tick(Time.unscaledDeltaTime);
             ClientSpawnBlock.Tick(Time.unscaledDeltaTime);
             WorldTelemetry.Tick(Time.unscaledDeltaTime);
+            Enemies.HostEnemySync.Tick(Time.unscaledDeltaTime);
+            Enemies.ClientPuppets.Tick(Time.unscaledDeltaTime);
+            RebuildGhostIfModelInactive();
             HandleDebugHotkeys();
             LogSyncStats();
         }
@@ -111,6 +116,38 @@ public class CoopBehaviour : MonoBehaviour
         }
     }
 
+    private float _ghostCheckTimer;
+    private int _ghostRebuilds;
+
+    /// <summary>
+    /// The client connects at GameplayUIManager.Setup, before its own StartMatch, while the game still has the
+    /// player's model child (e.g. "HoundMasterRegular(Clone)", the one with the Animator) inactive - it's turned
+    /// on later. The ghost cloned at that moment keeps the model off for good: only the blue ground ring shows
+    /// clone again.
+    /// </summary>
+    private void RebuildGhostIfModelInactive()
+    {
+        _ghostCheckTimer += Time.unscaledDeltaTime;
+        if (_ghostCheckTimer < 1f) return;
+        _ghostCheckTimer = 0f;
+
+        var ghost = GameState.RemoteGhostObject;
+        var local = GameState.LocalPlayerEntity;
+        if (ghost == null || local == null || _ghostRebuilds >= 3) return;
+
+        var ghostAnimators = ghost.GetComponentsInChildren<Animator>(true);
+        var localAnimators = local.gameObject.GetComponentsInChildren<Animator>(true);
+        if (ghostAnimators.Length == 0 || localAnimators.Length == 0) return;
+        if (ghostAnimators[0].gameObject.activeInHierarchy || !localAnimators[0].gameObject.activeInHierarchy) return;
+
+        _ghostRebuilds++;
+        var t = ghost.transform;
+        Vector3 pos = t.position;
+        Quaternion rot = t.rotation;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop] Ghost model '{ghostAnimators[0].gameObject.name}' was cloned inactive - rebuilding the ghost (#{_ghostRebuilds}).");
+        UnityEngine.Object.Destroy(ghost);
+        GameState.RemoteGhostObject = VisualGhostFactory.Create(local, pos, rot, "SoulstoneCoop_RemoteGhost");
+    }
     private GUIStyle? _pauseLabelStyle;
     private bool _onGuiFailed;
 

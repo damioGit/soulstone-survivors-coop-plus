@@ -157,6 +157,8 @@ public static class ClientEntitySetupLeakPatch
         {
             if (!CoopRole.IsClientSide || ClientSpawnBlock.NetworkSpawnInProgress) return;
             if (__instance == null || __instance.IsPlayer() || !ClientSpawnBlock.IsEnemyTeam(__instance)) return;
+            // Pooled instances can get a second Setup (Entity.Start) after the network created them.
+            if (Enemies.ClientPuppets.IsPuppet(__instance)) return;
             if (!GameManagerUtil.HasGameManager) return;
             // The map's God-Entity (Creeps team, at the origin) casts environment skills; it's part of
             // the scene, not a spawned enemy.

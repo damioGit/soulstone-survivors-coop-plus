@@ -11,6 +11,10 @@ public enum PacketType : byte
     LevelUpChoice = 4, // client -> host: chosen skill on level up
     Revive = 5,        // either way: a down player was revived
     PauseState = 6,    // either way: sender's LOCAL pause reason (none / pause / level-up)
+    EnemySpawn = 7,    // host -> client: enemy netId + prefab key + initial state (ReliableOrdered)
+    EnemyDespawn = 8,  // host -> client: enemy recycled without dying (ReliableOrdered)
+    EnemyDied = 9,     // host -> client: enemy killed, play the death (ReliableOrdered)
+    EnemySnapshot = 10, // host -> client: positions/yaw/HP of live enemies, sliced (Unreliable)
 }
 
 public static class PacketRouter
@@ -36,6 +40,18 @@ public static class PacketRouter
                 break;
             case PacketType.Revive:
                 // Task #7: revive mechanic, not wired yet.
+                break;
+            case PacketType.EnemySpawn:
+                Enemies.ClientPuppets.OnSpawn(reader);
+                break;
+            case PacketType.EnemyDespawn:
+                Enemies.ClientPuppets.OnDespawn(reader);
+                break;
+            case PacketType.EnemyDied:
+                Enemies.ClientPuppets.OnDied(reader);
+                break;
+            case PacketType.EnemySnapshot:
+                Enemies.ClientPuppets.OnSnapshot(reader, reader.RawDataSize);
                 break;
             case PacketType.PauseState:
                 PauseSync.OnPauseStateReceived(reader);

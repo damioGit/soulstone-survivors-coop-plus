@@ -28,6 +28,21 @@ public class Plugin : BasePlugin
         var harmony = new Harmony(PluginGuid);
         harmony.PatchAll(typeof(Plugin).Assembly);
 
+        // Patched by hand: its by-value struct parameter (EntityByEnemyPrefabData) is the kind of signature
+        // Il2CppInterop trampolines can choke on, and a failure here must not take the other patches down.
+        // Without it, enemy keys fall back to the prefab name and tier/elite are unknown.
+        try
+        {
+            harmony.Patch(
+                AccessTools.Method(typeof(EnemyPrefabsUtil), nameof(EnemyPrefabsUtil.SpawnEnemyEntity)),
+                prefix: new HarmonyMethod(typeof(Enemies.HostSpawnEnemyEntityPatch), nameof(Enemies.HostSpawnEnemyEntityPatch.Prefix)),
+                postfix: new HarmonyMethod(typeof(Enemies.HostSpawnEnemyEntityPatch), nameof(Enemies.HostSpawnEnemyEntityPatch.Postfix)));
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogError($"Could not patch EnemyPrefabsUtil.SpawnEnemyEntity (enemy keys fall back to prefab names): {ex}");
+        }
+
         // Force full stack traces for exceptions so we can actually tell which system is
         // throwing (ghost-clone side effects otherwise show up as a bare "NullReferenceException"
         // with no trace in the log at all).
