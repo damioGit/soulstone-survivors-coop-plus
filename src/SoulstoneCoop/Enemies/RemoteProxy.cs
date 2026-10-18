@@ -53,13 +53,18 @@ public static class RemoteProxy
     {
         public bool Dead;
         public float Health, MaxHealth, Armor, DamageReduction, BlockChance;
+        // pendências: status resistance (StatsComponent.AbnormalStatusDampening / Factor). The game has no dodge stat
+        // (only the dash dodge, a timing thing) and no elemental resistances: these are the remaining defensive numbers.
+        public bool HasDampening;
+        public float StatusDampening, StatusDampeningFactor;
     }
 
     private static RemotePlayerState? _remoteState;
     private static bool _appliedDead;
 
     /// <summary>Client -> host, every 0.5 s: alive/dead plus the defensive numbers the host's damage math reads
-    /// from the TARGET (the proxy). Layout: type u8 | dead u8 | hp, maxHp, armor, damageReduction, block f32.</summary>
+    /// from the TARGET (the proxy). Layout: type u8 | dead u8 | hp, maxHp, armor, damageReduction, block f32
+    /// | [statusDampening, statusDampeningFactor f32] (optional tail, pendências).</summary>
     public static void OnClientState(NetDataReader r)
     {
         var s = new RemotePlayerState
@@ -71,6 +76,12 @@ public static class RemoteProxy
             DamageReduction = r.GetFloat(),
             BlockChance = r.GetFloat(),
         };
+        if (r.AvailableBytes >= 8)
+        {
+            s.HasDampening = true;
+            s.StatusDampening = r.GetFloat();
+            s.StatusDampeningFactor = r.GetFloat();
+        }
         if (!CoopRole.IsHostSide) return;
         bool changed = !_remoteState.HasValue || _remoteState.Value.Dead != s.Dead;
         _remoteState = s;
@@ -90,6 +101,12 @@ public static class RemoteProxy
             st.Stats.ArmorModifier = s.Armor;
             st.Stats.DamageReduction = s.DamageReduction;
             st.Stats.BlockChance = s.BlockChance;
+            if (s.HasDampening && !float.IsNaN(s.StatusDampening) && !float.IsNaN(s.StatusDampeningFactor))
+            {
+                // The proxy's statuses scale the DoT damage the host forwards (DamageToClient): resist like the client.
+                st.AbnormalStatusDampening = s.StatusDampening;
+                st.AbnormalStatusDampeningFactor = s.StatusDampeningFactor;
+            }
             // Percent-of-max-HP skills read the target's max health (the Dummy has 100M -> 1.67M hits).
             float cur = st.GetMaxHealth();
             if (cur > 0f && Mathf.Abs(cur - s.MaxHealth) > 0.5f) st.Stats.MaxHealth *= s.MaxHealth / cur;
@@ -526,6 +543,8 @@ public static class ClientIncomingDamage
         w.Put(st.Stats.ArmorModifier);
         w.Put(st.Stats.DamageReduction);
         w.Put(st.Stats.BlockChance);
+        w.Put(st.AbnormalStatusDampening);
+        w.Put(st.AbnormalStatusDampeningFactor);
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
     }
 
