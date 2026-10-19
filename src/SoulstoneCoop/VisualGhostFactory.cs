@@ -28,25 +28,24 @@ namespace SoulstoneCoop;
 /// </summary>
 public static class VisualGhostFactory
 {
-    /// <summary>The partner identity the current ghost was built for (KeyFor(CoopSession.Remote) at build time).</summary>
-    public static string BuiltForKey { get; private set; } = "";
-    /// <summary>The ghost shows the partner's own character (false: the local-clone fallback).</summary>
-    public static bool BuiltFromRemote { get; private set; }
-    /// <summary>The character model's own Animator on the current ghost (cast CrossFade, rebuild check).</summary>
-    public static Animator? ModelAnimator { get; private set; }
+    // The ghost being built (Create is synchronous): written into the RemotePlayer at the end.
+    private static bool BuiltFromRemote;
+    private static Animator? ModelAnimator;
 
     public static string KeyFor(PlayerInfo p) => p.Known ? $"{p.CharacterId}|{p.SkinId}|{p.WeaponId}" : "unknown";
 
     private static GameObject? _buildHolder;
 
-    public static GameObject Create(Entity source, Vector3 position, Quaternion rotation, string name)
+    /// <param name="who">The player the ghost stands for (phase 9: one ghost per other player). Null = the PageDown
+    /// debug ghost: the local clone, no overhead.</param>
+    public static GameObject Create(Entity source, RemotePlayer? who, Vector3 position, Quaternion rotation, string name)
     {
         var sourceGo = source.gameObject;
         var cloneGo = UnityEngine.Object.Instantiate(sourceGo, position, rotation);
         cloneGo.name = name;
 
-        var remote = CoopSession.Remote;
-        BuiltForKey = KeyFor(remote);
+        var remote = who?.Info ?? new PlayerInfo();
+        string builtForKey = KeyFor(remote);
         BuiltFromRemote = false;
         ModelAnimator = null;
 
@@ -89,12 +88,19 @@ public static class VisualGhostFactory
         }
         else
         {
-            Plugin.StaticLog.LogInfo($"[SoulstoneCoop] VisualGhostFactory: '{name}' built as the partner: {what}.");
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop] VisualGhostFactory: '{name}' built as slot {(who != null ? who.Slot.ToString() : "-")}: {what}.");
         }
 
-        TintBodyEffects(cloneGo);
-        GhostOverhead.Attach(cloneGo, EstimateHeight(cloneGo));
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop] VisualGhostFactory: created '{name}' (visual-only, no Entity, key={BuiltForKey}).");
+        TintBodyEffects(cloneGo, who != null ? GhostOverhead.ColorFor(who.Slot) : GhostOverhead.AllyColor);
+        if (who != null)
+        {
+            who.GhostKey = builtForKey;
+            who.GhostFromRemote = BuiltFromRemote;
+            who.ModelAnimator = ModelAnimator;
+            GhostOverhead.Attach(who.Slot, cloneGo, EstimateHeight(cloneGo));
+        }
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop] VisualGhostFactory: created '{name}' (visual-only, no Entity, slot={(who != null ? who.Slot.ToString() : "-")}, key={builtForKey}).");
+        ModelAnimator = null;
         return cloneGo;
     }
 
@@ -261,7 +267,7 @@ public static class VisualGhostFactory
     /// <summary>The body effects the clone kept from the local entity (the ground ring and friends: everything that
     /// isn't the character model) get the ally color, so the ghost doesn't wear the same ring as the local player.
     /// Material instances, so the local player's shared materials are untouched. Each tinted renderer is logged.</summary>
-    private static void TintBodyEffects(GameObject root)
+    private static void TintBodyEffects(GameObject root, Color tint)
     {
         try
         {
@@ -279,7 +285,7 @@ public static class VisualGhostFactory
                     {
                         if (!m.HasProperty(prop)) continue;
                         var c = m.GetColor(prop);
-                        var a = GhostOverhead.AllyColor;
+                        var a = tint;
                         m.SetColor(prop, new Color(a.r, a.g, a.b, c.a));
                         any = true;
                     }

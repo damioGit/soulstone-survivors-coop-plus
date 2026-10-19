@@ -6,10 +6,11 @@ using UnityEngine;
 namespace SoulstoneCoop.Life;
 
 /// <summary>
-/// Phase 5: each side's own health for the partner's overhead bar (GhostOverhead). The host never sent its health
-/// (ClientState goes client -> host only, and the PlayerState/snapshot layouts are left alone for phase 8), so both
-/// sides send this small packet with the same layout: type u8 | hp f32 | maxHp f32 | flags u8 (1 = down, 2 = dead).
-/// It goes out at most 5 times a second, only when something changed, plus once a second as a refresher.
+/// Phase 5: each player's own health for the overhead bar the others draw above its ghost (GhostOverhead). The host
+/// never sent its health (ClientState goes client -> host only, and the PlayerState/snapshot layouts are left alone
+/// for phase 8), so every side sends this small packet with the same layout: type u8 | hp f32 | maxHp f32 | flags u8
+/// (1 = down, 2 = dead). It goes out at most 5 times a second, only when something changed, plus once a second as a
+/// refresher. Phase 9: one entry per other player (PacketRouter.From); the host relays each client's to the others.
 /// </summary>
 public static class PartnerHealth
 {
@@ -17,12 +18,20 @@ public static class PartnerHealth
     private const float RefreshInterval = 1f;
     private const byte FlagDown = 1, FlagDead = 2;
 
-    public static bool Known { get; private set; }
-    public static float Health { get; private set; }
-    public static float MaxHealth { get; private set; }
-    public static bool Down { get; private set; }
-    public static bool Dead { get; private set; }
-    public static float Fraction => MaxHealth > 0f ? Mathf.Clamp01(Health / MaxHealth) : 0f;
+    /// <summary>What we know of one other player's health.</summary>
+    public sealed class View
+    {
+        public bool Known;
+        public float Health, MaxHealth;
+        public bool Down, Dead;
+        public float Fraction => MaxHealth > 0f ? Mathf.Clamp01(Health / MaxHealth) : 0f;
+    }
+
+    private static readonly View Unknown = new();
+    private static readonly Dictionary<byte, View> Views = new();
+
+    /// <summary>That player's last health (an empty, unknown view if nothing came yet).</summary>
+    public static View Of(byte slot) => Views.TryGetValue(slot, out var v) ? v : Unknown;
 
     private static float _sinceSend;
     private static float _lastHp = -1f, _lastMax = -1f;
@@ -34,16 +43,19 @@ public static class PartnerHealth
     {
         if (_hooked) return;
         _hooked = true;
-        NetworkManager.PeerConnected += _ => Reset();
-        NetworkManager.PeerDisconnected += _ => Reset();
+        NetworkManager.PeerConnected += _ => ResendOwn(); // a newcomer gets ours right away
+        Players.Left += slot => Views.Remove(slot);
     }
 
-    /// <summary>New partner or new run: nothing known until their first packet, and ours goes out right away.</summary>
-    public static void Reset()
+    /// <summary>A new ghost of that player for a new run: unknown until its next packet (its 1 s refresh), and ours goes out now.</summary>
+    public static void Reset(byte slot)
     {
-        Known = false;
-        Health = MaxHealth = 0f;
-        Down = Dead = false;
+        Views.Remove(slot);
+        ResendOwn();
+    }
+
+    private static void ResendOwn()
+    {
         _lastHp = _lastMax = -1f;
         _lastFlags = 255;
         _sinceSend = RefreshInterval;
@@ -88,14 +100,17 @@ public static class PartnerHealth
     {
         float hp = r.GetFloat(), max = r.GetFloat();
         byte flags = r.GetByte();
-        bool first = !Known;
-        Known = true;
-        Health = hp;
-        MaxHealth = max;
-        Down = (flags & FlagDown) != 0;
-        Dead = (flags & FlagDead) != 0;
+        byte slot = PacketRouter.From;
+        if (!Players.IsPresent(slot)) return;
+        if (!Views.TryGetValue(slot, out var v)) Views[slot] = v = new View();
+        bool first = !v.Known;
+        v.Known = true;
+        v.Health = hp;
+        v.MaxHealth = max;
+        v.Down = (flags & FlagDown) != 0;
+        v.Dead = (flags & FlagDead) != 0;
         _recv++;
-        if (first) Plugin.StaticLog.LogInfo($"[SoulstoneCoop][hpbar] First partner health: {hp:F0}/{max:F0} down={Down} dead={Dead}.");
+        if (first) Plugin.StaticLog.LogInfo($"[SoulstoneCoop][hpbar] First health of slot {slot}: {hp:F0}/{max:F0} down={v.Down} dead={v.Dead}.");
     }
 
     /// <summary>For the 5 s telemetry line of GhostOverhead.</summary>

@@ -61,7 +61,8 @@ public static class SummonSync
     {
         if (_hooked) return;
         _hooked = true;
-        NetworkManager.PeerDisconnected += _ => { ClearOwn(); ClearRemote("peer disconnected"); };
+        NetworkManager.PeerDisconnected += _ => { if (!NetworkManager.HasPeer) { ClearOwn(); ClearRemote("everyone disconnected"); } };
+        Players.Left += ClearRemoteSlot;
     }
 
     /// <summary>PortalSync.OnLocalSceneGone: both lists belong to the scene that just went.</summary>
@@ -209,7 +210,7 @@ public static class SummonSync
             PollPanther(local);
         }
 
-        bool partnerHere = CoopSession.RemoteInRun;
+        bool partnerHere = CoopSession.AnyRemoteInRun;
         _refreshTimer -= dt;
         bool refresh = _refreshTimer <= 0f;
         if (refresh) _refreshTimer = RefreshInterval;
@@ -378,6 +379,7 @@ public static class SummonSync
 
     private sealed class Mirror
     {
+        public byte Slot; // phase 9: whose summon it is (PacketRouter.From)
         public ushort Id;
         public Kind Kind;
         public AnimKind Anim;
@@ -392,7 +394,10 @@ public static class SummonSync
         public float MaxSpeedSeen = 4f;
     }
 
-    private static readonly Dictionary<ushort, Mirror> Remote = new();
+    /// <summary>Phase 9: keyed by (slot << 16 | id): each player numbers its own summons.</summary>
+    private static readonly Dictionary<int, Mirror> Remote = new();
+    private static int KeyOf(byte slot, ushort id) => (slot << 16) | id;
+    private static readonly List<int> GoneMirrors = new();
     private static readonly Dictionary<string, GameObject?> TemplateCache = new();
     private static readonly HashSet<string> FailedNames = new();
 
@@ -423,10 +428,12 @@ public static class SummonSync
         var pos = new Vector3(r.GetFloat(), r.GetFloat(), r.GetFloat());
         float yaw = r.GetFloat();
         _recvSpawns++;
-        if (!Remote.TryGetValue(id, out var m))
+        byte from = PacketRouter.From;
+        if (!Players.IsPresent(from)) return;
+        if (!Remote.TryGetValue(KeyOf(from, id), out var m))
         {
-            m = new Mirror { Id = id };
-            Remote[id] = m;
+            m = new Mirror { Slot = from, Id = id };
+            Remote[KeyOf(from, id)] = m;
         }
         m.Kind = kind; m.Anim = anim; m.SkillKey = skillKey; m.PrefabName = name; m.ResPath = res;
         m.Scale = scale > 0.01f ? scale : 1f;
@@ -437,9 +444,9 @@ public static class SummonSync
     {
         ushort id = r.GetUShort();
         _recvDespawns++;
-        if (!Remote.TryGetValue(id, out var m)) return;
+        if (!Remote.TryGetValue(KeyOf(PacketRouter.From, id), out var m)) return;
         DestroyVisual(m);
-        Remote.Remove(id);
+        Remote.Remove(KeyOf(PacketRouter.From, id));
     }
 
     public static void OnStates(NetDataReader r)
@@ -451,7 +458,7 @@ public static class SummonSync
             ushort id = r.GetUShort();
             var pos = new Vector3(r.GetFloat(), r.GetFloat(), r.GetFloat());
             float yaw = r.GetFloat();
-            if (Remote.TryGetValue(id, out var m)) AddSample(m, pos, yaw);
+            if (Remote.TryGetValue(KeyOf(PacketRouter.From, id), out var m)) AddSample(m, pos, yaw);
         }
     }
 
@@ -465,19 +472,31 @@ public static class SummonSync
 
     private static void TickRemote(float dt)
     {
-        if (!CoopSession.LocalInRun || !CoopSession.RemoteInRun)
+        if (!CoopSession.LocalInRun)
         {
-            ClearRemote("a side is out of the run");
+            ClearRemote("we are out of the run");
             return;
         }
-        bool partnerDown = Life.CoopLife.RemoteDowned;
-        foreach (var m in Remote.Values)
+        GoneMirrors.Clear();
+        foreach (var kv in Remote)
         {
-            if (partnerDown) { if (m.Go != null) DestroyVisual(m); continue; } // back with the next spawn refresh
+            var m = kv.Value;
+            // That player left the run: its summons go with it (they come back with its next spawn refresh).
+            if (!CoopSession.InRun(m.Slot)) { DestroyVisual(m); GoneMirrors.Add(kv.Key); continue; }
+            if (Life.CoopLife.IsRemoteDown(m.Slot)) { if (m.Go != null) DestroyVisual(m); continue; } // back with the next spawn refresh
             if (m.Go == null && !m.Failed) Build(m);
             if (m.Go == null) continue;
             Place(m, dt);
         }
+        foreach (var k in GoneMirrors) Remote.Remove(k);
+    }
+
+    /// <summary>Phase 9: that player left the session.</summary>
+    private static void ClearRemoteSlot(byte slot)
+    {
+        GoneMirrors.Clear();
+        foreach (var kv in Remote) if (kv.Value.Slot == slot) { DestroyVisual(kv.Value); GoneMirrors.Add(kv.Key); }
+        foreach (var k in GoneMirrors) Remote.Remove(k);
     }
 
     private static void Place(Mirror m, float dt)

@@ -243,6 +243,7 @@ public static class NetworkManager
         if (Role != NetRole.Client) return;
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][players] Welcome: I'm slot {mine} of up to {max} (others: {string.Join(",", others)}).");
         Players.SetMySlot(mine);
+        Players.SetSessionMax(max);
         foreach (var s in others) Players.MarkJoined(s);
     }
 
@@ -351,6 +352,19 @@ public static class NetworkManager
         SendBytesExcept(origin, _relayBuffer, total, method);
         RelayedPackets++;
         RelayedBytes += total;
+    }
+
+    /// <summary>Host: send one client a packet "from" another player (the envelope a relay would have), e.g. the
+    /// Hello of everyone already here when it joins.</summary>
+    internal static void SendRelayedTo(byte to, byte origin, NetDataWriter inner, DeliveryMethod method)
+    {
+        var t = Transport;
+        if (Role != NetRole.Host || t == null || inner.Length <= 0) return;
+        var w = new NetDataWriter();
+        w.Put((byte)PacketType.Relayed);
+        w.Put(origin);
+        w.Put(inner.Data, 0, inner.Length);
+        SendOne(t, to, w.Data, w.Length, method);
     }
 
     internal static int RelayedPackets, RelayedBytes;

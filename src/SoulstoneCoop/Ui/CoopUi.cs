@@ -247,28 +247,43 @@ public static class CoopUi
         }
         else if (status == NetStatus.Hosting)
             text = steam
-                ? "Lobby aberto na Steam. Convide um amigo (ou mande o código)."
-                : $"Hospedando na porta {NetworkManager.Port}. Aguardando parceiro...";
+                ? $"Lobby aberto na Steam (1/{NetworkManager.MaxPlayers}). Convide amigos (ou mande o código)."
+                : $"Hospedando na porta {NetworkManager.Port} (1/{NetworkManager.MaxPlayers}). Aguardando jogadores...";
         else if (status == NetStatus.Connecting)
             text = steam
                 ? $"Conectando com {Steam.SteamLobby.FriendName(Steam.SteamLobby.HostId)} pela Steam..."
                 : $"Conectando a {NetworkManager.TargetAddress}:{NetworkManager.Port}...";
         else if (status == NetStatus.Connected)
         {
-            var r = CoopSession.Remote;
-            string who = !r.Known ? "parceiro" : r.CharacterName.Length > 0 ? $"{r.Name} ({r.CharacterName})" : r.Name;
-            int ping = NetworkManager.PingMs;
-            text = $"Conectado com <color=#f2cc73>{who}</color> ({NetworkManager.Kind}{(ping >= 0 ? $", {ping} ms" : "")}).";
-            if (NetworkManager.Unstable)
-                text += $" <color=#ff8080>Conexão instável ({NetworkManager.SilenceSeconds:0} s sem resposta)</color>";
             if (role == NetRole.Client)
-                text += CoopSession.RemotePlace == LobbyPlace.Menu
+            {
+                var h = CoopSession.Host;
+                int ping = NetworkManager.PingMs;
+                text = $"Conectado com <color=#f2cc73>{Who(h)}</color> ({NetworkManager.Kind}{(ping >= 0 ? $", {ping} ms" : "")}).";
+                if (NetworkManager.Unstable)
+                    text += $" <color=#ff8080>Conexão instável ({NetworkManager.SilenceSeconds:0} s sem resposta)</color>";
+                var others = new List<string>();
+                foreach (var r in CoopSession.Remotes) if (!r.IsHost) others.Add(Who(r));
+                if (others.Count > 0) text += $"\nNo grupo ({Players.Count}/{Players.SessionMax}): {string.Join(", ", others)}";
+                text += h == null || h.Place == LobbyPlace.Menu
                     ? "\nAguardando o host começar a partida."
                     : "\nO host está numa partida; espere ele voltar ao menu.";
+            }
             else
-                text += CoopSession.RemotePlace == LobbyPlace.Menu
-                    ? "\nComece a partida normalmente: o parceiro entra junto."
-                    : "\nO parceiro ainda não voltou ao menu.";
+            {
+                text = $"Hospedando ({NetworkManager.Kind}): {Players.Count}/{NetworkManager.MaxPlayers} jogadores";
+                bool allInMenu = true;
+                foreach (var r in CoopSession.Remotes)
+                {
+                    int ping = NetworkManager.PingOf(r.Slot);
+                    string unstable = NetworkManager.IsUnstable(r.Slot) ? " <color=#ff8080>instável</color>" : "";
+                    text += $"\n<color=#f2cc73>{Who(r)}</color>  {(ping >= 0 ? $"{ping} ms" : "-")}  {PlaceLabel(r.Place)}{unstable}";
+                    allInMenu &= r.Place == LobbyPlace.Menu;
+                }
+                text += allInMenu
+                    ? "\nComece a partida normalmente: todos entram juntos."
+                    : "\nEspere todos voltarem ao menu pra começar.";
+            }
         }
         else text = "...";
         if (role == NetRole.Host && NetworkManager.LastError != null && status == NetStatus.Hosting)
@@ -295,21 +310,48 @@ public static class CoopUi
         _ipField!.interactable = idle;
     }
 
+    private static string Who(RemotePlayer? r)
+    {
+        if (r == null || !r.Info.Known) return r?.Name ?? "parceiro";
+        return r.Info.CharacterName.Length > 0 ? $"{r.Info.Name} ({r.Info.CharacterName})" : r.Info.Name;
+    }
+
+    private static string PlaceLabel(LobbyPlace p) => p switch
+    {
+        LobbyPlace.Menu => "no menu",
+        LobbyPlace.Loading => "carregando",
+        LobbyPlace.InRun => "na partida",
+        LobbyPlace.Transition => "trocando de fase",
+        _ => "?",
+    };
+
     private static void RefreshBanner()
     {
         string? text;
-        // Phase 8: silence well before the transport gives up (10 s IP, 15 s Steam). Not while a side is loading
+        string names;
+        // Phase 8: silence well before the transport gives up (10 s IP, 15 s Steam). Not while someone is loading
         // a run: a scene load freezes the game, and the Steam pings with it.
-        if (NetworkManager.Unstable && !CoopSession.LocalLoading && !CoopSession.RemoteChangingScene)
-            text = $"Conexão instável com {CoopSession.PartnerName} ({NetworkManager.SilenceSeconds:0} s sem resposta)...";
-        else if (RunSync.HoldForPartner) text = $"Aguardando {CoopSession.PartnerName} carregar...";
-        else if (PauseSync.RemotePaused)
-            text = PauseSync.RemoteReason == PauseReason.LevelUp
-                ? $"{CoopSession.PartnerName} escolhendo upgrade..."
-                : $"{CoopSession.PartnerName} pausou o jogo";
-        else if (PauseSync.RemoteChoosing) text = $"{CoopSession.PartnerName} escolhendo upgrade (sem pausa)";
+        if (NetworkManager.Unstable && !CoopSession.LocalLoading && !CoopSession.AnyRemoteChangingScene)
+        {
+            names = NetworkManager.Role == NetRole.Host
+                ? CoopSession.NamesWhere(r => NetworkManager.IsUnstable(r.Slot))
+                : CoopSession.NameOf(Players.HostSlot);
+            text = $"Conexão instável com {names} ({NetworkManager.SilenceSeconds:0} s sem resposta)...";
+        }
+        else if (RunSync.HoldForPartner) text = $"Aguardando {CoopSession.NamesWhere(r => r.ChangingScene)} carregar...";
+        else if ((names = CoopSession.NamesWhere(r => PauseSync.Freezes(r.Slot) && PauseSync.ReasonOf(r.Slot) == PauseReason.Pause)).Length > 0)
+            text = NetworkManager.Role == NetRole.Host
+                ? $"{names} pausou o jogo (Esc duas vezes ou F4 despausa)"
+                : $"{names} pausou o jogo";
+        else if ((names = CoopSession.NamesWhere(r => PauseSync.Freezes(r.Slot))).Length > 0)
+            text = $"{names} escolhendo upgrade...";
+        else if ((names = CoopSession.NamesWhere(r => PauseSync.IsChoosing(r.Slot))).Length > 0)
+            text = $"{names} escolhendo upgrade (sem pausa)";
         else if (LevelUpOverlay.BannerText != null) text = LevelUpOverlay.BannerText;
-        else text = CoopSession.ActiveNotice;
+        else if (CoopSession.ActiveNotice != null) text = CoopSession.ActiveNotice;
+        else if ((names = CoopSession.NamesWhere(r => PauseSync.IsPausedAlone(r.Slot))).Length > 0)
+            text = $"{names} no menu de pausa (o jogo segue)";
+        else text = null;
 
         bool show = text != null;
         var go = _bannerRt!.gameObject;
@@ -317,7 +359,7 @@ public static class CoopUi
         if (!show) return;
         if (_bannerText!.text != text) _bannerText.text = text;
         // Under the panel when it's open, else near the top of the screen.
-        float y = _inMenu && _panelOpen ? -700f : -140f;
+        float y = _inMenu && _panelOpen ? -820f : -140f;
         if (Mathf.Abs(_bannerRt.anchoredPosition.y - y) > 0.5f) _bannerRt.anchoredPosition = new Vector2(0f, y);
     }
 
@@ -435,7 +477,7 @@ public static class CoopUi
 
         // Panel, centered under the top menu.
         var panel = MakeRect(rootRt, "CoopPanel");
-        Place(panel, new Vector2(0.5f, 1f), new Vector2(0f, -150f), new Vector2(720f, 520f));
+        Place(panel, new Vector2(0.5f, 1f), new Vector2(0f, -150f), new Vector2(720f, 640f)); // phase 9: room for the player list
         var bg = panel.gameObject.AddComponent<Image>();
         if (_frameSprite != null) { bg.sprite = _frameSprite; bg.color = PanelTint; }
         else bg.color = PanelFallbackColor;
@@ -478,9 +520,9 @@ public static class CoopUi
         _leaveButton = MakeButton(panel, "Leave", "Desconectar", OnLeave, 30f);
         PlaceTopLeft(_leaveButton.GetComponent<RectTransform>(), 60f, 312f, 600f, 62f);
 
-        _status = MakeText(panel, "Status", "", 24f, TextAlignmentOptions.Top);
+        _status = MakeText(panel, "Status", "", 22f, TextAlignmentOptions.Top);
         _status.enableWordWrapping = true;
-        PlaceTopLeft(_status.rectTransform, 60f, 388f, 600f, 116f);
+        PlaceTopLeft(_status.rectTransform, 60f, 388f, 600f, 236f);
 
         // Banner (menu and runs).
         _bannerRt = MakeRect(rootRt, "CoopBanner");

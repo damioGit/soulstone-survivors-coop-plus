@@ -35,6 +35,11 @@ public static class Players
     /// <summary>Everyone in the session, us included.</summary>
     public static int Count => OthersList.Count + 1;
 
+    /// <summary>How many players the session holds (host: [Coop] MaxPlayers; client: what the Welcome said).</summary>
+    public static int SessionMax => NetworkManager.Role == NetRole.Client && _welcomeMax > 0 ? _welcomeMax : NetworkManager.MaxPlayers;
+    private static int _welcomeMax;
+    internal static void SetSessionMax(int max) => _welcomeMax = max;
+
     public static bool IsPresent(byte slot) => slot < MaxSlots && Present[slot];
 
     public static bool IsValid(byte slot) => slot < MaxSlots;
@@ -54,9 +59,12 @@ public static class Players
         OthersList.Add(slot);
         OthersList.Sort();
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][players] Slot {slot} joined ({Count} in the session).");
-        try { Joined?.Invoke(slot); }
-        catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop][players] Joined({slot}) handler: {ex}"); }
+        Fire(Appeared, slot, "Appeared");
+        Fire(Joined, slot, "Joined");
     }
+
+    /// <summary>Before every Joined handler: CoopSession creates the slot's RemotePlayer.</summary>
+    internal static event Action<byte>? Appeared;
 
     internal static void MarkLeft(byte slot)
     {
@@ -64,11 +72,21 @@ public static class Players
         Present[slot] = false;
         OthersList.Remove(slot);
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][players] Slot {slot} left ({Count} in the session).");
-        foreach (var h in Left?.GetInvocationList() ?? Array.Empty<Delegate>())
+        Fire(Left, slot, "Left");
+        Fire(Forgotten, slot, "Forgotten");
+    }
+
+    /// <summary>After every Left handler ran: CoopSession drops the slot's RemotePlayer (the modules may still read
+    /// its name and ghost while they clean up).</summary>
+    internal static event Action<byte>? Forgotten;
+
+    private static void Fire(Action<byte>? ev, byte slot, string what)
+    {
+        foreach (var h in ev?.GetInvocationList() ?? Array.Empty<Delegate>())
         {
             // One failing module must not keep the others from cleaning up that slot.
             try { ((Action<byte>)h)(slot); }
-            catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop][players] Left({slot}) handler: {ex}"); }
+            catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop][players] {what}({slot}) handler: {ex}"); }
         }
     }
 

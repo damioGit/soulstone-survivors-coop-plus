@@ -59,7 +59,7 @@ public static class LevelUpPolicy
     /// <summary>This frame's decision for an open popup: skip the pause? and if so, as the compact overlay?</summary>
     internal static bool Decide(out bool overlay, out bool coop)
     {
-        coop = NetworkManager.HasPeer && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.RemoteInRun;
+        coop = NetworkManager.HasPeer && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.AnyRemoteInRun;
         var mode = Mode.Value;
         float now = Time.realtimeSinceStartup;
         if (mode == LevelUpPauseMode.NotWhenFullBuild && now >= _nextFullCheck)

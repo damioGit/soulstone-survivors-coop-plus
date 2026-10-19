@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace SoulstoneCoop.Lobby;
 
-/// <summary>Where a player is, as the partner sees it (LobbyState packet).</summary>
+/// <summary>Where a player is, as the others see it (LobbyState packet).</summary>
 public enum LobbyPlace : byte
 {
     Menu = 0,
@@ -28,47 +28,125 @@ public sealed class PlayerInfo
 
     public bool SameAs(PlayerInfo o) =>
         Name == o.Name && CharacterId == o.CharacterId && WeaponId == o.WeaponId && SkinId == o.SkinId && WeaponSkinId == o.WeaponSkinId;
+
+    public void Write(NetDataWriter w)
+    {
+        w.Put(Name);
+        w.Put(CharacterId);
+        w.Put(CharacterName);
+        w.Put(WeaponId);
+        w.Put(SkinId);
+        w.Put(WeaponSkinId);
+        w.Put(ModVersion);
+    }
+
+    public static PlayerInfo Read(NetDataReader r) => new()
+    {
+        Known = true,
+        Name = r.GetString(),
+        CharacterId = r.GetByte(),
+        CharacterName = r.GetString(),
+        WeaponId = r.GetString(),
+        SkinId = r.GetString(),
+        WeaponSkinId = r.GetString(),
+        ModVersion = r.GetString(),
+    };
 }
 
 /// <summary>
 /// Phase 6: the co-op session as a whole, independent of any one run. The connection is made in the menu and
-/// survives several runs, so "the partner connected" is no longer "the partner entered my match": this keeps
-/// who the partner is (Hello) and where each side is (LobbyState), and owns the per-run lifecycle that used to
-/// hang off PeerConnected (the remote ghost, the host's enemy resync). See docs/fase6-investigacao.md.
+/// survives several runs, so "a player connected" is no longer "a player entered my match": this keeps who the
+/// others are (Hello) and where each one is (LobbyState), and owns the per-run lifecycle that used to hang off
+/// PeerConnected (the remote ghosts, the host's enemy resync). See docs/fase6-investigacao.md.
+/// Phase 9: one RemotePlayer per other slot. The host forwards each client's Hello and LobbyState to the others
+/// (PacketRouter) and hands a newcomer everybody's.
 /// </summary>
 public static class CoopSession
 {
     public static readonly PlayerInfo Local = new();
-    public static PlayerInfo Remote { get; private set; } = new();
-    public static LobbyPlace RemotePlace { get; private set; } = LobbyPlace.Menu;
+
+    private static readonly RemotePlayer?[] BySlot = new RemotePlayer?[Players.MaxSlots];
+    private static readonly List<RemotePlayer> RemoteList = new();
+
+    /// <summary>The other players this side knows about, in slot order.</summary>
+    public static IReadOnlyList<RemotePlayer> Remotes => RemoteList;
+
+    public static RemotePlayer? Get(byte slot) => slot < Players.MaxSlots ? BySlot[slot] : null;
+
+    /// <summary>Client: the host's record (slot 0).</summary>
+    public static RemotePlayer? Host => BySlot[Players.HostSlot];
 
     public static bool Connected => NetworkManager.HasPeer;
 
     /// <summary>Our match is running (StartMatch seen, game manager still alive).</summary>
     public static bool LocalInRun { get; private set; }
-    public static bool RemoteInRun => Connected && RemotePlace == LobbyPlace.InRun;
     public static bool LocalLoading => _loadingSince >= 0f;
     public static float LocalRunStartTime { get; private set; }
+
+    /// <summary>Some other player's match is running.</summary>
+    public static bool AnyRemoteInRun
+    {
+        get
+        {
+            if (!Connected) return false;
+            foreach (var r in RemoteList) if (r.InRun) return true;
+            return false;
+        }
+    }
+
+    /// <summary>That player's match is running (and we're still connected).</summary>
+    public static bool InRun(byte slot) => Connected && Get(slot)?.InRun == true;
+
+    /// <summary>Client: the host's match is running.</summary>
+    public static bool HostInRun => InRun(Players.HostSlot);
 
     /// <summary>This run was started as the co-op client: keeps CoopRole.IsClientSide true for the rest of the
     /// run even if the connection drops (the spawners are already stopped; turning host-like mid-run is phase 8).</summary>
     internal static bool ClientRunLatched;
 
     /// <summary>A scene change inside the run is under way (Endless/BossRush portal or co-op Restart): from the portal
-    /// until the next StartMatch. While the old scene still lives the partner sees Transition, then Loading.</summary>
+    /// until the next StartMatch. While the old scene still lives the others see Transition, then Loading.</summary>
     public static bool StageTransition { get; private set; }
 
     public static LobbyPlace LocalPlace =>
         LocalInRun ? (StageTransition ? LobbyPlace.Transition : LobbyPlace.InRun)
         : LocalLoading ? LobbyPlace.Loading : LobbyPlace.Menu;
 
-    /// <summary>The partner is on its way to the next scene (still in the old one, or loading).</summary>
-    public static bool RemoteChangingScene => Connected && (RemotePlace == LobbyPlace.Loading || RemotePlace == LobbyPlace.Transition);
+    /// <summary>Some other player is on its way to the next scene (still in the old one, or loading).</summary>
+    public static bool AnyRemoteChangingScene
+    {
+        get
+        {
+            if (!Connected) return false;
+            foreach (var r in RemoteList) if (r.ChangingScene) return true;
+            return false;
+        }
+    }
 
     /// <summary>Phase 9: that player is on its way to the next scene (the transport allows a longer silence meanwhile).</summary>
-    public static bool ChangingScene(byte slot) => RemoteChangingScene;
+    public static bool ChangingScene(byte slot) => Connected && Get(slot)?.ChangingScene == true;
 
-    public static string PartnerName => Remote.Known && Remote.Name.Length > 0 ? Remote.Name : "Parceiro";
+    /// <summary>Name of that player for the banner and notices.</summary>
+    public static string NameOf(byte slot) => Get(slot)?.Name ?? (slot == Players.HostSlot ? "Host" : $"Jogador {slot + 1}");
+
+    /// <summary>"A", "A e B", "A, B e mais 2": the names of the other players that match, for a one-line banner.</summary>
+    public static string NamesWhere(Func<RemotePlayer, bool> pick, int show = 2)
+    {
+        var names = new List<string>();
+        foreach (var r in RemoteList) if (pick(r)) names.Add(r.Name);
+        return JoinNames(names, show);
+    }
+
+    public static string JoinNames(List<string> names, int show = 2)
+    {
+        if (names.Count == 0) return "";
+        if (names.Count == 1) return names[0];
+        if (names.Count <= show) return string.Join(", ", names.Take(names.Count - 1)) + " e " + names[names.Count - 1];
+        return string.Join(", ", names.Take(show)) + $" e mais {names.Count - show}";
+    }
+
+    /// <summary>The others, as one name: the only partner's, or "o grupo".</summary>
+    public static string OthersLabel => RemoteList.Count == 1 ? RemoteList[0].Name : RemoteList.Count == 0 ? "Parceiro" : "o grupo";
 
     internal const string MenuScene = "Menu-Survivors";
     private const float LoadingTimeout = 90f;
@@ -93,26 +171,65 @@ public static class CoopSession
     {
         if (_hooked) return;
         _hooked = true;
-        NetworkManager.PeerConnected += _ =>
+        Players.Appeared += slot =>
         {
-            Remote = new PlayerInfo();
-            RemotePlace = LobbyPlace.Menu;
+            var r = new RemotePlayer(slot);
+            BySlot[slot] = r;
+            RemoteList.Add(r);
+            RemoteList.Sort((a, b) => a.Slot.CompareTo(b.Slot));
+        };
+        Players.Forgotten += slot =>
+        {
+            var r = BySlot[slot];
+            BySlot[slot] = null;
+            if (r != null) RemoteList.Remove(r);
+        };
+        Players.Left += OnPlayerLeft;
+        NetworkManager.PeerConnected += slot =>
+        {
+            // Ours goes out again to everyone (cheap), and the host hands a newcomer everybody else's.
             _helloSent = false;
             _placeSent = false;
             RefreshLocalInfo();
-            RunSync.OnPeerConnected();
+            if (NetworkManager.Role == NetRole.Host) SendOthersTo(slot);
+            RunSync.OnPeerConnected(slot);
         };
-        NetworkManager.PeerDisconnected += _ =>
+    }
+
+    private static void OnPlayerLeft(byte slot)
+    {
+        var r = Get(slot);
+        if (r == null) return;
+        string who = r.Name;
+        if (NetworkManager.Role == NetRole.Host)
         {
-            string who = PartnerName;
-            bool partnerWasInRun = RemotePlace != LobbyPlace.Menu;
-            Remote = new PlayerInfo();
-            RemotePlace = LobbyPlace.Menu;
-            // Phase 8: the host keeps playing (the client's case is CoopLife's: its run ends).
-            Notice(LocalInRun && partnerWasInRun && NetworkManager.Role == NetRole.Host
-                ? $"{who} desconectou. Você continua sozinho."
-                : $"{who} desconectou", 6f);
-        };
+            // Phase 8: the host keeps playing (a client's run ends with the host: CoopLife).
+            bool alone = Players.OtherCount == 0;
+            Notice(LocalInRun && r.Place != LobbyPlace.Menu && alone ? $"{who} desconectou. Você continua sozinho." : $"{who} desconectou", 6f);
+        }
+        else if (slot == Players.HostSlot) Notice($"{who} desconectou", 6f);
+        else if (NetworkManager.HasPeer) Notice($"{who} saiu", 5f); // with the host gone, everybody "leaves": no notice each
+    }
+
+    /// <summary>Host: a client just connected. It gets the Hello and LobbyState of every other client, as if they had
+    /// been relayed, so it can build their ghosts right away.</summary>
+    private static void SendOthersTo(byte newSlot)
+    {
+        foreach (var r in RemoteList)
+        {
+            if (r.Slot == newSlot) continue;
+            if (r.Info.Known)
+            {
+                var w = new NetDataWriter();
+                w.Put((byte)PacketType.Hello);
+                r.Info.Write(w);
+                NetworkManager.SendRelayedTo(newSlot, r.Slot, w, DeliveryMethod.ReliableOrdered);
+            }
+            var p = new NetDataWriter();
+            p.Put((byte)PacketType.LobbyState);
+            p.Put((byte)r.Place);
+            NetworkManager.SendRelayedTo(newSlot, r.Slot, p, DeliveryMethod.ReliableOrdered);
+        }
     }
 
     public static void Notice(string text, float seconds = 4f)
@@ -138,7 +255,7 @@ public static class CoopSession
     internal static void BeginStageTransition(string why)
     {
         if (!StageTransition)
-            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Stage transition ({why}): next scene coming (partner {RemotePlace}).");
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Stage transition ({why}): next scene coming ({Players.OtherCount} other(s)).");
         StageTransition = true;
         _loadingSince = Time.unscaledTime;
         SendPlace(force: true);
@@ -174,7 +291,7 @@ public static class CoopSession
         _loadingSince = -1f;
         ClientRunLatched = NetworkManager.Role == NetRole.Client;
         RunSync.OnLocalMatchStarted();
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Local run started (role={NetworkManager.Role} connected={Connected} partner={RemotePlace}).");
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Local run started (role={NetworkManager.Role} connected={Connected} others={DescribeOthers()}).");
         SendPlace(force: true);
     }
 
@@ -188,6 +305,12 @@ public static class CoopSession
             ? $"[SoulstoneCoop][session] Left the run's scene (stage transition, loading the next). connected={Connected}"
             : $"[SoulstoneCoop][session] Local run over (back to menu). connected={Connected}");
         SendPlace(force: true);
+    }
+
+    internal static string DescribeOthers()
+    {
+        if (RemoteList.Count == 0) return "-";
+        return string.Join(",", RemoteList.Select(r => $"{r.Slot}:{r.Place}"));
     }
 
     public static void Tick(float dt)
@@ -284,13 +407,7 @@ public static class CoopSession
         if (!Local.Known) RefreshLocalInfo();
         var w = new NetDataWriter();
         w.Put((byte)PacketType.Hello);
-        w.Put(Local.Name);
-        w.Put(Local.CharacterId);
-        w.Put(Local.CharacterName);
-        w.Put(Local.WeaponId);
-        w.Put(Local.SkinId);
-        w.Put(Local.WeaponSkinId);
-        w.Put(Local.ModVersion);
+        Local.Write(w);
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
         _helloSent = true;
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Hello sent: {Local.Name} {Local.CharacterName} weapon={Local.WeaponId} skin={Local.SkinId}/{Local.WeaponSkinId}");
@@ -298,40 +415,36 @@ public static class CoopSession
 
     public static void OnHello(NetDataReader r)
     {
-        var info = new PlayerInfo
-        {
-            Known = true,
-            Name = r.GetString(),
-            CharacterId = r.GetByte(),
-            CharacterName = r.GetString(),
-            WeaponId = r.GetString(),
-            SkinId = r.GetString(),
-            WeaponSkinId = r.GetString(),
-            ModVersion = r.GetString(),
-        };
-        bool first = !Remote.Known;
-        Remote = info;
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Hello from partner: {info.Name} {info.CharacterName} weapon={info.WeaponId} skin={info.SkinId}/{info.WeaponSkinId} mod={info.ModVersion}");
-        if (first) Notice(info.CharacterName.Length > 0 ? $"Conectado com {info.Name} ({info.CharacterName})" : $"Conectado com {info.Name}", 5f);
+        var info = PlayerInfo.Read(r);
+        var p = Get(PacketRouter.From);
+        if (p == null) return;
+        bool first = !p.Info.Known;
+        p.Info = info;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Hello from slot {p.Slot}: {info.Name} {info.CharacterName} weapon={info.WeaponId} skin={info.SkinId}/{info.WeaponSkinId} mod={info.ModVersion}");
+        if (!first) return;
+        string who = info.CharacterName.Length > 0 ? $"{info.Name} ({info.CharacterName})" : info.Name;
+        Notice(NetworkManager.Role == NetRole.Client && !p.IsHost ? $"{who} entrou no grupo" : $"Conectado com {who}", 5f);
     }
 
     public static void OnLobbyState(NetDataReader r)
     {
         var place = (LobbyPlace)r.GetByte();
-        var prev = RemotePlace;
-        RemotePlace = place;
+        var p = Get(PacketRouter.From);
+        if (p == null) return;
+        var prev = p.Place;
+        p.Place = place;
         if (prev == place) return;
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Partner: {prev} -> {place} (local {LocalPlace}).");
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Slot {p.Slot} ({p.Name}): {prev} -> {place} (local {LocalPlace}).");
 
-        // The partner's match just started next to ours: resend every live enemy (this used to happen on
+        // That player's match just started next to ours: resend every live enemy to it (this used to happen on
         // PeerConnected, when the connection was made inside the run). Duplicates are ignored by the client.
         // Not while our own old scene is still up (portal taken): those enemies are about to be gone.
         if (place == LobbyPlace.InRun && LocalInRun && !StageTransition && NetworkManager.Role == NetRole.Host)
-            Enemies.HostEnemySync.ResyncToPeer("partner entered the run");
+            Enemies.HostEnemySync.ResyncToPeer(p.Slot, "player entered the run");
 
         // Client: the host's old scene is gone. Everything it sent from that scene came before this packet (same
         // ordered channel), so spawns/loot still around are stale (portal or Restart inside the run).
-        if (place == LobbyPlace.Loading && (prev == LobbyPlace.InRun || prev == LobbyPlace.Transition) && NetworkManager.Role == NetRole.Client)
+        if (p.IsHost && place == LobbyPlace.Loading && (prev == LobbyPlace.InRun || prev == LobbyPlace.Transition) && NetworkManager.Role == NetRole.Client)
             PortalSync.OnHostLeftScene();
     }
 }

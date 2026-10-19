@@ -36,16 +36,24 @@ public static class ProxyStatusForward
 
     internal static bool ApplyingNetworkStatus;
 
-    private static IntPtr _forProxyPtr, _proxyAbnormalPtr, _proxyStunnablePtr;
+    /// <summary>Phase 9: one proxy per client. Cached per slot: the proxy and its component pointers, plus a send budget.</summary>
+    private sealed class Watched
+    {
+        public IntPtr ProxyPtr, AbnormalPtr, StunnablePtr;
+        public int Budget = MaxPerSecond;
+    }
+
+    private static readonly Dictionary<byte, Watched> BySlot = new();
+    private static readonly Dictionary<IntPtr, byte> SlotByAbnormal = new();
+    private static readonly Dictionary<IntPtr, byte> SlotByStunnable = new();
     private static SkillModifiers? _emptyModifiers;
     private static float _budgetTimer, _telemetryTimer;
-    private static int _budget = MaxPerSecond;
     private static int _sentAbnormal, _sentStun, _throttled, _onlyDot, _noApplier, _captureErrors;
     private static int _recv, _applied, _stuns, _noPuppet, _ignored, _errors;
     private static readonly List<(byte slot, int stacks)> Scratch = new();
 
-    internal static bool IsProxyAbnormal(AbnormalStatusComponent c) => _proxyAbnormalPtr != IntPtr.Zero && c.Pointer == _proxyAbnormalPtr;
-    internal static bool IsProxyStunnable(StunnableComponent c) => _proxyStunnablePtr != IntPtr.Zero && c.Pointer == _proxyStunnablePtr;
+    internal static bool IsProxyAbnormal(AbnormalStatusComponent c, out byte slot) => SlotByAbnormal.TryGetValue(c.Pointer, out slot);
+    internal static bool IsProxyStunnable(StunnableComponent c, out byte slot) => SlotByStunnable.TryGetValue(c.Pointer, out slot);
     internal static void CountCaptureError() => _captureErrors++;
 
     public static void Tick(float unscaledDeltaTime)
@@ -53,21 +61,15 @@ public static class ProxyStatusForward
         if (NetworkManager.Role == NetRole.None) return;
         try
         {
-            // Host: cache the proxy's component pointers (cheap filters for patches that run for every entity).
-            var proxy = CoopRole.IsHostSide ? RemoteProxy.ProxyEntity : null;
-            IntPtr p = proxy != null ? proxy.Pointer : IntPtr.Zero;
-            if (p != _forProxyPtr)
-            {
-                _forProxyPtr = p;
-                var abn = proxy != null ? proxy._abnormalStatus : null;
-                var stun = proxy != null ? proxy._stunnable : null;
-                _proxyAbnormalPtr = abn != null ? abn.Pointer : IntPtr.Zero;
-                _proxyStunnablePtr = stun != null ? stun.Pointer : IntPtr.Zero;
-                if (proxy != null)
-                    Plugin.StaticLog.LogInfo($"[SoulstoneCoop][status] Proxy components: abnormal={(abn != null)} stunnable={(stun != null)}.");
-            }
+            // Host: cache each proxy's component pointers (cheap filters for patches that run for every entity).
+            if (CoopRole.IsHostSide) RefreshWatched();
+            else if (BySlot.Count > 0) { BySlot.Clear(); SlotByAbnormal.Clear(); SlotByStunnable.Clear(); }
             _budgetTimer += unscaledDeltaTime;
-            if (_budgetTimer >= 1f) { _budgetTimer = 0f; _budget = MaxPerSecond; }
+            if (_budgetTimer >= 1f)
+            {
+                _budgetTimer = 0f;
+                foreach (var w in BySlot.Values) w.Budget = MaxPerSecond;
+            }
         }
         catch (Exception ex)
         {
@@ -89,6 +91,40 @@ public static class ProxyStatusForward
 
     // ---------------- host ----------------
 
+    private static readonly List<byte> GoneSlots = new();
+
+    private static void RefreshWatched()
+    {
+        GoneSlots.Clear();
+        foreach (var slot in BySlot.Keys) if (!Players.IsPresent(slot)) GoneSlots.Add(slot);
+        foreach (var slot in GoneSlots) BySlot.Remove(slot);
+        bool changed = GoneSlots.Count > 0;
+        foreach (var slot in Players.Others)
+        {
+            var proxy = RemoteProxy.ProxyOf(slot);
+            IntPtr p = proxy != null ? proxy.Pointer : IntPtr.Zero;
+            if (!BySlot.TryGetValue(slot, out var w)) BySlot[slot] = w = new Watched();
+            if (p == w.ProxyPtr) continue;
+            changed = true;
+            w.ProxyPtr = p;
+            var abn = proxy != null ? proxy._abnormalStatus : null;
+            var stun = proxy != null ? proxy._stunnable : null;
+            w.AbnormalPtr = abn != null ? abn.Pointer : IntPtr.Zero;
+            w.StunnablePtr = stun != null ? stun.Pointer : IntPtr.Zero;
+            if (proxy != null)
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][status] Proxy {slot} components: abnormal={(abn != null)} stunnable={(stun != null)}.");
+        }
+        if (!changed) return;
+        SlotByAbnormal.Clear();
+        SlotByStunnable.Clear();
+        foreach (var kv in BySlot)
+        {
+            if (kv.Value.AbnormalPtr != IntPtr.Zero) SlotByAbnormal[kv.Value.AbnormalPtr] = kv.Key;
+            if (kv.Value.StunnablePtr != IntPtr.Zero) SlotByStunnable[kv.Value.StunnablePtr] = kv.Key;
+        }
+    }
+
+
     private static bool TryApplierNetId(Entity? applier, out ushort netId)
     {
         netId = 0;
@@ -98,14 +134,14 @@ public static class ProxyStatusForward
         return false;
     }
 
-    private static bool TakeBudget()
+    private static bool TakeBudget(byte slot)
     {
-        if (_budget <= 0) { _throttled++; return false; }
-        _budget--;
+        if (!BySlot.TryGetValue(slot, out var w) || w.Budget <= 0) { _throttled++; return false; }
+        w.Budget--;
         return true;
     }
 
-    internal static void OnHostAbnormal(Entity applier, in AbnormalStatusApplyData d, bool ignoreWounds, bool ignoreSynergies)
+    internal static void OnHostAbnormal(byte slot, Entity applier, in AbnormalStatusApplyData d, bool ignoreWounds, bool ignoreSynergies)
     {
         Scratch.Clear();
         Add(SShattered, d.ShatteredApplyData.StacksToApply);
@@ -123,7 +159,7 @@ public static class ProxyStatusForward
         Add(SWound, d.WoundApplyData.StacksToApply);
         Add(SCondemned, d.CondemnedApplyData.StacksToApply);
         if (Scratch.Count == 0) { _onlyDot++; return; } // only DoTs (or nothing): their damage comes as DamageToClient
-        if (!TryApplierNetId(applier, out ushort netId) || !TakeBudget()) return;
+        if (!TryApplierNetId(applier, out ushort netId) || !TakeBudget(slot)) return;
 
         var w = new NetDataWriter();
         w.Put((byte)PacketType.ProxyStatus);
@@ -132,14 +168,14 @@ public static class ProxyStatusForward
         w.Put((byte)((ignoreWounds ? FIgnoreWounds : 0) | (ignoreSynergies ? FIgnoreSynergies : 0)));
         w.Put((byte)Scratch.Count);
         bool brittle = false;
-        foreach (var (slot, stacks) in Scratch)
+        foreach (var (statusSlot, stacks) in Scratch)
         {
-            w.Put(slot);
+            w.Put(statusSlot);
             w.Put(stacks);
-            brittle |= slot == SBrittle;
+            brittle |= statusSlot == SBrittle;
         }
         if (brittle) w.Put(d.BrittleApplyData.ExtraDamageToTake);
-        NetworkManager.Send(w, DeliveryMethod.ReliableUnordered);
+        NetworkManager.SendTo(slot, w, DeliveryMethod.ReliableUnordered); // only that client: it is its proxy
         _sentAbnormal++;
     }
 
@@ -149,16 +185,16 @@ public static class ProxyStatusForward
     }
 
     /// <summary>SetToRagdoll has no applier: the stun goes with netId 0 (the client doesn't need one).</summary>
-    internal static void OnHostStun(float duration, bool penetrateSoftImmunity)
+    internal static void OnHostStun(byte slot, float duration, bool penetrateSoftImmunity)
     {
-        if (duration <= 0f || !TakeBudget()) return;
+        if (duration <= 0f || !TakeBudget(slot)) return;
         var w = new NetDataWriter();
         w.Put((byte)PacketType.ProxyStatus);
         w.Put(KindStun);
         w.Put((ushort)0);
         w.Put(duration);
         w.Put(penetrateSoftImmunity);
-        NetworkManager.Send(w, DeliveryMethod.ReliableUnordered);
+        NetworkManager.SendTo(slot, w, DeliveryMethod.ReliableUnordered); // only that client: it is its proxy
         _sentStun++;
     }
 
@@ -273,9 +309,9 @@ public static class HostProxyStatusCapturePatch
     {
         try
         {
-            if (__instance == null || !ProxyStatusForward.IsProxyAbnormal(__instance)) return;
-            if (!CoopRole.IsHostSide || !NetworkManager.HasPeer || !RemoteProxy.RemoteAlive) return;
-            ProxyStatusForward.OnHostAbnormal(applyingEntity, data, ignoreWounds, ignoreSynergies);
+            if (__instance == null || !ProxyStatusForward.IsProxyAbnormal(__instance, out byte slot)) return;
+            if (!CoopRole.IsHostSide || !NetworkManager.HasPeer || !RemoteProxy.IsAlive(slot)) return;
+            ProxyStatusForward.OnHostAbnormal(slot, applyingEntity, data, ignoreWounds, ignoreSynergies);
         }
         catch (Exception ex)
         {
@@ -296,9 +332,9 @@ public static class HostProxyStunCapturePatch
     {
         try
         {
-            if (__instance == null || !ProxyStatusForward.IsProxyStunnable(__instance)) return;
-            if (!CoopRole.IsHostSide || !NetworkManager.HasPeer || !RemoteProxy.RemoteAlive) return;
-            ProxyStatusForward.OnHostStun(duration, penetrateSoftImmunity);
+            if (__instance == null || !ProxyStatusForward.IsProxyStunnable(__instance, out byte slot)) return;
+            if (!CoopRole.IsHostSide || !NetworkManager.HasPeer || !RemoteProxy.IsAlive(slot)) return;
+            ProxyStatusForward.OnHostStun(slot, duration, penetrateSoftImmunity);
         }
         catch (Exception ex)
         {

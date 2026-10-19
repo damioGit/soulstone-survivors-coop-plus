@@ -1,3 +1,4 @@
+using SoulstoneCoop.Lobby;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
@@ -5,7 +6,7 @@ using UnityEngine.UI;
 namespace SoulstoneCoop;
 
 /// <summary>
-/// Phase 5: what marks the partner's ghost as the ally.
+/// Phase 5: what marks a ghost as an ally.
 /// - Name (Steam name from the Hello) and health bar (PartnerHealth packet) above the ghost, on a screen-space
 ///   overlay canvas of our own. Each frame it's positioned where the camera sees the top of the ghost, so it stays
 ///   readable over spell effects, at a fixed size. The game's combat text is out (16-character buffer, short-lived),
@@ -15,117 +16,177 @@ namespace SoulstoneCoop;
 /// - Minimap icon: MinimapManager.RequestIcon(Player, ghost transform), removed when the ghost goes. Its OnUpdate
 ///   checks the transform against null and falls back to the stored position, so a destroyed ghost can't throw
 ///   in there (decompiled 0x615430). SetupMinimap clears every item on a new map.
+/// Phase 9: one name/bar panel and one minimap icon per ghost, on the same canvas. Each player has a color of its own
+/// (by slot) for the name and the ground ring, so 7 allies can be told apart.
 /// </summary>
 public static class GhostOverhead
 {
     internal static readonly Color AllyColor = new(0.35f, 1f, 0.5f, 1f);
     private static readonly Color DownColor = new(0.95f, 0.35f, 0.3f, 1f);
+
+    /// <summary>Phase 9: one color per slot (0 = host). The host keeps the phase 5 ally green.</summary>
+    private static readonly Color[] SlotColors =
+    {
+        AllyColor,                       // 0 host: green
+        new(0.35f, 0.8f, 1f, 1f),        // 1 sky blue
+        new(1f, 0.85f, 0.3f, 1f),        // 2 yellow
+        new(1f, 0.5f, 0.85f, 1f),        // 3 pink
+        new(1f, 0.6f, 0.25f, 1f),        // 4 orange
+        new(0.72f, 0.55f, 1f, 1f),       // 5 lilac
+        new(0.6f, 1f, 0.95f, 1f),        // 6 aqua
+        new(0.92f, 0.92f, 0.92f, 1f),    // 7 white
+    };
+
+    internal static Color ColorFor(byte slot) => slot < SlotColors.Length ? SlotColors[slot] : AllyColor;
+
     private const int MaxChars = 24;
     private const float NameSize = 26f;
     private const float BarWidth = 130f, BarHeight = 14f;
 
+    /// <summary>The name + bar of one ghost, and its minimap icon.</summary>
+    private sealed class View
+    {
+        public byte Slot;
+        public RectTransform? Panel;
+        public TextMeshProUGUI? Name;
+        public GameObject? Bar;
+        public RectTransform? Fill;
+        public Image? FillImage;
+        public string ShownName = "";
+        public IntPtr GhostPtr;
+        public float Height = 2.6f;
+        public bool Visible;
+        public int IconId = -1;
+        public IntPtr IconGhostPtr;
+        public float IconRunStart;
+    }
+
     private static GameObject? _root;
-    private static RectTransform? _panel;
-    private static TextMeshProUGUI? _name;
-    private static GameObject? _bar;
-    private static RectTransform? _fill;
-    private static Image? _fillImage;
-    private static bool _fillUsesSprite;
-    private static string _shownName = "";
     private static bool _buildFailed;
-
-    private static IntPtr _ghostPtr;
-    private static float _height = 2.6f;
-
-    private static int _iconId = -1;
-    private static IntPtr _iconGhostPtr;
-    private static float _iconRunStart;
+    private static TMP_FontAsset? _font;
+    private static Sprite? _allySprite;
+    private static readonly Dictionary<byte, View> Views = new();
+    private static bool _hooked;
     private static bool _iconFailed;
-
     private static float _telemetryTimer;
-    private static bool _visibleNow;
 
     /// <summary>Called by VisualGhostFactory for each new ghost, with the height of its model.</summary>
-    public static void Attach(GameObject ghost, float height)
+    public static void Attach(byte slot, GameObject ghost, float height)
     {
-        _ghostPtr = ghost.Pointer;
-        _height = height;
-        EnsureBuilt();
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][hpbar] Overhead follows the ghost {height:0.0} above its root (name '{Lobby.CoopSession.PartnerName}', ui={(_root != null)}).");
+        EnsureHooked();
+        EnsureRoot();
+        var v = ViewOf(slot);
+        v.GhostPtr = ghost.Pointer;
+        v.Height = height;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][hpbar] Overhead follows ghost {slot} {height:0.0} above its root (name '{CoopSession.NameOf(slot)}', ui={(v.Panel != null)}).");
+    }
+
+    private static void EnsureHooked()
+    {
+        if (_hooked) return;
+        _hooked = true;
+        Net.Players.Left += slot =>
+        {
+            if (!Views.TryGetValue(slot, out var v)) return;
+            Views.Remove(slot);
+            RemoveIcon(v);
+            if (v.Panel != null) UnityEngine.Object.Destroy(v.Panel.gameObject);
+        };
+    }
+
+    private static View ViewOf(byte slot)
+    {
+        if (Views.TryGetValue(slot, out var v)) return v;
+        v = new View { Slot = slot };
+        Views[slot] = v;
+        BuildPanel(v);
+        return v;
     }
 
     public static void Tick(float unscaledDeltaTime)
     {
-        try { UpdateMinimapIcon(); }
-        catch (Exception ex)
+        EnsureHooked();
+        foreach (var r in CoopSession.Remotes)
         {
-            _iconFailed = true;
-            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][hpbar] Minimap icon disabled: {ex.Message}");
-        }
-        try { UpdateOverhead(); }
-        catch (Exception ex)
-        {
-            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][hpbar] Overhead tick: {ex.Message}");
-            SetVisible(false);
+            var ghost = r.Ghost;
+            if (ghost == null && !Views.ContainsKey(r.Slot)) continue;
+            var v = ViewOf(r.Slot);
+            try { UpdateMinimapIcon(v, ghost); }
+            catch (Exception ex)
+            {
+                _iconFailed = true;
+                Plugin.StaticLog.LogWarning($"[SoulstoneCoop][hpbar] Minimap icon disabled: {ex.Message}");
+            }
+            try { UpdateOverhead(v, ghost); }
+            catch (Exception ex)
+            {
+                Plugin.StaticLog.LogWarning($"[SoulstoneCoop][hpbar] Overhead tick ({r.Slot}): {ex.Message}");
+                SetVisible(v, false);
+            }
         }
 
         _telemetryTimer += unscaledDeltaTime;
         if (_telemetryTimer < 5f) return;
         _telemetryTimer = 0f;
-        if (GameState.RemoteGhostObject == null && !Life.PartnerHealth.Known) return;
-        Plugin.StaticLog.LogInfo(
-            $"[SoulstoneCoop][hpbar] partner hp={Life.PartnerHealth.Health:F0}/{Life.PartnerHealth.MaxHealth:F0} known={Life.PartnerHealth.Known} " +
-            $"down={Life.PartnerHealth.Down} shown={_visibleNow} icon={_iconId} {Life.PartnerHealth.TakeStats()}");
+        if (Views.Count == 0) return;
+        var parts = new List<string>();
+        foreach (var v in Views.Values)
+        {
+            var h = Life.PartnerHealth.Of(v.Slot);
+            parts.Add($"{v.Slot}: hp={h.Health:F0}/{h.MaxHealth:F0} known={h.Known} down={h.Down} shown={v.Visible} icon={v.IconId}");
+        }
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][hpbar] {string.Join(" | ", parts)} {Life.PartnerHealth.TakeStats()}");
     }
 
     // ---------------- overhead ----------------
 
-    private static void UpdateOverhead()
+    private static void UpdateOverhead(View v, GameObject? ghost)
     {
-        var ghost = GameState.RemoteGhostObject;
-        if (_root == null || _panel == null || ghost == null || !Lobby.CoopSession.LocalInRun || Time.timeScale < 0.01f)
+        if (v.Panel == null || ghost == null || !CoopSession.LocalInRun || Time.timeScale < 0.01f)
         {
-            SetVisible(false);
+            SetVisible(v, false);
             return;
         }
-        if (ghost.Pointer != _ghostPtr) { _ghostPtr = ghost.Pointer; _height = 2.6f; } // a ghost Attach didn't see
+        if (ghost.Pointer != v.GhostPtr) { v.GhostPtr = ghost.Pointer; v.Height = 2.6f; } // a ghost Attach didn't see
 
         var cam = FindCamera();
-        if (cam == null) { SetVisible(false); return; }
-        Vector3 screen = cam.WorldToScreenPoint(ghost.transform.position + Vector3.up * _height);
-        if (screen.z <= 0f) { SetVisible(false); return; }
-        _panel.position = new Vector3(Mathf.Round(screen.x), Mathf.Round(screen.y), 0f);
+        if (cam == null) { SetVisible(v, false); return; }
+        Vector3 screen = cam.WorldToScreenPoint(ghost.transform.position + Vector3.up * v.Height);
+        if (screen.z <= 0f) { SetVisible(v, false); return; }
+        v.Panel.position = new Vector3(Mathf.Round(screen.x), Mathf.Round(screen.y), 0f);
 
-        bool down = Life.CoopLife.RemoteDowned || Life.PartnerHealth.Down || Life.PartnerHealth.Dead;
-        string name = Lobby.CoopSession.PartnerName;
+        var health = Life.PartnerHealth.Of(v.Slot);
+        bool down = Life.CoopLife.IsRemoteDown(v.Slot) || health.Down || health.Dead;
+        string name = CoopSession.NameOf(v.Slot);
         if (name.Length > MaxChars) name = name.Substring(0, MaxChars - 3) + "...";
         if (down) name += " (caído)";
-        if (_name != null && name != _shownName)
+        if (v.Name != null && name != v.ShownName)
         {
-            _shownName = name;
-            _name.text = name;
+            v.ShownName = name;
+            v.Name.text = name;
         }
-        if (_name != null) _name.color = down ? DownColor : AllyColor;
+        var color = ColorFor(v.Slot);
+        if (v.Name != null) v.Name.color = down ? DownColor : color;
 
-        bool hasHp = Life.PartnerHealth.Known && Life.PartnerHealth.MaxHealth > 0f;
-        if (_bar != null && _bar.activeSelf != hasHp) _bar.SetActive(hasHp);
-        if (hasHp && _fill != null)
+        bool hasHp = health.Known && health.MaxHealth > 0f;
+        if (v.Bar != null && v.Bar.activeSelf != hasHp) v.Bar.SetActive(hasHp);
+        if (hasHp && v.Fill != null)
         {
-            float frac = down ? 0f : Life.PartnerHealth.Fraction;
-            _fill.sizeDelta = new Vector2((BarWidth - 4f) * frac, BarHeight - 4f);
-            if (_fill.gameObject.activeSelf != frac > 0.005f) _fill.gameObject.SetActive(frac > 0.005f);
-            if (_fillImage != null) _fillImage.color = _fillUsesSprite ? Color.white : AllyColor;
+            float frac = down ? 0f : health.Fraction;
+            v.Fill.sizeDelta = new Vector2((BarWidth - 4f) * frac, BarHeight - 4f);
+            if (v.Fill.gameObject.activeSelf != frac > 0.005f) v.Fill.gameObject.SetActive(frac > 0.005f);
+            if (v.FillImage != null) v.FillImage.color = _allySprite != null ? Color.white : color;
         }
-        SetVisible(true);
+        SetVisible(v, true);
     }
 
-    private static void SetVisible(bool on)
+    private static void SetVisible(View v, bool on)
     {
-        _visibleNow = on;
-        if (_panel != null && _panel.gameObject.activeSelf != on) _panel.gameObject.SetActive(on);
+        v.Visible = on;
+        if (v.Panel != null && v.Panel.gameObject.activeSelf != on) v.Panel.gameObject.SetActive(on);
     }
 
-    private static void EnsureBuilt()
+    private static void EnsureRoot()
     {
         if (_root != null || _buildFailed) return;
         try
@@ -139,26 +200,43 @@ public static class GhostOverhead
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
             scaler.referenceResolution = new Vector2(1920f, 1080f);
             scaler.matchWidthOrHeight = 0.5f;
+            _font = FindFont();
+            _allySprite = FindAllyBarSprite();
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][hpbar] Overhead UI built (font={(_font != null ? _font.name : "TMP default")}, ally sprite={(_allySprite != null ? _allySprite.name : "none, flat color")}).");
+        }
+        catch (Exception ex)
+        {
+            _buildFailed = true;
+            Plugin.StaticLog.LogError($"[SoulstoneCoop][hpbar] Overhead UI could not be built (the ghosts go without name/bar): {ex}");
+            if (_root != null) UnityEngine.Object.Destroy(_root);
+            _root = null;
+        }
+    }
 
-            _panel = MakeRect(_root.transform, "Panel");
-            _panel.sizeDelta = new Vector2(320f, 60f);
-            _panel.pivot = new Vector2(0.5f, 0f); // bottom center sits on the top of the ghost
+    private static void BuildPanel(View v)
+    {
+        EnsureRoot();
+        if (_root == null) return;
+        try
+        {
+            var panel = MakeRect(_root.transform, $"Panel{v.Slot}");
+            panel.sizeDelta = new Vector2(320f, 60f);
+            panel.pivot = new Vector2(0.5f, 0f); // bottom center sits on the top of the ghost
 
-            var nameRt = MakeRect(_panel, "Name");
+            var nameRt = MakeRect(panel, "Name");
             nameRt.anchorMin = nameRt.anchorMax = new Vector2(0.5f, 0f);
             nameRt.pivot = new Vector2(0.5f, 0f);
             nameRt.anchoredPosition = new Vector2(0f, BarHeight + 4f);
             nameRt.sizeDelta = new Vector2(320f, 34f);
             var t = nameRt.gameObject.AddComponent<TextMeshProUGUI>();
-            var font = FindFont();
-            if (font != null) t.font = font;
+            if (_font != null) t.font = _font;
             t.fontSize = NameSize;
             t.fontStyle = FontStyles.Bold;
             t.alignment = TextAlignmentOptions.Bottom;
             t.enableWordWrapping = false;
             t.richText = false;
             t.raycastTarget = false;
-            t.color = AllyColor;
+            t.color = ColorFor(v.Slot);
             try
             {
                 t.outlineWidth = 0.3f;
@@ -171,9 +249,9 @@ public static class GhostOverhead
                 mat.SetFloat("_UnderlaySoftness", 0.3f);
             }
             catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][hpbar] Name outline/shadow: {ex.Message}"); }
-            _name = t;
+            v.Name = t;
 
-            var barRt = MakeRect(_panel, "HealthBar");
+            var barRt = MakeRect(panel, "HealthBar");
             barRt.anchorMin = barRt.anchorMax = new Vector2(0.5f, 0f);
             barRt.pivot = new Vector2(0.5f, 0f);
             barRt.anchoredPosition = Vector2.zero;
@@ -182,34 +260,30 @@ public static class GhostOverhead
             bg.color = new Color(0f, 0f, 0f, 0.8f);
             bg.raycastTarget = false;
 
-            _fill = MakeRect(barRt, "Fill");
-            _fill.anchorMin = _fill.anchorMax = new Vector2(0f, 0.5f); // grows from the left edge
-            _fill.pivot = new Vector2(0f, 0.5f);
-            _fill.anchoredPosition = new Vector2(2f, 0f);
-            _fill.sizeDelta = new Vector2(BarWidth - 4f, BarHeight - 4f);
-            _fillImage = _fill.gameObject.AddComponent<Image>();
-            _fillImage.raycastTarget = false;
-            var allySprite = FindAllyBarSprite();
-            if (allySprite != null)
+            var fill = MakeRect(barRt, "Fill");
+            fill.anchorMin = fill.anchorMax = new Vector2(0f, 0.5f); // grows from the left edge
+            fill.pivot = new Vector2(0f, 0.5f);
+            fill.anchoredPosition = new Vector2(2f, 0f);
+            fill.sizeDelta = new Vector2(BarWidth - 4f, BarHeight - 4f);
+            var img = fill.gameObject.AddComponent<Image>();
+            img.raycastTarget = false;
+            if (_allySprite != null)
             {
-                _fillImage.sprite = allySprite;
-                _fillImage.type = allySprite.border.sqrMagnitude > 0f ? Image.Type.Sliced : Image.Type.Simple;
-                _fillUsesSprite = true;
+                img.sprite = _allySprite;
+                img.type = _allySprite.border.sqrMagnitude > 0f ? Image.Type.Sliced : Image.Type.Simple;
             }
-            _fillImage.color = _fillUsesSprite ? Color.white : AllyColor;
-            _bar = barRt.gameObject;
-            _bar.SetActive(false);
+            img.color = _allySprite != null ? Color.white : ColorFor(v.Slot);
+            v.Fill = fill;
+            v.FillImage = img;
+            v.Bar = barRt.gameObject;
+            v.Bar.SetActive(false);
 
-            _panel.gameObject.SetActive(false);
-            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][hpbar] Overhead UI built (font={(font != null ? font.name : "TMP default")}, ally sprite={(allySprite != null ? allySprite.name : "none, flat color")}).");
+            panel.gameObject.SetActive(false);
+            v.Panel = panel;
         }
         catch (Exception ex)
         {
-            _buildFailed = true;
-            Plugin.StaticLog.LogError($"[SoulstoneCoop][hpbar] Overhead UI could not be built (the ghost goes without name/bar): {ex}");
-            if (_root != null) UnityEngine.Object.Destroy(_root);
-            _root = null;
-            _panel = null;
+            Plugin.StaticLog.LogError($"[SoulstoneCoop][hpbar] Overhead panel for slot {v.Slot} could not be built: {ex}");
         }
     }
 
@@ -273,22 +347,26 @@ public static class GhostOverhead
 
     // ---------------- minimap ----------------
 
-    private static void UpdateMinimapIcon()
+    private static void RemoveIcon(View v)
+    {
+        if (v.IconId < 0) return;
+        bool sameRun = Mathf.Approximately(v.IconRunStart, CoopSession.LocalRunStartTime);
+        // Another map clears the list itself (SetupMinimap); removing there would only log a game error.
+        try { if (sameRun && GameManagerUtil.HasGameManager) MinimapManager.RequestRemoveIcon(v.IconId); }
+        catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][hpbar] Removing minimap icon {v.IconId}: {ex.Message}"); }
+        v.IconId = -1;
+        v.IconGhostPtr = IntPtr.Zero;
+    }
+
+    private static void UpdateMinimapIcon(View v, GameObject? ghost)
     {
         if (_iconFailed) return;
-        var ghost = GameState.RemoteGhostObject;
-        bool sameRun = Mathf.Approximately(_iconRunStart, Lobby.CoopSession.LocalRunStartTime);
-        if (_iconId >= 0 && (ghost == null || ghost.Pointer != _iconGhostPtr || !sameRun))
-        {
-            // Another map clears the list itself (SetupMinimap); removing there would only log a game error.
-            if (sameRun && GameManagerUtil.HasGameManager) MinimapManager.RequestRemoveIcon(_iconId);
-            _iconId = -1;
-            _iconGhostPtr = IntPtr.Zero;
-        }
-        if (_iconId >= 0 || ghost == null || !Lobby.CoopSession.LocalInRun || !GameManagerUtil.HasGameManager) return;
-        _iconId = MinimapManager.RequestIcon(MinimapIconType.Player, ghost.transform, ghost.transform.position);
-        _iconGhostPtr = ghost.Pointer;
-        _iconRunStart = Lobby.CoopSession.LocalRunStartTime;
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][hpbar] Minimap icon {_iconId} (Player) requested for the ghost.");
+        bool sameRun = Mathf.Approximately(v.IconRunStart, CoopSession.LocalRunStartTime);
+        if (v.IconId >= 0 && (ghost == null || ghost.Pointer != v.IconGhostPtr || !sameRun)) RemoveIcon(v);
+        if (v.IconId >= 0 || ghost == null || !CoopSession.LocalInRun || !GameManagerUtil.HasGameManager) return;
+        v.IconId = MinimapManager.RequestIcon(MinimapIconType.Player, ghost.transform, ghost.transform.position);
+        v.IconGhostPtr = ghost.Pointer;
+        v.IconRunStart = CoopSession.LocalRunStartTime;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][hpbar] Minimap icon {v.IconId} (Player) requested for ghost {v.Slot}.");
     }
 }

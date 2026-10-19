@@ -2,17 +2,20 @@ using ECM2.Characters;
 using HarmonyLib;
 using LiteNetLib;
 using LiteNetLib.Utils;
+using SoulstoneCoop.Lobby;
 using SoulstoneCoop.Net;
 using UnityEngine;
 
 namespace SoulstoneCoop.Enemies;
 
 /// <summary>
-/// Phase 3b, host side: an invisible allied stand-in for the client's player, so the host's enemies chase and
+/// Phase 3b, host side: an invisible allied stand-in for a client's player, so the host's enemies chase and
 /// attack the client. It's a "Creeps/Dummy" (the CheatManager.SpawnDummy recipe) with Team = Players - NOT a
 /// player: no Inventory, so IsPlayer() stays false. It goes through the game's pipeline (pool + Entity.Setup),
-/// is moved to the remote ghost's position every frame, has its renderers off (the ghost is the visual) and
-/// never takes damage: hits on it are forwarded to the client as DamageToClient. See docs/fase3-notas.md.
+/// is moved to the client's ghost every frame, has its renderers off (the ghost is the visual) and
+/// never takes damage: hits on it are forwarded to that client as DamageToClient. See docs/fase3-notas.md.
+/// Phase 9: one proxy per client in the run (slot 1-7). Spawns rotate around the living players, the recycler spares
+/// what is near any living client, and seekers chase the nearest living player.
 /// </summary>
 public static class RemoteProxy
 {
@@ -20,38 +23,12 @@ public static class RemoteProxy
     private const float RecycleRadiusSqr = 35f * 35f; // EntityRegistry.DefaultContinuousRecycler
     private const float TelemetryInterval = 5f;
 
-    private static Entity? _proxy;
-    private static IntPtr _proxyPtr;
-    private static ModifiedCharacter? _proxyCharacter;
-    private static Team _originalTeam;
-    private static VfxReferences? _originalVfxOnSetup;
-    private static bool _matchStarted;
-    private static bool _hooked;
-    private static float _retryTimer;
-    private static int _createFailures;
-
-    // Telemetry window
-    private static float _telemetryTimer;
-    private static int _proxyHits, _hostHits, _spawnRedirects, _spawnCalls, _recyclerProtected, _seekerRetargets;
-    private static double _proxyDamage, _hostDamage;
-    private static float _maxHit;
-    private static string _maxHitBy = "-";
-
-    public static bool Active => _proxy != null;
-    /// <summary>Proxy exists and the client's player is alive: only then is it a target / spawn / recycle reference.</summary>
-    private static bool Targetable => _proxy != null && _remoteState.HasValue && !_remoteState.Value.Dead;
-
-    /// <summary>Phase 4B: the client's player exists on our side (proxy up) and isn't dead.</summary>
-    internal static bool RemoteAlive => Targetable;
-
-    /// <summary>Phase 4A: the client said it's down (or dead). ClientState.dead covers both.</summary>
-    internal static bool RemoteDownOrDead => _remoteState.HasValue && _remoteState.Value.Dead;
-
     // ---------------- client state (ClientState packet) ----------------
 
     public struct RemotePlayerState
     {
-        public bool Dead;
+        public bool Dead;   // down or dead
+        public bool Killed; // phase 9: dead for real (surrendered, final death): never revived
         public float Health, MaxHealth, Armor, DamageReduction, BlockChance;
         // pendências: status resistance (StatsComponent.AbnormalStatusDampening / Factor). The game has no dodge stat
         // (only the dash dodge, a timing thing) and no elemental resistances: these are the remaining defensive numbers.
@@ -59,17 +36,100 @@ public static class RemoteProxy
         public float StatusDampening, StatusDampeningFactor;
     }
 
-    private static RemotePlayerState? _remoteState;
-    private static bool _appliedDead;
+    /// <summary>One client's stand-in and what it last said about itself.</summary>
+    private sealed class Proxy
+    {
+        public byte Slot;
+        public Entity? Entity;
+        public IntPtr Ptr;
+        public ModifiedCharacter? Character;
+        public RemotePlayerState? State;
+        public bool AppliedDead;
+        public float RetryTimer;
+        public int CreateFailures;
+        // Telemetry window
+        public int Hits;
+        public double Damage;
+
+        /// <summary>Proxy exists and the client's player is alive: only then is it a target / spawn / recycle reference.</summary>
+        public bool Targetable => Entity != null && State.HasValue && !State.Value.Dead;
+    }
+
+    private static readonly Dictionary<byte, Proxy> Proxies = new();
+    private static readonly Dictionary<IntPtr, Proxy> ByPtr = new();
+    private static Team _originalTeam;
+    private static VfxReferences? _originalVfxOnSetup;
+    private static bool _matchStarted;
+    private static bool _hooked;
+
+    // Telemetry window
+    private static float _telemetryTimer;
+    private static int _hostHits, _spawnRedirects, _spawnCalls, _recyclerProtected, _seekerRetargets;
+    private static double _hostDamage;
+    private static float _maxHit;
+    private static string _maxHitBy = "-";
+
+    /// <summary>At least one proxy exists.</summary>
+    public static bool Active => ByPtr.Count > 0;
+
+    /// <summary>Phase 4B: that client's player exists on our side (proxy up) and isn't dead or down.</summary>
+    internal static bool IsAlive(byte slot) => Proxies.TryGetValue(slot, out var p) && p.Targetable;
+
+    /// <summary>Phase 4A: that client said it's down (or dead). ClientState.dead covers both.</summary>
+    internal static bool IsDownOrDead(byte slot) => Proxies.TryGetValue(slot, out var p) && p.State.HasValue && p.State.Value.Dead;
+
+    /// <summary>Phase 9: that client is dead for real (surrendered or a final death): out, and never revived.</summary>
+    internal static bool IsKilled(byte slot) => Proxies.TryGetValue(slot, out var p) && p.State.HasValue && p.State.Value.Killed;
+
+    /// <summary>Some client is alive on our side.</summary>
+    internal static bool AnyAlive
+    {
+        get
+        {
+            foreach (var p in Proxies.Values) if (p.Targetable) return true;
+            return false;
+        }
+    }
+
+    /// <summary>The slots whose ClientState arrived (the clients in this run, as far as the host knows).</summary>
+    internal static IEnumerable<byte> KnownSlots
+    {
+        get
+        {
+            foreach (var p in Proxies.Values) if (p.State.HasValue) yield return p.Slot;
+        }
+    }
+
+    /// <summary>Phase 4A: the client sent at least one ClientState this run.</summary>
+    internal static bool HasState(byte slot) => Proxies.TryGetValue(slot, out var p) && p.State.HasValue;
+
+    internal static bool IsProxy(Entity? e) => e != null && ByPtr.ContainsKey(e.Pointer);
+
+    internal static bool TryGetProxySlot(Entity? e, out byte slot)
+    {
+        if (e != null && ByPtr.TryGetValue(e.Pointer, out var p)) { slot = p.Slot; return true; }
+        slot = Players.NoSlot;
+        return false;
+    }
+
+    internal static Entity? ProxyOf(byte slot) => Proxies.TryGetValue(slot, out var p) ? p.Entity : null; // pendências: ProxyStatusForward
+
+    private static Proxy ProxyFor(byte slot)
+    {
+        if (!Proxies.TryGetValue(slot, out var p)) Proxies[slot] = p = new Proxy { Slot = slot };
+        return p;
+    }
 
     /// <summary>Client -> host, every 0.5 s: alive/dead plus the defensive numbers the host's damage math reads
-    /// from the TARGET (the proxy). Layout: type u8 | dead u8 | hp, maxHp, armor, damageReduction, block f32
+    /// from the TARGET (the proxy). Layout: type u8 | life u8 (0 alive, 1 down, 2 dead) | hp, maxHp, armor, damageReduction, block f32
     /// | [statusDampening, statusDampeningFactor f32] (optional tail, pendências).</summary>
     public static void OnClientState(NetDataReader r)
     {
+        byte life = r.GetByte(); // 0 alive, 1 down, 2 dead for real (phase 9; was a bool)
         var s = new RemotePlayerState
         {
-            Dead = r.GetBool(),
+            Dead = life != 0,
+            Killed = life == 2,
             Health = r.GetFloat(),
             MaxHealth = r.GetFloat(),
             Armor = r.GetFloat(),
@@ -82,20 +142,22 @@ public static class RemoteProxy
             s.StatusDampening = r.GetFloat();
             s.StatusDampeningFactor = r.GetFloat();
         }
-        if (!CoopRole.IsHostSide) return;
-        bool changed = !_remoteState.HasValue || _remoteState.Value.Dead != s.Dead;
-        _remoteState = s;
-        if (changed) Plugin.StaticLog.LogInfo($"[SoulstoneCoop][proxy] Client player is now {(s.Dead ? "DEAD" : "alive")} (hp={s.Health:F0}/{s.MaxHealth:F0}).");
-        try { if (_proxy != null) ApplyRemoteState(); }
-        catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop][proxy] ApplyRemoteState: {ex}"); }
+        if (!CoopRole.IsHostSide || !Players.IsPresent(PacketRouter.From)) return;
+        var p = ProxyFor(PacketRouter.From);
+        bool changed = !p.State.HasValue || p.State.Value.Dead != s.Dead;
+        p.State = s;
+        if (changed) Plugin.StaticLog.LogInfo($"[SoulstoneCoop][proxy] Client {p.Slot} player is now {(s.Dead ? "DEAD" : "alive")} (hp={s.Health:F0}/{s.MaxHealth:F0}).");
+        try { if (p.Entity != null) ApplyRemoteState(p); }
+        catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop][proxy] ApplyRemoteState({p.Slot}): {ex}"); }
     }
 
-    private static void ApplyRemoteState()
+    private static void ApplyRemoteState(Proxy p)
     {
-        if (_proxy == null || !_remoteState.HasValue) return;
-        var s = _remoteState.Value;
+        var e = p.Entity;
+        if (e == null || !p.State.HasValue) return;
+        var s = p.State.Value;
 
-        var st = _proxy._stats;
+        var st = e._stats;
         if (st != null && st.Stats != null && s.MaxHealth > 0f)
         {
             st.Stats.ArmorModifier = s.Armor;
@@ -111,48 +173,50 @@ public static class RemoteProxy
             float cur = st.GetMaxHealth();
             if (cur > 0f && Mathf.Abs(cur - s.MaxHealth) > 0.5f) st.Stats.MaxHealth *= s.MaxHealth / cur;
         }
-        var h = _proxy._health;
+        var h = e._health;
         if (h != null && !h.HasBeenKilled) h.CurrentHealth = Mathf.Max(1f, s.Health); // never 0: the proxy can't die
 
-        if (s.Dead == _appliedDead) return;
-        _appliedDead = s.Dead;
+        if (s.Dead == p.AppliedDead) return;
+        p.AppliedDead = s.Dead;
         // Dead client: out of every target search, no body to bump into, and enemies drop it as target.
-        _proxy.IgnoredByEntitySearchQueries = s.Dead;
-        var col = _proxy._physical != null ? _proxy._physical.Collider : null;
+        e.IgnoredByEntitySearchQueries = s.Dead;
+        var col = e._physical != null ? e._physical.Collider : null;
         if (col != null) col.enabled = !s.Dead;
-        if (s.Dead) DropAsTarget();
+        if (s.Dead) DropAsTarget(p);
     }
 
-    private static void DropAsTarget()
+    private static void DropAsTarget(Proxy p)
     {
         var all = EntityRegistry.AllEntities;
-        if (all == null || _proxy == null) return;
+        if (all == null || p.Entity == null) return;
         int dropped = 0;
         for (int i = 0; i < all.Count; i++)
         {
             var ai = all[i] != null ? all[i]._basicAI : null;
             if (ai == null) continue;
             var t = ai._entityToFollow;
-            if (t == null || t.Pointer != _proxyPtr) continue;
+            if (t == null || t.Pointer != p.Ptr) continue;
             ai.RemoveTarget(); // the next RefreshTarget picks the closest valid target again
             dropped++;
         }
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][proxy] Client dead: {dropped} enemies dropped the proxy as target.");
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][proxy] Client {p.Slot} dead: {dropped} enemies dropped its proxy as target.");
     }
 
-    // ---------------- loot: the proxy must not look like a player there ----------------
+    // ---------------- loot: the proxies must not look like players there ----------------
 
     private static bool _lootTeamSwapped;
 
     /// <summary>LootUtil.ProcessLoot walks AIUtil.GetAllEntitiesInSpecificTeam(Players) and reads each one's
     /// Inventory without a null check: the Inventory-less proxy made every kill throw there. So while loot is
-    /// processed the proxy is in the Summons team (enemies target Allies = Players|Summons anyway).</summary>
+    /// processed the proxies are in the Summons team (enemies target Allies = Players|Summons anyway).</summary>
     internal static void BeforeLoot()
     {
-        if (_proxy == null || _lootTeamSwapped) return;
-        var team = _proxy._team;
-        if (team == null) return;
-        team.Team = Team.Summons;
+        if (_lootTeamSwapped || ByPtr.Count == 0) return;
+        foreach (var p in Proxies.Values)
+        {
+            var team = p.Entity != null ? p.Entity._team : null;
+            if (team != null) team.Team = Team.Summons;
+        }
         _lootTeamSwapped = true;
     }
 
@@ -160,50 +224,41 @@ public static class RemoteProxy
     {
         if (!_lootTeamSwapped) return;
         _lootTeamSwapped = false;
-        var team = _proxy != null ? _proxy._team : null;
-        if (team != null) team.Team = Team.Players;
+        foreach (var p in Proxies.Values)
+        {
+            var team = p.Entity != null ? p.Entity._team : null;
+            if (team != null) team.Team = Team.Players;
+        }
     }
-    internal static bool IsProxy(Entity e) => _proxyPtr != IntPtr.Zero && e.Pointer == _proxyPtr;
-    internal static Entity? ProxyEntity => _proxy; // pendências: ProxyStatusForward caches its components
 
     public static void EnsureHooked()
     {
         if (_hooked) return;
         _hooked = true;
-        NetworkManager.PeerDisconnected += _ =>
+        Players.Left += slot =>
         {
             if (!CoopRole.IsHostSide) return;
-            RemoveProxy("peer disconnected");
-            _remoteState = null;
+            RemoveProxy(slot, "player left");
+            Proxies.Remove(slot);
         };
     }
 
     public static void OnMatchStarted()
     {
         if (!CoopRole.IsHostSide) return;
-        // A new match: any proxy from the previous scene is gone with it.
-        _proxy = null;
-        _proxyPtr = IntPtr.Zero;
-        _proxyCharacter = null;
+        // A new match: any proxy from the previous scene is gone with it. The clients resend their state within 0.5 s.
+        Proxies.Clear();
+        ByPtr.Clear();
         _matchStarted = true;
-        _createFailures = 0;
-        _remoteState = null; // the client resends within 0.5 s
         _lootTeamSwapped = false;
     }
 
-    /// <summary>Remote player's position: the ghost follows the client's PlayerState packets.</summary>
-    internal static bool TryGetRemotePosition(out Vector3 pos, out Quaternion rot)
+    /// <summary>A player's position: its ghost follows its PlayerState packets (RemotePlayer.TryGetPosition).</summary>
+    internal static bool TryGetPosition(byte slot, out Vector3 pos, out Quaternion rot)
     {
-        var ghost = GameState.RemoteGhostObject;
-        if (ghost == null || !NetworkManager.HasPeer || PlayerSync.ReceivedCount == 0)
-        {
-            pos = default; rot = default;
-            return false;
-        }
-        var t = ghost.transform;
-        pos = t.position;
-        rot = t.rotation;
-        return true;
+        var r = CoopSession.Get(slot);
+        if (r == null || !NetworkManager.HasPeer) { pos = default; rot = default; return false; }
+        return r.TryGetPosition(out pos, out rot);
     }
 
     public static void Tick(float unscaledDeltaTime)
@@ -211,28 +266,44 @@ public static class RemoteProxy
         if (!CoopRole.IsHostSide) return;
         try
         {
-            if (!GameManagerUtil.HasGameManager) { _matchStarted = false; _proxy = null; _proxyPtr = IntPtr.Zero; _proxyCharacter = null; }
-            else if (_proxyPtr != IntPtr.Zero && (_proxy == null || !_proxy.gameObject.activeInHierarchy))
+            if (!GameManagerUtil.HasGameManager)
             {
-                Plugin.StaticLog.LogWarning("[SoulstoneCoop][proxy] Proxy went inactive/destroyed - will recreate.");
-                _proxy = null; _proxyPtr = IntPtr.Zero; _proxyCharacter = null;
+                _matchStarted = false;
+                foreach (var p in Proxies.Values) Forget(p);
+                ByPtr.Clear();
             }
 
-            bool haveRemote = TryGetRemotePosition(out var pos, out var rot);
-            if (_proxy == null)
+            foreach (var r in CoopSession.Remotes)
             {
-                _retryTimer -= unscaledDeltaTime;
-                if (haveRemote && _matchStarted && GameState.LocalPlayerEntity != null && _retryTimer <= 0f && _createFailures < 5)
+                var p = ProxyFor(r.Slot);
+                if (p.Ptr != IntPtr.Zero && (p.Entity == null || !p.Entity.gameObject.activeInHierarchy))
                 {
-                    _retryTimer = 2f;
-                    CreateProxy(pos, rot);
+                    Plugin.StaticLog.LogWarning($"[SoulstoneCoop][proxy] Proxy {p.Slot} went inactive/destroyed - will recreate.");
+                    ByPtr.Remove(p.Ptr);
+                    Forget(p);
+                }
+
+                bool haveRemote = r.TryGetPosition(out var pos, out var rot);
+                if (p.Entity == null)
+                {
+                    p.RetryTimer -= unscaledDeltaTime;
+                    if (haveRemote && _matchStarted && GameState.LocalPlayerEntity != null && p.RetryTimer <= 0f && p.CreateFailures < 5)
+                    {
+                        p.RetryTimer = 2f;
+                        CreateProxy(p, pos, rot);
+                    }
+                }
+                else if (haveRemote)
+                {
+                    MoveProxy(p, pos, rot);
+                }
+                else if (r.Ghost == null)
+                {
+                    // That player left the run (end screen, menu, surrender): no stand-in without a ghost to follow.
+                    RemoveProxy(r.Slot, "player out of the run");
                 }
             }
-            else if (haveRemote)
-            {
-                AfterLoot(); // safety net if ProcessLoot threw past its postfix
-                MoveProxy(pos, rot);
-            }
+            AfterLoot(); // safety net if ProcessLoot threw past its postfix
         }
         catch (Exception ex)
         {
@@ -245,20 +316,34 @@ public static class RemoteProxy
             _telemetryTimer = 0f;
             if (NetworkManager.HasPeer)
             {
-                string where = _proxy != null ? _proxy.transform.position.ToString() : "-";
+                var parts = new List<string>();
+                foreach (var p in Proxies.Values)
+                {
+                    string where = p.Entity != null ? p.Entity.transform.position.ToString() : "-";
+                    parts.Add($"{p.Slot}: active={p.Entity != null} pos={where} hits={p.Hits} dmg={p.Damage:F0} dead={(p.State.HasValue ? p.State.Value.Dead.ToString() : "?")}");
+                    p.Hits = 0;
+                    p.Damage = 0;
+                }
                 Plugin.StaticLog.LogInfo(
-                    $"[SoulstoneCoop][proxy] Host: active={Active} pos={where} hitsToClient={_proxyHits} dmgToClient={_proxyDamage:F0} " +
+                    $"[SoulstoneCoop][proxy] Host: [{string.Join(" | ", parts)}] " +
                     $"hostHits={_hostHits} hostDmg={_hostDamage:F0} spawnRedirects={_spawnRedirects}/{_spawnCalls} " +
-                    $"recyclerProtected={_recyclerProtected} seekerRetargets={_seekerRetargets} maxHit={_maxHit:F0} by {_maxHitBy} " +
-                    $"clientDead={(_remoteState.HasValue ? _remoteState.Value.Dead.ToString() : "?")}");
+                    $"recyclerProtected={_recyclerProtected} seekerRetargets={_seekerRetargets} maxHit={_maxHit:F0} by {_maxHitBy}");
             }
-            _proxyHits = _hostHits = _spawnRedirects = _spawnCalls = _recyclerProtected = _seekerRetargets = 0;
-            _proxyDamage = _hostDamage = 0;
+            _hostHits = _spawnRedirects = _spawnCalls = _recyclerProtected = _seekerRetargets = 0;
+            _hostDamage = 0;
             _maxHit = 0f; _maxHitBy = "-";
         }
     }
 
-    private static void CreateProxy(Vector3 pos, Quaternion rot)
+    private static void Forget(Proxy p)
+    {
+        p.Entity = null;
+        p.Ptr = IntPtr.Zero;
+        p.Character = null;
+        p.AppliedDead = false;
+    }
+
+    private static void CreateProxy(Proxy p, Vector3 pos, Quaternion rot)
     {
         Entity? inst = null;
         try
@@ -302,78 +387,79 @@ public static class RemoteProxy
             int renderers = 0;
             foreach (var r in inst.GetComponentsInChildren<Renderer>(true)) { r.enabled = false; renderers++; }
 
-            _proxy = inst;
-            _proxyPtr = inst.Pointer;
-            _proxyCharacter = inst._character;
+            p.Entity = inst;
+            p.Ptr = inst.Pointer;
+            p.Character = inst._character;
+            ByPtr[p.Ptr] = p;
             var dst = stats != null ? stats.Stats : null;
             string dummyStats = dst != null
                 ? $"maxHP={stats!.GetMaxHealth():F0} armor={dst.ArmorModifier} dr={dst.DamageReduction} block={dst.BlockChance}"
                 : "no stats";
-            _appliedDead = false;
-            ApplyRemoteState();
+            p.AppliedDead = false;
+            ApplyRemoteState(p);
 
             var comps = inst.GetComponents<Component>();
             var names = new List<string>();
             foreach (var c in comps) if (c != null) names.Add(c.GetIl2CppType().Name);
             Plugin.StaticLog.LogInfo(
-                $"[SoulstoneCoop][proxy] Created proxy '{inst.gameObject.name}' at {pos}: team {_originalTeam}->{team.Team} isPlayer={inst.IsPlayer()} " +
-                $"character={(_proxyCharacter != null)} collider={(inst._physical != null && inst._physical.Collider != null)} " +
+                $"[SoulstoneCoop][proxy] Created proxy {p.Slot} '{inst.gameObject.name}' at {pos}: team {_originalTeam}->{team.Team} isPlayer={inst.IsPlayer()} " +
+                $"character={(p.Character != null)} collider={(inst._physical != null && inst._physical.Collider != null)} " +
                 $"ai={(ai != null)} staticAi={(staticAi != null)} renderersOff={renderers} dummy[{dummyStats}] " +
-                $"now[maxHP={(stats != null ? stats.GetMaxHealth() : -1):F0} hp={(health != null ? health.CurrentHealth : -1):F0} clientState={_remoteState.HasValue}] " +
+                $"now[maxHP={(stats != null ? stats.GetMaxHealth() : -1):F0} hp={(health != null ? health.CurrentHealth : -1):F0} clientState={p.State.HasValue}] " +
                 $"components=[{string.Join(",", names)}]");
         }
         catch (Exception ex)
         {
-            _createFailures++;
-            Plugin.StaticLog.LogError($"[SoulstoneCoop][proxy] CreateProxy failed (#{_createFailures}): {ex}");
-            if (inst != null && _proxy == null)
+            p.CreateFailures++;
+            Plugin.StaticLog.LogError($"[SoulstoneCoop][proxy] CreateProxy {p.Slot} failed (#{p.CreateFailures}): {ex}");
+            if (inst != null && p.Entity == null)
             {
                 try { RestoreForPool(inst); inst.Recycle(); } catch { /* best effort */ }
             }
         }
     }
 
-    private static void MoveProxy(Vector3 pos, Quaternion rot)
+    private static void MoveProxy(Proxy p, Vector3 pos, Quaternion rot)
     {
-        var tr = _proxy!.transform;
-        if (_proxyCharacter != null) _proxyCharacter.SetPosition(pos);
+        var tr = p.Entity!.transform;
+        if (p.Character != null) p.Character.SetPosition(pos);
         else tr.position = pos;
         tr.rotation = rot;
     }
 
-    private static void RemoveProxy(string reason)
+    private static void RemoveProxy(byte slot, string reason)
     {
-        var e = _proxy;
+        if (!Proxies.TryGetValue(slot, out var p)) return;
+        var e = p.Entity;
         if (e != null)
         {
+            ByPtr.Remove(p.Ptr);
             // Phase 8: enemies chasing the proxy would keep a pooled, inactive entity as target until their next
-            // refresh (seekers forever: RetargetSeeker stops once the proxy is gone). Point them back at the host.
+            // refresh (seekers forever: RetargetSeeker stops once the proxy is gone). Point them back at a player.
             try { ReleaseTargets(e); }
-            catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][proxy] Releasing the proxy's chasers: {ex.Message}"); }
+            catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][proxy] Releasing proxy {slot}'s chasers: {ex.Message}"); }
         }
-        _proxy = null;
-        _proxyPtr = IntPtr.Zero;
-        _proxyCharacter = null;
+        Forget(p);
+        p.State = null;
         if (e == null) return;
         try
         {
             RestoreForPool(e);
             e.Recycle();
-            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][proxy] Proxy recycled ({reason}).");
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][proxy] Proxy {slot} recycled ({reason}).");
         }
         catch (Exception ex)
         {
-            Plugin.StaticLog.LogError($"[SoulstoneCoop][proxy] RemoveProxy: {ex.Message}");
+            Plugin.StaticLog.LogError($"[SoulstoneCoop][proxy] RemoveProxy {slot}: {ex.Message}");
         }
     }
 
-    /// <summary>Seekers (always after a player) go to the host like RetargetSeeker does; every other AI drops the
-    /// target, as when the client dies (DropAsTarget), and its next RefreshTarget picks the closest one.</summary>
+    /// <summary>Seekers (always after a player) go to the nearest living player like RetargetSeeker does; every other AI
+    /// drops the target, as when the client dies (DropAsTarget), and its next RefreshTarget picks the closest one.</summary>
     private static void ReleaseTargets(Entity proxy)
     {
         var all = EntityRegistry.AllEntities;
         if (all == null) return;
-        var host = GameState.LocalPlayerEntity;
         int seekers = 0, dropped = 0;
         for (int i = 0; i < all.Count; i++)
         {
@@ -382,14 +468,10 @@ public static class RemoteProxy
             var t = ai._entityToFollow;
             if (t == null || t.Pointer != proxy.Pointer) continue;
             var seeker = ai.TryCast<PlayerSeekerAIComponent>();
-            if (seeker != null && host != null)
+            var to = seeker != null && seeker._transform != null ? NearestLivingPlayer(seeker._transform.position, proxy.Pointer) : null;
+            if (seeker != null && to != null)
             {
-                seeker._entityToFollow = host;
-                seeker._hasEntityToFollow = true;
-                seeker._transformToFollow = host.transform;
-                seeker._hasTransformToFollow = true;
-                var phys = host._physical;
-                seeker._entityToFollowRadius = phys != null ? phys.ColliderRadius : 0f;
+                Follow(seeker, to);
                 seekers++;
             }
             else
@@ -398,7 +480,47 @@ public static class RemoteProxy
                 dropped++;
             }
         }
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][proxy] Proxy going away: {seekers} seekers back on the host, {dropped} enemies dropped it as target.");
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][proxy] Proxy going away: {seekers} seekers moved to another player, {dropped} enemies dropped it as target.");
+    }
+
+    /// <summary>The host's own player, if it's up (not downed, not dead).</summary>
+    private static Entity? LivingHost()
+    {
+        var host = GameState.LocalPlayerEntity;
+        if (host == null || Life.CoopLife.LocalDowned) return null;
+        var h = host._health;
+        return h != null && h.HasBeenKilled ? null : host;
+    }
+
+    /// <summary>The nearest living player entity (host or a living client's proxy), skipping <paramref name="except"/>.
+    /// Falls back to the host itself (even down) so a seeker never ends up without a target.</summary>
+    private static Entity? NearestLivingPlayer(Vector3 from, IntPtr except)
+    {
+        Entity? best = null;
+        float bestD = float.MaxValue;
+        var host = LivingHost();
+        if (host != null)
+        {
+            best = host;
+            bestD = (host.transform.position - from).sqrMagnitude;
+        }
+        foreach (var p in Proxies.Values)
+        {
+            if (!p.Targetable || p.Ptr == except) continue;
+            float d = (p.Entity!.transform.position - from).sqrMagnitude;
+            if (d < bestD) { bestD = d; best = p.Entity; }
+        }
+        return best ?? GameState.LocalPlayerEntity;
+    }
+
+    private static void Follow(PlayerSeekerAIComponent ai, Entity want)
+    {
+        ai._entityToFollow = want;
+        ai._hasEntityToFollow = true;
+        ai._transformToFollow = want.transform;
+        ai._hasTransformToFollow = true;
+        var phys = want._physical;
+        ai._entityToFollowRadius = phys != null ? phys.ColliderRadius : 0f;
     }
 
     /// <summary>The instance goes back to the Dummy pool: undo what would leak into a cheat-spawned dummy.</summary>
@@ -412,8 +534,8 @@ public static class RemoteProxy
 
     // ---------------- patch bodies ----------------
 
-    /// <summary>Patch #9: damage aimed at the proxy goes to the client; the proxy itself never changes.</summary>
-    internal static void ForwardDamage(Entity? attacker, float healthChange)
+    /// <summary>Patch #9: damage aimed at a proxy goes to its client; the proxy itself never changes.</summary>
+    internal static void ForwardDamage(byte slot, Entity? attacker, float healthChange)
     {
         if (healthChange >= 0f || !NetworkManager.HasPeer) return;
         ushort attackerNetId = 0;
@@ -422,9 +544,12 @@ public static class RemoteProxy
         w.Put((byte)PacketType.DamageToClient);
         w.Put(healthChange);
         w.Put(attackerNetId);
-        NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
-        _proxyHits++;
-        _proxyDamage -= healthChange;
+        NetworkManager.SendTo(slot, w, DeliveryMethod.ReliableOrdered);
+        if (Proxies.TryGetValue(slot, out var p))
+        {
+            p.Hits++;
+            p.Damage -= healthChange;
+        }
         if (-healthChange > _maxHit) { _maxHit = -healthChange; _maxHitBy = attacker != null ? attacker.gameObject.name : "null"; }
     }
 
@@ -435,40 +560,60 @@ public static class RemoteProxy
         _hostDamage -= healthChange;
     }
 
-    private static int _spawnAlternator;
+    private static int _spawnRotation;
     internal static bool InSpawnRedirect;
+    private static readonly List<Vector3> SpawnCandidates = new();
 
-    /// <summary>Patch #7: every other spawn point taken around the host player is re-rolled around the client.</summary>
+    /// <summary>Patch #7: the spawn points taken around the host player rotate among the living players: with the host
+    /// and one client up, every other one is re-rolled around the client (as before phase 9); with the host down, all
+    /// go around the living clients.</summary>
     internal static void MaybeRedirectSpawn(Vector3 referencePoint, float extraDistanceMultiplier, ref Vector3 result)
     {
-        if (!Targetable || InSpawnRedirect) return;
+        if (InSpawnRedirect || ByPtr.Count == 0) return;
         var local = GameState.LocalPlayerEntity;
-        if (local == null || !TryGetRemotePosition(out var remote, out _)) return;
+        if (local == null) return;
         // Only reference points that are the host player (other callers pass their own areas).
         if ((referencePoint - local.transform.position).sqrMagnitude > 4f) return;
+
+        SpawnCandidates.Clear();
+        bool hostUp = LivingHost() != null;
+        foreach (var p in Proxies.Values)
+            if (p.Targetable && TryGetPosition(p.Slot, out var pos, out _)) SpawnCandidates.Add(pos);
+        if (SpawnCandidates.Count == 0) return;
         _spawnCalls++;
-        // Downed host (phase 4A): every spawn goes around the client, the only one still fighting.
-        if ((++_spawnAlternator & 1) == 0 && !Life.CoopLife.LocalDowned) return;
+        int n = SpawnCandidates.Count + (hostUp ? 1 : 0);
+        int pick = (++_spawnRotation) % n;
+        if (hostUp && pick == 0) return; // this one stays around the host
+        var around = SpawnCandidates[hostUp ? pick - 1 : pick];
         InSpawnRedirect = true;
-        try { result = GameManagerUtil.GetRandomSpawnPointOutsideOfView(remote, extraDistanceMultiplier); }
+        try { result = GameManagerUtil.GetRandomSpawnPointOutsideOfView(around, extraDistanceMultiplier); }
         finally { InSpawnRedirect = false; }
         _spawnRedirects++;
     }
 
     private static readonly List<Entity> RecyclerProtected = new();
+    private static readonly List<Vector3> LivingClients = new();
 
-    /// <summary>Patch #8, before the recycler: enemies within 35 u of the client are temporarily not recyclable.</summary>
+    /// <summary>Patch #8, before the recycler: enemies within 35 u of any living client are temporarily not recyclable.</summary>
     internal static void BeforeRecycler()
     {
         AfterRecycler(); // in case the last call threw before its postfix
-        if (!Targetable || !TryGetRemotePosition(out var remote, out _)) return;
+        if (ByPtr.Count == 0) return;
+        LivingClients.Clear();
+        foreach (var p in Proxies.Values)
+            if (p.Targetable && TryGetPosition(p.Slot, out var pos, out _)) LivingClients.Add(pos);
+        if (LivingClients.Count == 0) return;
         var all = EntityRegistry.AllEntities;
         if (all == null) return;
         for (int i = 0; i < all.Count; i++)
         {
             var e = all[i];
             if (e == null || !e.CanBeRecycledByDistance) continue;
-            if ((e.transform.position - remote).sqrMagnitude >= RecycleRadiusSqr) continue;
+            var ep = e.transform.position;
+            bool near = false;
+            foreach (var c in LivingClients)
+                if ((ep - c).sqrMagnitude < RecycleRadiusSqr) { near = true; break; }
+            if (!near) continue;
             e.CanBeRecycledByDistance = false;
             RecyclerProtected.Add(e);
         }
@@ -483,33 +628,18 @@ public static class RemoteProxy
         RecyclerProtected.Clear();
     }
 
-    /// <summary>Patch #13: PlayerSeekerAI always targets PlayerEntities[0]; make it chase the closer of host and proxy.</summary>
+    /// <summary>Patch #13: PlayerSeekerAI always targets PlayerEntities[0]; make it chase the nearest living player
+    /// (the host or a client's proxy).</summary>
     internal static void RetargetSeeker(PlayerSeekerAIComponent ai)
     {
-        if (_proxy == null) return;
-        var host = GameState.LocalPlayerEntity;
-        if (!Targetable)
-        {
-            // Dead client: a seeker still on the proxy goes back to the host.
-            var on = ai._entityToFollow;
-            if (on == null || on.Pointer != _proxyPtr || host == null) return;
-        }
+        if (ByPtr.Count == 0) return;
         var self = ai._transform;
-        if (host == null || self == null) return;
-        Vector3 p = self.position;
-        float dHost = (host.transform.position - p).sqrMagnitude;
-        float dProxy = (_proxy.transform.position - p).sqrMagnitude;
-        bool hostDown = Life.CoopLife.LocalDowned; // phase 4A: a downed host isn't worth chasing
-        if (hostDown && !Targetable) return;
-        var want = Targetable && (hostDown || dProxy < dHost) ? _proxy : host;
+        if (self == null) return;
         var cur = ai._entityToFollow;
+        var want = NearestLivingPlayer(self.position, IntPtr.Zero);
+        if (want == null) return;
         if (cur != null && cur.Pointer == want.Pointer) return;
-        ai._entityToFollow = want;
-        ai._hasEntityToFollow = true;
-        ai._transformToFollow = want.transform;
-        ai._hasTransformToFollow = true;
-        var phys = want._physical;
-        ai._entityToFollowRadius = phys != null ? phys.ColliderRadius : 0f;
+        Follow(ai, want);
         _seekerRetargets++;
     }
 }
@@ -560,7 +690,7 @@ public static class ClientIncomingDamage
     }
 
     private static float _stateTimer;
-    private static bool _lastSentDead;
+    private static byte _lastSentLife;
 
     /// <summary>Sends ClientState (see RemoteProxy.OnClientState) every 0.5 s, and right away when we die or revive.</summary>
     private static void SendState(float unscaledDeltaTime)
@@ -570,15 +700,15 @@ public static class ClientIncomingDamage
         var st = local != null ? local._stats : null;
         if (!NetworkManager.HasPeer || h == null || st == null || st.Stats == null || !ClientPuppets.MatchStarted) return;
         // Phase 4A: downed counts as dead for the host (proxy out of the fight, XP ownership, revive/defeat logic).
-        bool dead = h.HasBeenKilled || Life.CoopLife.LocalDowned;
+        byte life = (byte)(h.HasBeenKilled ? 2 : Life.CoopLife.LocalDowned ? 1 : 0);
         _stateTimer += unscaledDeltaTime;
-        if (_stateTimer < 0.5f && dead == _lastSentDead) return;
+        if (_stateTimer < 0.5f && life == _lastSentLife) return;
         _stateTimer = 0f;
-        _lastSentDead = dead;
+        _lastSentLife = life;
 
         var w = new NetDataWriter();
         w.Put((byte)PacketType.ClientState);
-        w.Put(dead);
+        w.Put(life);
         w.Put(h.CurrentHealth);
         w.Put(st.GetMaxHealth());
         w.Put(st.Stats.ArmorModifier);
@@ -624,9 +754,9 @@ public static class HostProxyDamagePatch
             if (!CoopRole.IsHostSide || targetEntity == null) return true;
             // The remote caster's replays are visual only (RemoteCasterDamageBlockPatch skips the original too).
             if (Skills.RemoteCaster.IsCaster(attackerEntity) || Skills.RemoteCaster.IsCaster(targetEntity)) return false;
-            if (RemoteProxy.IsProxy(targetEntity))
+            if (RemoteProxy.TryGetProxySlot(targetEntity, out byte proxySlot))
             {
-                RemoteProxy.ForwardDamage(attackerEntity, healthChange);
+                RemoteProxy.ForwardDamage(proxySlot, attackerEntity, healthChange);
                 // Report it as dealt, so the caller shows the damage number (at the ghost) and runs on-hit logic.
                 effectiveHealthChange = healthChange < 0f ? healthChange : 0f;
                 absorbedDamage = 0f;

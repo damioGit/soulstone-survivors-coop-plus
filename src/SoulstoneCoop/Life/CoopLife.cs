@@ -17,7 +17,8 @@ namespace SoulstoneCoop.Life;
 /// on the local player (HealthComponent.UpdateAll would otherwise animate "Cowering" every frame). On top of it:
 /// huge invulnerability, ragdoll, autocast off, input off, camera on an anchor that follows the partner's ghost.
 ///
-/// The host is the authority: it runs the proximity revive for both players, and decides the defeat (both down).
+/// The host is the authority: it runs the proximity revive for everyone, and decides the defeat (everyone down).
+/// Phase 9: any living ally next to a downed player revives it; a client that surrenders leaves alone.
 /// Victory, the Home portal and surrender are mirrored to the other side.
 /// </summary>
 public static class CoopLife
@@ -39,14 +40,15 @@ public static class CoopLife
     private static bool _matchStarted;
     private static bool _hooked;
 
-    // ---- host-side view of the client / client-side view of the host ----
-    private static bool _remoteDownedFromHost; // client: host's downed flag from CoopLife packets
-    private static bool _clientDownedFromHost; // client: its own downed flag as the host sees it (UI only)
-    private static float _progress;            // host: revive progress 0..1 (whoever is down); client: from packet
-    private static float _bothDownTimer;
-    private static float _clientRevivePendingTimer;
+    // ---- the others, by slot (phase 9) ----
+    // Host: revive progress 0..1 of each downed player (itself on slot 0), from its own proximity check.
+    // Client: down flags and progress of everyone, from the host's CoopLife packets (its own slot included).
+    private static readonly bool[] _downFromHost = new bool[Players.MaxSlots];
+    private static readonly float[] _progress = new float[Players.MaxSlots];
+    private static readonly float[] _revivePendingTimer = new float[Players.MaxSlots]; // host: Revive sent, waiting for its ClientState
+    private static float _allDownTimer;
     private static float _lifeTimer;
-    private static bool _lastSentHostDown, _lastSentClientDown;
+    private static int _lastSentDownMask = -1;
 
     // ---- camera ----
     private static GameObject? _anchor;
@@ -67,6 +69,16 @@ public static class CoopLife
         if (_hooked) return;
         _hooked = true;
         NetworkManager.PeerDisconnected += _ => OnPeerDisconnected();
+        Players.Left += ForgetSlot;
+    }
+
+    private static void ForgetSlot(byte slot)
+    {
+        if (slot >= Players.MaxSlots) return;
+        _downFromHost[slot] = false;
+        _progress[slot] = 0f;
+        _revivePendingTimer[slot] = 0f;
+        _wasRemoteDown[slot] = false;
     }
 
     public static void OnMatchStarted()
@@ -82,11 +94,12 @@ public static class CoopLife
         LocalDowned = false;
         _enterPending = false;
         RunEnding = false;
-        _remoteDownedFromHost = false;
-        _clientDownedFromHost = false;
-        _progress = 0f;
-        _bothDownTimer = 0f;
-        _clientRevivePendingTimer = 0f;
+        Array.Clear(_downFromHost);
+        Array.Clear(_progress);
+        Array.Clear(_revivePendingTimer);
+        Array.Clear(_wasRemoteDown);
+        _allDownTimer = 0f;
+        _lastSentDownMask = -1;
         _pendingPortalTimer = 0f;
         _hostLost = false;
         _armDepth = 0;
@@ -100,8 +113,12 @@ public static class CoopLife
     private static bool InMatch =>
         _matchStarted && GameManagerUtil.HasGameManager && GameState.LocalPlayerEntity != null;
 
-    /// <summary>The partner is down (or dead). Host: from ClientState; client: from the host's CoopLife packets.</summary>
-    internal static bool RemoteDowned => CoopRole.IsHostSide ? Enemies.RemoteProxy.RemoteDownOrDead : _remoteDownedFromHost;
+    /// <summary>That other player is down (or dead). Host: from its ClientState; client: from the host's CoopLife packets.</summary>
+    internal static bool IsRemoteDown(byte slot) =>
+        slot < Players.MaxSlots && (CoopRole.IsHostSide ? Enemies.RemoteProxy.IsDownOrDead(slot) : _downFromHost[slot]);
+
+    /// <summary>Revive progress shown over that player (0..1): the host's own count, or what the host sent.</summary>
+    private static float ProgressOf(byte slot) => slot < Players.MaxSlots ? _progress[slot] : 0f;
 
     /// <summary>Local player down or dead for real.</summary>
     internal static bool LocalOut
@@ -192,7 +209,7 @@ public static class CoopLife
             {
                 var h = GameState.LocalPlayerEntity!._health;
                 Plugin.StaticLog.LogInfo(
-                    $"[SoulstoneCoop][life] localDowned={LocalDowned} remoteDowned={RemoteDowned} progress={_progress:F2} " +
+                    $"[SoulstoneCoop][life] localDowned={LocalDowned} down=[{DescribeDown()}] " +
                     $"hp={(h != null ? h.CurrentHealth : -1):F0} killed={(h != null && h.HasBeenKilled)} delayToRevive={(h != null ? h.DelayToRevive : -1):F0} " +
                     $"downs={_downs} revives={_revives} texts={_texts} textErrors={_feedbackErrors} vfx={_vfx} camRetargets={_camRetargets} armedCalls={_armed} finalDeaths={_finalDeaths} runEnding={RunEnding} portalQueued={_portalQueued}");
             }
@@ -325,10 +342,41 @@ public static class CoopLife
 
     // ---------------- spectator camera ----------------
 
+    private static byte _spectated = Players.NoSlot;
+    private static float _spectateCheck;
+
+    /// <summary>Phase 9: the downed player watches the nearest living ally (checked every second; another one once
+    /// that ally goes down too). Nobody alive: whoever has a ghost.</summary>
+    private static GameObject? SpectatedGhost()
+    {
+        var cur = Lobby.CoopSession.Get(_spectated);
+        _spectateCheck -= Time.unscaledDeltaTime;
+        if (cur != null && cur.Ghost != null && _spectateCheck > 0f) return cur.Ghost;
+        _spectateCheck = 1f;
+        var local = GameState.LocalPlayerEntity;
+        Vector3 from = _anchor != null ? _anchor.transform.position : local != null ? local.transform.position : Vector3.zero;
+        Lobby.RemotePlayer? best = null, anyone = null;
+        float bestD = float.MaxValue;
+        foreach (var r in Lobby.CoopSession.Remotes)
+        {
+            if (r.Ghost == null) continue;
+            anyone ??= r;
+            if (IsRemoteDown(r.Slot)) continue;
+            float d = (r.Ghost.transform.position - from).sqrMagnitude;
+            if (d < bestD) { bestD = d; best = r; }
+        }
+        best ??= anyone;
+        byte now = best != null ? best.Slot : Players.NoSlot;
+        if (now != _spectated && best != null)
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] Spectating slot {now} ({best.Name}).");
+        _spectated = now;
+        return best?.Ghost;
+    }
+
     private static void UpdateSpectator()
     {
         var cam = GameManagerUtil.PlayerCamera;
-        var ghost = GameState.RemoteGhostObject;
+        var ghost = SpectatedGhost();
         if (cam == null) return;
         if (_anchor == null)
         {
@@ -365,52 +413,100 @@ public static class CoopLife
     }
 
     // =====================================================================================
-    // Host authority: revive by proximity, defeat when both are down
+    // Host authority: revive by proximity, defeat when everyone is down
     // =====================================================================================
+
+    /// <summary>One player of this run as the host sees it.</summary>
+    private struct Participant
+    {
+        public byte Slot;
+        public bool Down;       // down or dead (dead: can't be revived)
+        public bool Revivable;  // down, not dead for real
+        public bool HasPos;
+        public Vector3 Pos;
+    }
+
+    private static readonly List<Participant> Run = new();
+
+    /// <summary>The host plus every client whose ClientState came this run (one that left the run has no proxy state).</summary>
+    private static void CollectParticipants(float dt)
+    {
+        Run.Clear();
+        var local = GameState.LocalPlayerEntity;
+        if (local == null) return;
+        bool hostDown = LocalOut;
+        Run.Add(new Participant
+        {
+            Slot = Players.HostSlot, Down = hostDown,
+            Revivable = hostDown && LocalDowned && !LocalPlayerKilled(), // host really dead can't be revived
+            HasPos = true, Pos = local.transform.position,
+        });
+        foreach (var slot in Enemies.RemoteProxy.KnownSlots)
+        {
+            bool down = Enemies.RemoteProxy.IsDownOrDead(slot);
+            if (_revivePendingTimer[slot] > 0f)
+            {
+                _revivePendingTimer[slot] -= dt;
+                if (!down) _revivePendingTimer[slot] = 0f;
+                else down = false; // Revive sent, waiting for its ClientState: don't count it as down meanwhile
+            }
+            bool hasPos = Enemies.RemoteProxy.TryGetPosition(slot, out var pos, out _);
+            Run.Add(new Participant
+            {
+                Slot = slot, Down = down, Revivable = down && !Enemies.RemoteProxy.IsKilled(slot),
+                HasPos = hasPos, Pos = pos,
+            });
+        }
+        // In the run but no ClientState yet (its first one comes within 0.5 s of its StartMatch): alive, as before
+        // phase 9, so a host that goes down in the first second isn't taken for the last one standing.
+        foreach (var r in Lobby.CoopSession.Remotes)
+        {
+            if (!r.InRun || Enemies.RemoteProxy.HasState(r.Slot)) continue;
+            bool hasPos = r.TryGetPosition(out var pos, out _);
+            Run.Add(new Participant { Slot = r.Slot, HasPos = hasPos, Pos = pos });
+        }
+    }
 
     private static void HostTick(float dt)
     {
         if (Time.timeScale <= 0f) { SendLife(force: false); return; } // paused: nothing progresses
-        bool hostDown = LocalOut;
-        bool clientDown = Enemies.RemoteProxy.RemoteDownOrDead;
-        if (_clientRevivePendingTimer > 0f)
-        {
-            _clientRevivePendingTimer -= dt;
-            if (!clientDown) _clientRevivePendingTimer = 0f;
-            else clientDown = false; // Revive sent, waiting for its ClientState: don't count it as down meanwhile
-        }
-
+        CollectParticipants(dt);
         if (RunEnding) { SendLife(force: false); return; }
 
-        if (hostDown && clientDown)
+        bool allDown = true;
+        foreach (var p in Run) if (!p.Down) { allDown = false; break; }
+        if (allDown)
         {
-            _progress = 0f;
-            _bothDownTimer += dt;
-            if (_bothDownTimer >= DefeatGrace) EndRun(EndKind.Defeat);
+            Array.Clear(_progress);
+            _allDownTimer += dt;
+            if (_allDownTimer >= DefeatGrace) EndRun(EndKind.Defeat);
+            SendLife(force: false);
+            return;
         }
-        else
+        _allDownTimer = 0f;
+
+        // Each downed player fills its bar while any living ally stands within the radius; away from all, it drains twice as fast.
+        var downedNow = new bool[Players.MaxSlots];
+        foreach (var d in Run)
         {
-            _bothDownTimer = 0f;
-            if (hostDown != clientDown && LocalDowned == hostDown /* host really dead can't be revived */ &&
-                !(hostDown && LocalPlayerKilled()))
+            if (!d.Down) continue;
+            downedNow[d.Slot] = true;
+            if (!d.Revivable || !d.HasPos) { _progress[d.Slot] = 0f; continue; }
+            bool near = false;
+            foreach (var a in Run)
             {
-                var local = GameState.LocalPlayerEntity!;
-                if (Enemies.RemoteProxy.TryGetRemotePosition(out var clientPos, out _))
-                {
-                    Vector3 a = local.transform.position, b = clientPos;
-                    a.y = b.y = 0f;
-                    bool near = (a - b).sqrMagnitude <= ReviveRadius * ReviveRadius;
-                    _progress = Mathf.Clamp01(_progress + (near ? dt : -2f * dt) / ReviveTime);
-                    if (_progress >= 1f)
-                    {
-                        _progress = 0f;
-                        if (hostDown) ReviveLocal("partner stood by");
-                        else SendRevive();
-                    }
-                }
+                if (a.Down || !a.HasPos) continue;
+                Vector3 x = a.Pos, y = d.Pos;
+                x.y = y.y = 0f;
+                if ((x - y).sqrMagnitude <= ReviveRadius * ReviveRadius) { near = true; break; }
             }
-            else _progress = 0f;
+            _progress[d.Slot] = Mathf.Clamp01(_progress[d.Slot] + (near ? dt : -2f * dt) / ReviveTime);
+            if (_progress[d.Slot] < 1f) continue;
+            _progress[d.Slot] = 0f;
+            if (d.Slot == Players.HostSlot) ReviveLocal("an ally stood by");
+            else SendRevive(d.Slot);
         }
+        for (int s = 0; s < Players.MaxSlots; s++) if (!downedNow[s]) _progress[s] = 0f;
         SendLife(force: false);
     }
 
@@ -420,34 +516,55 @@ public static class CoopLife
         return h != null && h.HasBeenKilled;
     }
 
-    private static void SendRevive()
+    /// <summary>Revive packet: target slot u8. Everyone gets it (the target gets up; the others see it happen).</summary>
+    private static void SendRevive(byte slot)
     {
         var w = new NetDataWriter();
         w.Put((byte)PacketType.Revive);
-        w.Put((byte)1); // target: the client
+        w.Put(slot);
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
-        _clientRevivePendingTimer = 3f;
-        Plugin.StaticLog.LogInfo("[SoulstoneCoop][life] Host: client revived (Revive sent).");
+        _revivePendingTimer[slot] = 3f;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] Host: slot {slot} revived (Revive sent).");
     }
 
-    /// <summary>CoopLife packet, host -> client: hostDown u8 | clientDown u8 | progress f32.</summary>
+    private static void ReviveDownedClients()
+    {
+        foreach (var slot in Players.Others)
+            if (Enemies.RemoteProxy.IsDownOrDead(slot) && !Enemies.RemoteProxy.IsKilled(slot)) SendRevive(slot);
+    }
+
+    /// <summary>CoopLife packet, host -> clients: count u8 | count * (slot u8, down u8, progress f32), with the host and
+    /// every client of the run. On change, and at 5 Hz while someone is down.</summary>
     private static void SendLife(bool force)
     {
         if (!Connected) return;
-        bool hostDown = LocalOut, clientDown = Enemies.RemoteProxy.RemoteDownOrDead;
+        if (Run.Count == 0) CollectParticipants(0f);
+        int mask = 0;
+        foreach (var p in Run) if (p.Down) mask |= 1 << p.Slot;
         _lifeTimer += Time.unscaledDeltaTime;
-        bool changed = hostDown != _lastSentHostDown || clientDown != _lastSentClientDown;
-        bool anyDown = hostDown || clientDown;
-        if (!force && !changed && (!anyDown || _lifeTimer < LifePacketInterval)) return;
+        bool changed = mask != _lastSentDownMask;
+        if (!force && !changed && (mask == 0 || _lifeTimer < LifePacketInterval)) return;
         _lifeTimer = 0f;
-        _lastSentHostDown = hostDown;
-        _lastSentClientDown = clientDown;
+        _lastSentDownMask = mask;
         var w = new NetDataWriter();
         w.Put((byte)PacketType.CoopLife);
-        w.Put(hostDown);
-        w.Put(clientDown);
-        w.Put(_progress);
+        w.Put((byte)Run.Count);
+        foreach (var p in Run)
+        {
+            w.Put(p.Slot);
+            w.Put(p.Down);
+            w.Put(_progress[p.Slot]);
+        }
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
+    }
+
+    private static string DescribeDown()
+    {
+        var parts = new List<string>();
+        if (LocalDowned) parts.Add($"me({Players.MySlot})");
+        foreach (var r in Lobby.CoopSession.Remotes)
+            if (IsRemoteDown(r.Slot)) parts.Add($"{r.Slot}:{ProgressOf(r.Slot):F2}");
+        return string.Join(" ", parts);
     }
 
     // =====================================================================================
@@ -473,7 +590,7 @@ public static class CoopLife
         switch (kind)
         {
             case EndKind.Defeat:
-                FinalDeathLocal("both players down");
+                FinalDeathLocal("all players down");
                 break;
             case EndKind.Surrender:
                 RunEnding = true;
@@ -500,6 +617,14 @@ public static class CoopLife
 
     /// <summary>The local match is up (StartMatch seen, player alive in the registry or downed).</summary>
     internal static bool InMatchNow => InMatch;
+
+    /// <summary>Phase 9, client: our own Surrender is about to run (the game's, unmirrored): no more downing, and back
+    /// from the spectator camera if we were down.</summary>
+    internal static void PrepareToLeaveAlone()
+    {
+        RunEnding = true;
+        if (LocalDowned) { LocalDowned = false; _enterPending = false; RestoreCamera(); }
+    }
 
     /// <summary>Endless/BossRush portal about to be taken (Lobby.PortalSync), before the game's own portal code (which
     /// stops the player): whoever is down gets up first, as for the Home portal, and nobody goes down again in the
@@ -589,7 +714,7 @@ public static class CoopLife
     internal static void OnHostVictory()
     {
         if (!Connected || !InMatch || RunEnding) return;
-        if (Enemies.RemoteProxy.RemoteDownOrDead) SendRevive();
+        ReviveDownedClients();
         EndRun(EndKind.Victory);
     }
 
@@ -600,19 +725,31 @@ public static class CoopLife
     public static void OnRevive(NetDataReader r)
     {
         byte target = r.GetByte();
-        if (!CoopRole.IsClientSide || target != 1) return;
+        if (!CoopRole.IsClientSide || target != Players.MySlot) return;
         ReviveLocal("host says so");
     }
 
     public static void OnLife(NetDataReader r)
     {
-        bool hostDown = r.GetBool();
-        bool clientDown = r.GetBool();
-        float progress = r.GetFloat();
+        int n = r.GetByte();
+        var seen = new bool[Players.MaxSlots];
+        for (int i = 0; i < n; i++)
+        {
+            byte slot = r.GetByte();
+            bool down = r.GetBool();
+            float progress = r.GetFloat();
+            if (slot >= Players.MaxSlots || !CoopRole.IsClientSide) continue;
+            seen[slot] = true;
+            _downFromHost[slot] = down;
+            _progress[slot] = progress;
+        }
         if (!CoopRole.IsClientSide) return;
-        _remoteDownedFromHost = hostDown;
-        _clientDownedFromHost = clientDown;
-        _progress = progress;
+        for (int s = 0; s < Players.MaxSlots; s++)
+        {
+            if (seen[s]) continue;
+            _downFromHost[s] = false; // not in the run any more
+            _progress[s] = 0f;
+        }
     }
 
     public static void OnRunEnd(NetDataReader r)
@@ -629,12 +766,23 @@ public static class CoopLife
     {
         var kind = (EndKind)r.GetByte();
         if (!CoopRole.IsHostSide) return;
-        if (!InMatch) { Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] RunEndRequest {kind} ignored: not in a match."); return; }
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] RunEndRequest from client: {kind}.");
+        byte from = PacketRouter.From;
+        if (!InMatch) { Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] RunEndRequest {kind} from slot {from} ignored: not in a match."); return; }
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] RunEndRequest from slot {from}: {kind}.");
         try
         {
-            if (kind == EndKind.Surrender) { if (!RunEnding) EndRun(EndKind.Surrender); }
-            else if (kind == EndKind.PortalHome) { ReviveLocal("partner took the portal"); TryEnterPortalLocally(); }
+            // Phase 9: a client that surrenders leaves alone (it runs the game's Surrender itself); old builds asked.
+            if (kind == EndKind.Surrender) Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] Slot {from} surrendered: it leaves the run, the others go on.");
+            else if (kind == EndKind.PortalHome)
+            {
+                // The other clients go through too (the host's own entry below runs mirrored, so it isn't announced again).
+                var w = new NetDataWriter();
+                w.Put((byte)PacketType.RunEnd);
+                w.Put((byte)EndKind.PortalHome);
+                NetworkManager.SendExcept(from, w, DeliveryMethod.ReliableOrdered);
+                ReviveLocal("an ally took the portal");
+                TryEnterPortalLocally();
+            }
         }
         catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop][life] Request {kind}: {ex}"); }
     }
@@ -643,10 +791,8 @@ public static class CoopLife
     {
         try
         {
-            _remoteDownedFromHost = false;
-            _progress = 0f;
-            // Alone now: solo rules. A downed player has nobody to revive it.
-            if (LocalDowned && InMatch) FinalDeathLocal("partner disconnected");
+            // Alone now: solo rules. A downed player has nobody to revive it (the host keeps going while a client is left).
+            if (LocalDowned && InMatch && !NetworkManager.HasPeer) FinalDeathLocal("everyone else disconnected");
             // Phase 8: the client's run can't go on without the host (no enemies, no spawns): end it cleanly.
             if (CoopRole.IsClientSide && InMatch && !RunEnding) BeginHostLost();
         }
@@ -774,7 +920,7 @@ public static class CoopLife
     {
         Plugin.StaticLog.LogInfo("[SoulstoneCoop][life] F11: revive everyone.");
         ReviveLocal("F11");
-        if (Connected && Enemies.RemoteProxy.RemoteDownOrDead) SendRevive();
+        if (Connected) ReviveDownedClients();
     }
 
     // =====================================================================================
@@ -786,39 +932,45 @@ public static class CoopLife
     private const float MarkerInterval = 0.9f;
     private const float ProgressInterval = 0.45f;
     private static float _markerTimer, _progressTimer;
-    private static bool _prevRemoteDown;
+    private static readonly bool[] _wasRemoteDown = new bool[Players.MaxSlots];
     private static int _texts, _vfx, _feedbackErrors;
 
+    /// <summary>"CAIDO" over every downed body (ours and the ghosts), "REVIVE xx%" while one is being revived, and
+    /// "REVIVEU!" with the death guard VFX when a ghost's player gets up.</summary>
     private static void FeedbackTick(float dt)
     {
-        if (!Connected || !InMatch || RunEnding) { _prevRemoteDown = false; return; }
-        bool remoteDown = RemoteDowned;
-        if (_prevRemoteDown && !remoteDown) OnPartnerRevivedEffect();
-        _prevRemoteDown = remoteDown;
-        if (!LocalDowned && !remoteDown) { _markerTimer = _progressTimer = 0f; return; }
+        if (!Connected || !InMatch || RunEnding) { Array.Clear(_wasRemoteDown); return; }
+        bool anyDown = LocalDowned;
+        foreach (var r in Lobby.CoopSession.Remotes)
+        {
+            bool down = IsRemoteDown(r.Slot);
+            if (_wasRemoteDown[r.Slot] && !down) OnAllyRevivedEffect(r);
+            _wasRemoteDown[r.Slot] = down;
+            anyDown |= down && r.Ghost != null;
+        }
+        if (!anyDown) { _markerTimer = _progressTimer = 0f; return; }
 
         var local = GameState.LocalPlayerEntity;
-        var ghost = GameState.RemoteGhostObject;
-        Transform? downedBody = LocalDowned ? (local != null ? local.transform : null) : (ghost != null ? ghost.transform : null);
-        if (downedBody == null) return;
-
         _markerTimer -= dt;
-        if (_markerTimer <= 0f)
+        bool marker = _markerTimer <= 0f;
+        if (marker) _markerTimer = MarkerInterval;
+        _progressTimer -= dt;
+        bool progressText = _progressTimer <= 0f;
+        if (progressText) _progressTimer = ProgressInterval;
+
+        // Short on purpose: the GPU combat text has a fixed per-text buffer (MaxCharacterCountPerText).
+        if (LocalDowned && local != null)
         {
-            _markerTimer = MarkerInterval;
-            // Short on purpose: the GPU combat text has a fixed per-text buffer (MaxCharacterCountPerText).
-            string label = LocalDowned && remoteDown ? "CAIDOS" : "CAIDO";
-            FloatText(CombatTextType.StatusEffect, downedBody, label);
-            if (LocalDowned && remoteDown && ghost != null) FloatText(CombatTextType.StatusEffect, ghost.transform, "CAIDO");
+            if (marker) FloatText(CombatTextType.StatusEffect, local.transform, "CAIDO");
+            float mine = ProgressOf(Players.MySlot);
+            if (progressText && mine > 0.01f) FloatText(CombatTextType.Healing, local.transform, $"REVIVE {Mathf.RoundToInt(mine * 100f)}%");
         }
-        if (_progress > 0.01f && !(LocalDowned && remoteDown))
+        foreach (var r in Lobby.CoopSession.Remotes)
         {
-            _progressTimer -= dt;
-            if (_progressTimer <= 0f)
-            {
-                _progressTimer = ProgressInterval;
-                FloatText(CombatTextType.Healing, downedBody, $"REVIVE {Mathf.RoundToInt(_progress * 100f)}%");
-            }
+            if (r.Ghost == null || !IsRemoteDown(r.Slot)) continue;
+            if (marker) FloatText(CombatTextType.StatusEffect, r.Ghost.transform, "CAIDO");
+            float p = ProgressOf(r.Slot);
+            if (progressText && p > 0.01f) FloatText(CombatTextType.Healing, r.Ghost.transform, $"REVIVE {Mathf.RoundToInt(p * 100f)}%");
         }
     }
 
@@ -881,9 +1033,9 @@ public static class CoopLife
         FloatText(CombatTextType.Healing, local.transform, "REVIVEU!");
     }
 
-    private static void OnPartnerRevivedEffect()
+    private static void OnAllyRevivedEffect(Lobby.RemotePlayer r)
     {
-        var ghost = GameState.RemoteGhostObject;
+        var ghost = r.Ghost;
         if (ghost == null) return;
         PlayReviveVfx(ghost.transform, onLocalPlayer: false);
         FloatText(CombatTextType.Healing, ghost.transform, "REVIVEU!");
@@ -969,7 +1121,7 @@ public static class CoopLifeBossRoomHomePortalPatch
 
 // The Endless / BossRush portals (blocked here in phase 4A) are synchronized by Lobby/PortalSync.cs.
 
-/// <summary>Surrender ends the run for both: the client asks the host, the host mirrors it.</summary>
+/// <summary>Surrender: the host's ends the run for everyone (mirrored); a client's takes only that client out (phase 9).</summary>
 [HarmonyPatch(typeof(GameManagerUtil), nameof(GameManagerUtil.Surrender))]
 public static class CoopLifeSurrenderPatch
 {
@@ -981,9 +1133,11 @@ public static class CoopLifeSurrenderPatch
             if (CoopLife.FromNetwork || !NetworkManager.HasPeer) return true;
             if (CoopRole.IsClientSide)
             {
-                Plugin.StaticLog.LogInfo("[SoulstoneCoop][life] Surrender pressed: asking the host.");
-                CoopLife.SendRequest(CoopLife.EndKind.Surrender);
-                return false;
+                // Phase 9: a client that gives up leaves alone (like one that drops, phase 8); the others go on.
+                CoopLife.PrepareToLeaveAlone();
+                Plugin.StaticLog.LogInfo("[SoulstoneCoop][life] Surrender pressed: leaving the run alone (the host and the others go on).");
+                CoopLife.SendRequest(CoopLife.EndKind.Surrender); // just so the host logs it
+                return true;
             }
             if (CoopLife.RunEnding) return false;
             CoopLife.EndRun(CoopLife.EndKind.Surrender); // runs the original through RunMirrored

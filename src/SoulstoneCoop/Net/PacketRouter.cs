@@ -48,6 +48,7 @@ public enum PacketType : byte
     PlayersState = 101, // host -> clients: every player's position, 20 Hz (Sequenced): count u8 | count * (slot u8, x, y, z, yaw f32, sentMs u32)
     Welcome = 102,     // host -> new client, first packet: yourSlot u8 | maxPlayers u8 | n u8 | n * slot u8 (the other clients)
     PlayerLeft = 103,  // host -> clients: slot u8 left the session (ReliableOrdered, before the slot is handed out again)
+    PauseOverride = 104, // host -> clients: mask u8 of the players whose pause the host lifted (Esc closed on the host, or F4) (ReliableOrdered)
 }
 
 public static class PacketRouter
@@ -116,6 +117,12 @@ public static class PacketRouter
                 break;
             case PacketType.PlayerInput:
                 // Task #6/#7: real input-driven simulation, not wired yet (current milestone mirrors raw transforms).
+                break;
+            case PacketType.PlayersState:
+                PlayerSync.OnPlayersStateReceived(reader);
+                break;
+            case PacketType.PauseOverride:
+                PauseSync.OnPauseOverride(reader);
                 break;
             case PacketType.PlayerState:
                 PlayerSync.OnPlayerStateReceived(reader);
