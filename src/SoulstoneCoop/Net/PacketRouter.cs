@@ -60,6 +60,14 @@ public static class PacketRouter
     /// <summary>Host: which client packets the other clients must see too, and how they are forwarded (null = host only).</summary>
     private static DeliveryMethod? RelayMethod(PacketType type) => type switch
     {
+        // Who it is and where: every client builds the ghosts of the others from these.
+        PacketType.Hello or PacketType.LobbyState => DeliveryMethod.ReliableOrdered,
+        // What the others see of that player: its pause, health bar, spells (visual) and summons; and its XP (team XP).
+        PacketType.PauseState or PacketType.PartnerHealth or PacketType.XpShare => DeliveryMethod.ReliableOrdered,
+        PacketType.SkillCast or PacketType.SkillChannelEnd => DeliveryMethod.ReliableOrdered, // an end never overtakes its start
+        PacketType.SummonSpawn or PacketType.SummonDespawn => DeliveryMethod.ReliableOrdered,
+        PacketType.SummonStates => DeliveryMethod.Sequenced,
+        // Positions go in the host's PlayersState (one packet per tick); damage, ClientState, requests: host only.
         _ => null,
     };
 
