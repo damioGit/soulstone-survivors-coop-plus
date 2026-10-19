@@ -78,7 +78,8 @@ public static class VisualGhostFactory
             _buildHolder = null;
         }
 
-        StripToVisualOnly(cloneGo);
+        StripToVisualOnly(cloneGo, BuiltFromRemote ? ModelRoot(cloneGo) : null);
+        if (BuiltFromRemote) DescribeModel(cloneGo);
 
         if (!BuiltFromRemote)
         {
@@ -153,6 +154,10 @@ public static class VisualGhostFactory
         // The fields SpawnCharacter fills before Setup. SpawnWeaponsAsyncRoutine reads WeaponDefinition (0xA8).
         refs.SpawnedCharacterId = ct;
         refs.SpawnedCharacterSkinId = skin.CharacterSkinID;
+        // FirstTimeSetup (0x812600) fills this one, and SetHandOffsetToMatchDefaultRig (inside the weapon routine) loops over
+        // its Followers without a null check: 0.8.0 left it empty, hence its NRE and the ghost without weapons.
+        if (refs.ItemFollowBone == null) refs.ItemFollowBone = modelGo.GetComponentInChildren<ItemFollowBoneUtil>(true);
+        string followNote = refs.ItemFollowBone != null ? "bone follower ok" : "NO ItemFollowBoneUtil";
         string weaponNote = weapon == null ? "no weapon definition" : SpawnWeapons(refs, weapon, skin.CharacterSkinID);
 
         try
@@ -163,7 +168,7 @@ public static class VisualGhostFactory
         catch { /* fall back below */ }
         modelAnimator ??= modelGo.GetComponentInChildren<Animator>(true);
 
-        StripToVisualOnly(modelGo);
+        StripToVisualOnly(modelGo, modelGo.transform);
 
         // PlayerAnimator (stripped) drives these on the real player. With nothing handling OnAnimatorMove, the clips'
         // root motion would slide the model away from the ghost's root.
@@ -172,7 +177,7 @@ public static class VisualGhostFactory
             try { if (a != null) a.applyRootMotion = false; } catch { }
         }
 
-        what = $"{ct} skin '{skin.CharacterSkinID}'{skinNote}, weapon '{(weapon != null ? weapon.WeaponId : "-")}' ({weaponNote}), size {size:0.##}";
+        what = $"{ct} skin '{skin.CharacterSkinID}'{skinNote}, weapon '{(weapon != null ? weapon.WeaponId : "-")}' ({weaponNote}, {followNote}), size {size:0.##}";
         return modelGo;
     }
 
@@ -207,6 +212,52 @@ public static class VisualGhostFactory
 
     private static readonly string[] TintProperties = { "_BaseColor", "_Color", "_TintColor", "_MainColor" };
 
+    /// <summary>The direct child of the ghost root that holds ModelAnimator (the character model), if any.</summary>
+    private static Transform? ModelRoot(GameObject root)
+    {
+        if (ModelAnimator == null) return null;
+        var t = ModelAnimator.transform;
+        while (t.parent != null && t.parent.Pointer != root.transform.Pointer) t = t.parent;
+        return t.parent != null ? t : null;
+    }
+
+    /// <summary>Diagnostics for the 0.8.0 "no cast animation" report. It also sets AlwaysAnimate, so the model never stops
+    /// animating because Unity thinks its renderers are off screen. Logs the model animator (controller, avatar, layers,
+    /// culling) and whether each skinned mesh is bound to bones under that animator.</summary>
+    private static void DescribeModel(GameObject root)
+    {
+        try
+        {
+            var a = ModelAnimator;
+            if (a == null) { Plugin.StaticLog.LogWarning("[SoulstoneCoop] VisualGhostFactory: no model animator to describe."); return; }
+            var culling = a.cullingMode;
+            a.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+            var ctrl = a.runtimeAnimatorController;
+            var avatar = a.avatar;
+            var layers = new List<string>();
+            for (int i = 0; i < a.layerCount; i++) layers.Add($"{a.GetLayerName(i)}={a.GetLayerWeight(i):0.##}");
+            int smr = 0, bound = 0;
+            foreach (var r in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                if (r == null) continue;
+                smr++;
+                var rb = r.rootBone;
+                if (rb != null && rb.IsChildOf(a.transform)) bound++;
+            }
+            string ctrlName = ctrl != null ? ctrl.name : "NONE";
+            string avatarName = avatar != null ? avatar.name : "NONE";
+            bool human = avatar != null && avatar.isHuman, valid = avatar != null && avatar.isValid;
+            Plugin.StaticLog.LogInfo(
+                $"[SoulstoneCoop] VisualGhostFactory: model animator '{a.gameObject.name}' active={a.isActiveAndEnabled} initialized={a.isInitialized} " +
+                $"controller='{ctrlName}' avatar='{avatarName}' human={human} valid={valid} culling={culling}->AlwaysAnimate " +
+                $"speed={a.speed:0.##} layers=[{string.Join(", ", layers)}] skinnedMeshes={smr} boundUnderAnimator={bound}.");
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop] VisualGhostFactory: describing the model animator: {ex.Message}");
+        }
+    }
+
     /// <summary>The body effects the clone kept from the local entity (the ground ring and friends: everything that
     /// isn't the character model) get the ally color, so the ghost doesn't wear the same ring as the local player.
     /// Material instances, so the local player's shared materials are untouched. Each tinted renderer is logged.</summary>
@@ -214,13 +265,7 @@ public static class VisualGhostFactory
     {
         try
         {
-            Transform? modelRoot = null;
-            if (ModelAnimator != null)
-            {
-                var t = ModelAnimator.transform;
-                while (t.parent != null && t.parent.Pointer != root.transform.Pointer) t = t.parent;
-                if (t.parent != null) modelRoot = t;
-            }
+            var modelRoot = ModelRoot(root);
             var tinted = new List<string>();
             foreach (var r in root.GetComponentsInChildren<Renderer>(true))
             {
@@ -266,7 +311,10 @@ public static class VisualGhostFactory
         return h < 1.2f || h > 8f ? 2.6f : h + 0.4f;
     }
 
-    private static void StripToVisualOnly(GameObject root)
+    /// <summary><paramref name="keepBoneFollowersUnder"/>: the partner's model, whose ItemFollowBoneUtil stays alive. It is what
+    /// makes the weapon attachments follow the hands (LateUpdateAll moves each Follower to its bone), and it only touches
+    /// transforms of that same model. Elsewhere (the local-clone fallback) it goes, as before phase 5.</summary>
+    internal static void StripToVisualOnly(GameObject root, Transform? keepBoneFollowersUnder = null)
     {
         // Ragdoll joints must go first: Unity refuses to remove a Rigidbody a Joint still depends on.
         foreach (var joint in root.GetComponentsInChildren<Joint>(true))
@@ -276,6 +324,7 @@ public static class VisualGhostFactory
         foreach (var c in allComponents)
         {
             if (c == null || IsVisualComponent(c)) continue;
+            if (keepBoneFollowersUnder != null && c.TryCast<ItemFollowBoneUtil>() != null && c.transform.IsChildOf(keepBoneFollowersUnder)) continue;
 
             try
             {
