@@ -110,6 +110,10 @@ public static class RunSync
 
     internal static void OnPeerConnected(byte slot) => _rejoinSent.Remove(slot);
 
+    /// <summary>Phase 9: that player is in our run already (it came with the RunStart): if it goes back to the menu
+    /// (surrendered alone), AllowRejoin must not pull it straight back in.</summary>
+    internal static void NoteInRun(byte slot) { if (NetworkManager.Role == NetRole.Host && CoopSession.LocalInRun) _rejoinSent.Add(slot); }
+
     /// <summary>Host took an Endless/BossRush portal (PortalSync): a partner joining later loads the current stage's
     /// map, with the same mode and the run's affixes.</summary>
     internal static void OnHostStageChanged(string scene)

@@ -195,7 +195,7 @@ public static class PortalSync
         if (NetworkManager.Role != NetRole.Client) return;
 
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][portal] Client: host took the {kind} portal to {map} (local {CoopSession.LocalPlace}).");
-        if (!Life.CoopLife.InMatchNow || CoopSession.StageTransition)
+        if (!Life.CoopLife.InMatchNow || CoopSession.StageTransition || Life.CoopLife.LeftAlone)
         {
             Plugin.StaticLog.LogInfo("[SoulstoneCoop][portal] Client: not in a match (or already changing scene) - ignored.");
             return;
@@ -261,7 +261,7 @@ public static class PortalSync
         var kind = (PortalKind)r.GetByte();
         if (NetworkManager.Role != NetRole.Host) return;
         if (kind != PortalKind.Endless && kind != PortalKind.BossRush) return;
-        if (!Life.CoopLife.InMatchNow || CoopSession.StageTransition)
+        if (!Life.CoopLife.InMatchNow || CoopSession.StageTransition || Life.CoopLife.LeftAlone)
         {
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][portal] Host: client asked for the {kind} portal - ignored (not in a match or already changing scene).");
             return;

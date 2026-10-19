@@ -37,6 +37,8 @@ public static class CoopLife
     internal static bool LocalDowned;
     private static bool _enterPending;      // downed inside ChangeEntityHealth; the heavy part runs in Tick
     internal static bool RunEnding;         // defeat/surrender in progress: no more downing
+    /// <summary>Phase 9, client: we surrendered alone; the host's later victory / portals are not ours any more.</summary>
+    internal static bool LeftAlone;
     private static bool _matchStarted;
     private static bool _hooked;
 
@@ -94,6 +96,7 @@ public static class CoopLife
         LocalDowned = false;
         _enterPending = false;
         RunEnding = false;
+        LeftAlone = false;
         Array.Clear(_downFromHost);
         Array.Clear(_progress);
         Array.Clear(_revivePendingTimer);
@@ -443,6 +446,8 @@ public static class CoopLife
         });
         foreach (var slot in Enemies.RemoteProxy.KnownSlots)
         {
+            // A ClientState from before it left the run (its proxy may never have been made) must not keep it "alive".
+            if (Lobby.CoopSession.Get(slot)?.InRun != true) continue;
             bool down = Enemies.RemoteProxy.IsDownOrDead(slot);
             if (_revivePendingTimer[slot] > 0f)
             {
@@ -623,6 +628,7 @@ public static class CoopLife
     internal static void PrepareToLeaveAlone()
     {
         RunEnding = true;
+        LeftAlone = true;
         if (LocalDowned) { LocalDowned = false; _enterPending = false; RestoreCamera(); }
     }
 
@@ -757,6 +763,7 @@ public static class CoopLife
         var kind = (EndKind)r.GetByte();
         if (!CoopRole.IsClientSide) return;
         if (!InMatch) { Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] RunEnd {kind} ignored: not in a match (phase 6: late packet after the run)."); return; }
+        if (LeftAlone || LocalPlayerKilled()) { Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] RunEnd {kind} ignored: we already left this run (surrendered / dead)."); return; }
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] RunEnd from host: {kind}.");
         try { ApplyEnd(kind); }
         catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop][life] ApplyEnd({kind}): {ex}"); }

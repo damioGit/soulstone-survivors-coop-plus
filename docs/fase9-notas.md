@@ -122,7 +122,16 @@ A etapa 5 (regras com N) entrou junto com a 2: ao trocar cada módulo para "por 
 4. **Lobby `FriendsOnly`:** entrada por código de um amigo de cliente (ver acima).
 5. **Ordem entre origens:** um pacote Sequenced (posição de summon) de um jogador pode descartar o de outro se chegar fora de ordem no canal 1. Só afeta o próximo quadro.
 6. **Desempenho com 8:** VFX de 8 builds e 14 Dummies no host. O corte por distância ajuda; medir com `[net]` e o FPS.
-7. **`AllowRejoin` + cliente que desistiu:** quando ele volta ao menu, o host o traz de volta à run como personagem novo.
+7. **Steam, reconexão rápida com a mesma conta:** se um cliente cai sem `Bye` (fechou o jogo) e volta antes dos 15 s em que o host percebe, o host só reenvia o `Accept`, sem `Welcome`. O cliente fica sem slot: não é revivido e não recebe orbes de XP. Saída: o cliente desconecta, espera uns 15 s e entra de novo. (Pendência da revisão, não corrigida.)
+
+## Correções da revisão (commit da revisão)
+
+- Cliente que desistiu sozinho ignora a vitória, o portal Home e os portais Endless/BossRush que o host toma depois (`CoopLife.LeftAlone`).
+- Host que aperta Desconectar no meio da run recicla todos os proxies (a limpeza roda com o papel ainda de host).
+- Com `AllowRejoin`, quem já estava na run e voltou ao menu (desistiu) não é puxado de volta.
+- Cliente que saiu da run com um `ClientState` antigo de "vivo" não impede mais a derrota.
+- `EnemyScalePerPlayer` nunca baixa o limite original do jogo.
+- Fechar a pausa do host só libera pausas de Esc; o F4 libera também um level-up que pausa.
 
 ## Ferramentas de teste
 
