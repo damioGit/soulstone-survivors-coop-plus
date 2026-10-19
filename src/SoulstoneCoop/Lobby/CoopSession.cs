@@ -11,6 +11,7 @@ public enum LobbyPlace : byte
     Menu = 0,
     Loading = 1, // between RunStart and the local StartMatch
     InRun = 2,   // from StartMatch until the scene's game manager is gone (end screen included)
+    Transition = 3, // still in the run's scene, but a portal (Endless/BossRush) or Restart was taken: the next scene is coming
 }
 
 /// <summary>Identity of one player: what the Hello packet carries. Phase 5 builds the ghost from this.</summary>
@@ -53,7 +54,16 @@ public static class CoopSession
     /// run even if the connection drops (the spawners are already stopped; turning host-like mid-run is phase 8).</summary>
     internal static bool ClientRunLatched;
 
-    public static LobbyPlace LocalPlace => LocalInRun ? LobbyPlace.InRun : LocalLoading ? LobbyPlace.Loading : LobbyPlace.Menu;
+    /// <summary>A scene change inside the run is under way (Endless/BossRush portal or co-op Restart): from the portal
+    /// until the next StartMatch. While the old scene still lives the partner sees Transition, then Loading.</summary>
+    public static bool StageTransition { get; private set; }
+
+    public static LobbyPlace LocalPlace =>
+        LocalInRun ? (StageTransition ? LobbyPlace.Transition : LobbyPlace.InRun)
+        : LocalLoading ? LobbyPlace.Loading : LobbyPlace.Menu;
+
+    /// <summary>The partner is on its way to the next scene (still in the old one, or loading).</summary>
+    public static bool RemoteChangingScene => Connected && (RemotePlace == LobbyPlace.Loading || RemotePlace == LobbyPlace.Transition);
 
     public static string PartnerName => Remote.Known && Remote.Name.Length > 0 ? Remote.Name : "Parceiro";
 
@@ -115,9 +125,40 @@ public static class CoopSession
         SendPlace(force: true);
     }
 
+    /// <summary>A portal or Restart was taken inside the run (PortalSync/RunSync): the game will change scene by itself
+    /// (LoadNextScene). Counts as loading from now on, so the barrier holds whoever reaches the next StartMatch first.</summary>
+    internal static void BeginStageTransition(string why)
+    {
+        if (!StageTransition)
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Stage transition ({why}): next scene coming (partner {RemotePlace}).");
+        StageTransition = true;
+        _loadingSince = Time.unscaledTime;
+        SendPlace(force: true);
+    }
+
+    /// <summary>The scene change announced by BeginStageTransition isn't happening after all (the client couldn't
+    /// follow the host's portal). Only while the old scene is still up.</summary>
+    internal static void CancelStageTransition(string why)
+    {
+        if (!StageTransition || !LocalInRun) return;
+        StageTransition = false;
+        _loadingSince = -1f;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Stage transition cancelled ({why}).");
+        SendPlace(force: true);
+    }
+
+    /// <summary>GameManagerUtil.UnsetGameManager postfix: the scene's game manager was just destroyed. A direct
+    /// scene-to-scene change (portal, Restart) may never show a frame without a game manager to the tick (the new
+    /// scene's Start runs SetupGameData before the next Update), so the run is left here, at the exact moment.</summary>
+    internal static void OnGameManagerUnset()
+    {
+        if (LocalInRun) OnLocalRunLeft();
+    }
+
     /// <summary>GameManagerUtil.StartMatch postfix.</summary>
     internal static void OnLocalMatchStarted()
     {
+        StageTransition = false;
         LocalInRun = true;
         InMenuScene = false; // the 0.25 s scene check may still hold the menu from before the load
         _sceneTimer = 0f;
@@ -135,7 +176,9 @@ public static class CoopSession
         ClientRunLatched = false;
         GameState.LocalPlayerEntity = null;
         RunSync.OnLocalRunLeft();
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Local run over (back to menu). connected={Connected}");
+        Plugin.StaticLog.LogInfo(StageTransition
+            ? $"[SoulstoneCoop][session] Left the run's scene (stage transition, loading the next). connected={Connected}"
+            : $"[SoulstoneCoop][session] Local run over (back to menu). connected={Connected}");
         SendPlace(force: true);
     }
 
@@ -156,8 +199,9 @@ public static class CoopSession
         if (LocalInRun && (!GameManagerUtil.HasGameManager || InMenuScene)) OnLocalRunLeft();
         if (LocalLoading && Time.unscaledTime - _loadingSince > LoadingTimeout)
         {
-            Plugin.StaticLog.LogWarning("[SoulstoneCoop][session] Loading never reached StartMatch - back to menu state.");
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][session] Loading never reached StartMatch - back to menu state (stageTransition={StageTransition}).");
             _loadingSince = -1f;
+            StageTransition = false;
             RunSync.OnLocalRunLeft();
         }
 
@@ -271,7 +315,13 @@ public static class CoopSession
 
         // The partner's match just started next to ours: resend every live enemy (this used to happen on
         // PeerConnected, when the connection was made inside the run). Duplicates are ignored by the client.
-        if (place == LobbyPlace.InRun && LocalInRun && NetworkManager.Role == NetRole.Host)
+        // Not while our own old scene is still up (portal taken): those enemies are about to be gone.
+        if (place == LobbyPlace.InRun && LocalInRun && !StageTransition && NetworkManager.Role == NetRole.Host)
             Enemies.HostEnemySync.ResyncToPeer("partner entered the run");
+
+        // Client: the host's old scene is gone. Everything it sent from that scene came before this packet (same
+        // ordered channel), so spawns/loot still around are stale (portal or Restart inside the run).
+        if (place == LobbyPlace.Loading && (prev == LobbyPlace.InRun || prev == LobbyPlace.Transition) && NetworkManager.Role == NetRole.Client)
+            PortalSync.OnHostLeftScene();
     }
 }

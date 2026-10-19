@@ -102,6 +102,32 @@ public static class ClientSpawnBossesPatch
     }
 }
 
+/// <summary>The BossRush map (reached through the BossRush portal) has its own manager, which spawns each boss on a
+/// timer from its UpdateAll, outside BossSpawnProcessor and StopSpawning. The host's bosses come as puppets; the
+/// client's victory there comes from the host (CoopLife). No arguments: safe to patch. docs/portais-investigacao.md.</summary>
+[HarmonyPatch(typeof(SurvivorsBossRoomGameManager), nameof(SurvivorsBossRoomGameManager.SpawnNextBoss))]
+public static class ClientBossRoomSpawnPatch
+{
+    private static int _blocked;
+
+    [HarmonyPrefix]
+    public static bool Prefix()
+    {
+        try
+        {
+            if (!CoopRole.IsClientSide) return true;
+            if (_blocked++ < 20)
+                Plugin.StaticLog.LogInfo("[SoulstoneCoop][spawn] Client: blocked SurvivorsBossRoomGameManager.SpawnNextBoss() (BossRush map).");
+            return false;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.StaticLog.LogError($"[SoulstoneCoop] ClientBossRoomSpawnPatch: {ex}");
+            return true;
+        }
+    }
+}
+
 [HarmonyPatch(typeof(BossSpawnProcessor), nameof(BossSpawnProcessor.MasterySpawnBosses))]
 public static class ClientMasterySpawnBossesPatch
 {

@@ -80,7 +80,9 @@ public class CoopBehaviour : MonoBehaviour
     private static void UpdateGhostLifecycle()
     {
         var local = GameState.LocalPlayerEntity;
-        bool want = Lobby.CoopSession.Connected && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.RemoteInRun && local != null;
+        // Not while our own scene is on its way out (portal/Restart taken): the partner may already be in the next one.
+        bool want = Lobby.CoopSession.Connected && Lobby.CoopSession.LocalInRun && !Lobby.CoopSession.StageTransition
+                    && Lobby.CoopSession.RemoteInRun && local != null;
         var ghost = GameState.RemoteGhostObject;
         if (want && ghost == null)
         {
@@ -139,6 +141,7 @@ public class CoopBehaviour : MonoBehaviour
             Skills.CastSync.Tick(Time.unscaledDeltaTime);
             Loot.LootSync.Tick(Time.unscaledDeltaTime);
             Life.CoopLife.Tick(Time.unscaledDeltaTime);
+            Lobby.PortalSync.Tick(Time.unscaledDeltaTime);
             Enemies.EnemyCasts.Tick(Time.unscaledDeltaTime);
             Enemies.SpecialsDebug.Tick(Time.unscaledDeltaTime);
             RebuildGhostIfModelInactive();
