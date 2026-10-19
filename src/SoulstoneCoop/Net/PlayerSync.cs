@@ -66,6 +66,10 @@ public static class PlayerSync
         public bool HasLastGhostPos;
         public bool AnimErrorLogged;
         // Host: the client's latest raw state, forwarded in the next PlayersState (only once).
+        // Dash (phase 5, master c8876dc): that player's DashState events, applied InterpDelay after arrival like the positions.
+        public readonly List<DashEvent> DashEvents = new();
+        public bool Dashing;
+        public float DashingSince;
         public PlayerTransformState Latest;
         public bool LatestFresh;
     }
@@ -77,6 +81,14 @@ public static class PlayerSync
     private static readonly int ForwardMovement = Animator.StringToHash("ForwardMovement");
     private static readonly int SidewaysMovement = Animator.StringToHash("SidewaysMovement");
     private static readonly int OnGround = Animator.StringToHash("OnGround");
+    private static readonly int Dash = Animator.StringToHash("Dash");
+
+    // Dash (phase 5): the sender's ModifiedCharacter.IsDashing() (the _isDashing flag PlayerAnimator.OnUpdate writes
+    // into the "Dash" bool), sent on change as DashState (the host relays a client's to the others).
+    private struct DashEvent { public float At; public bool On; }
+    private static bool _lastSentDash;
+    private const float MaxDashSeconds = 1.5f; // safety: a lost "end" never leaves the ghost dashing
+    public static int DashesSent, DashesReceived;
 
     private static Motion MotionOf(byte slot)
     {
@@ -102,6 +114,12 @@ public static class PlayerSync
         }
 
         if (!NetworkManager.HasPeer) return;
+        var dashLocal = GameState.LocalPlayerEntity;
+        if (dashLocal != null)
+        {
+            try { SendDashIfChanged(dashLocal); }
+            catch (System.Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][sync] Dash state: {ex.Message}"); }
+        }
         _timeSinceLastSend += deltaTime;
         if (_timeSinceLastSend < SendIntervalSeconds) return;
         _timeSinceLastSend = 0f;
@@ -152,7 +170,51 @@ public static class PlayerSync
         m.HasLastGhostPos = false;
         m.Animators = null;
         m.AnimGhostPtr = IntPtr.Zero;
+        m.DashEvents.Clear();
+        m.Dashing = false;
         r.PositionsReceived = 0;
+    }
+
+    // ---------------- dash ----------------
+
+    private static void SendDashIfChanged(Entity local)
+    {
+        var ch = local._character;
+        bool dashing = ch != null && ch.IsDashing();
+        if (dashing == _lastSentDash) return;
+        _lastSentDash = dashing;
+        var w = new NetDataWriter();
+        w.Put((byte)PacketType.DashState);
+        w.Put(dashing);
+        NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
+        if (dashing) DashesSent++;
+    }
+
+    /// <summary>That player (PacketRouter.From) started or stopped dashing.</summary>
+    public static void OnDashStateReceived(NetDataReader reader)
+    {
+        bool on = reader.GetBool();
+        byte slot = PacketRouter.From;
+        if (!Players.IsPresent(slot)) return;
+        if (on) DashesReceived++;
+        var events = MotionOf(slot).DashEvents;
+        events.Add(new DashEvent { At = Time.unscaledTime + InterpDelay, On = on });
+        if (events.Count > 16) events.RemoveAt(0);
+    }
+
+    /// <summary>Applies that ghost's dash events that are due; true while it should show the dash.</summary>
+    private static bool UpdateGhostDash(Motion m)
+    {
+        float now = Time.unscaledTime;
+        while (m.DashEvents.Count > 0 && m.DashEvents[0].At <= now)
+        {
+            bool on = m.DashEvents[0].On;
+            m.DashEvents.RemoveAt(0);
+            if (on && !m.Dashing) m.DashingSince = now;
+            m.Dashing = on;
+        }
+        if (m.Dashing && now - m.DashingSince > MaxDashSeconds) m.Dashing = false;
+        return m.Dashing;
     }
 
     /// <summary>Host: a client's own position (PlayerState, from PacketRouter.From).</summary>
@@ -288,6 +350,7 @@ public static class PlayerSync
         Vector3 lv = t.InverseTransformDirection(vel) / maxSpeed;
         float fwd = Mathf.Clamp(lv.z, -1f, 1f), side = Mathf.Clamp(lv.x, -1f, 1f);
         float animDt = Time.deltaTime > 0f ? Time.deltaTime : dt;
+        bool dashing = UpdateGhostDash(m);
         foreach (var a in m.Animators)
         {
             try
@@ -296,6 +359,7 @@ public static class PlayerSync
                 a.SetFloat(ForwardMovement, fwd, 0.1f, animDt);
                 a.SetFloat(SidewaysMovement, side, 0.1f, animDt);
                 a.SetBool(OnGround, true);
+                a.SetBool(Dash, dashing); // PlayerAnimator writes it every frame too, so the player controller has it
             }
             catch (System.Exception ex)
             {
