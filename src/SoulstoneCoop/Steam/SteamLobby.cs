@@ -25,7 +25,7 @@ internal static unsafe class SteamLobby
     private const string KeyVersion = "scoop_ver";
     private const string KeyHost = "scoop_host";
     private const string KeyProto = "scoop_proto";
-    internal const string Proto = "1";
+    internal const string Proto = "2"; // phase 9: slots, relay envelope (a two-player build is refused)
 
     public static LobbyState State { get; private set; } = LobbyState.None;
     public static ulong LobbyId { get; private set; }
@@ -175,22 +175,23 @@ internal static unsafe class SteamLobby
 
     // ---------------- host ----------------
 
-    /// <summary>"Convidar amigo": create the lobby if needed, then open the overlay invite dialog.</summary>
+    /// <summary>"Convidar amigo": create the lobby if needed, then open the overlay invite dialog. Phase 9: a client in
+    /// the lobby can invite its own friends too (FriendsOnly lobbies take friends and invitees of the members).</summary>
     public static void HostAndInvite()
     {
         if (!_ready) { LastError = "Steam indisponível"; return; }
         LastError = null;
-        if (State == LobbyState.Hosting) { OpenInviteOverlay(); return; }
+        if (State == LobbyState.Hosting || State == LobbyState.Joined) { OpenInviteOverlay(); return; }
         if (State == LobbyState.Creating) return;
 
         LeaveSilently();
         NetworkManager.Stop(); // leaving IP co-op, if any
-        ulong call = SteamNative.SteamAPI_ISteamMatchmaking_CreateLobby(_mm, SteamNative.LobbyFriendsOnly, 2);
+        ulong call = SteamNative.SteamAPI_ISteamMatchmaking_CreateLobby(_mm, LobbyTypeValue(), NetworkManager.MaxPlayers);
         if (call == 0) { LastError = "A Steam não criou o lobby"; return; }
         State = LobbyState.Creating;
         _openOverlayWhenReady = true;
         SteamCallbacks.Expect(call, SteamNative.LobbyCreated, OnLobbyCreated);
-        Plugin.StaticLog.LogInfo("[SoulstoneCoop][steam] Creating lobby...");
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][steam] Creating lobby ({Plugin.LobbyType.Value}, {NetworkManager.MaxPlayers} players)...");
     }
 
     private static void OnLobbyCreated(IntPtr p, bool ioFailure)
@@ -211,7 +212,7 @@ internal static unsafe class SteamLobby
         SetData(KeyVersion, Plugin.HandshakeVersion);
         SetData(KeyHost, SelfId.ToString());
         SetData(KeyProto, Proto);
-        SteamNative.SteamAPI_ISteamMatchmaking_SetLobbyMemberLimit(_mm, lobby, 2);
+        SteamNative.SteamAPI_ISteamMatchmaking_SetLobbyMemberLimit(_mm, lobby, NetworkManager.MaxPlayers);
         SetRichPresence("connect", $"+connect_lobby {lobby}");
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][steam] Lobby {lobby} created (ver={GetData(lobby, KeyVersion)} host={GetData(lobby, KeyHost)}).");
 
@@ -220,9 +221,18 @@ internal static unsafe class SteamLobby
         _openOverlayWhenReady = false;
     }
 
+    /// <summary>[Coop] LobbyType: FriendsOnly (default: friends and invitees of the members, per the Steamworks docs),
+    /// Public (anyone with the code can join; the lobby can also show up in searches) or Private (invite only).</summary>
+    private static int LobbyTypeValue() => Plugin.LobbyType.Value switch
+    {
+        Plugin.SteamLobbyType.Public => SteamNative.LobbyPublic,
+        Plugin.SteamLobbyType.Private => SteamNative.LobbyPrivate,
+        _ => SteamNative.LobbyFriendsOnly,
+    };
+
     public static void OpenInviteOverlay()
     {
-        if (State != LobbyState.Hosting) return;
+        if (State != LobbyState.Hosting && State != LobbyState.Joined) return;
         // IsOverlayEnabled reads false with the game started from the exe (steam_appid.txt) and early on; ask
         // anyway (harmless without an overlay) and point to the code as the way that always works.
         bool overlay = OverlayEnabled;
@@ -234,7 +244,7 @@ internal static unsafe class SteamLobby
     /// <summary>Host: no joining mid-run (phase 6 rule: the client comes in from the menu).</summary>
     public static void SetJoinable(bool joinable)
     {
-        if (State != LobbyState.Hosting) return;
+        if (State != LobbyState.Hosting && State != LobbyState.Joined) return;
         SteamNative.SteamAPI_ISteamMatchmaking_SetLobbyJoinable(_mm, LobbyId, (byte)(joinable ? 1 : 0));
     }
 

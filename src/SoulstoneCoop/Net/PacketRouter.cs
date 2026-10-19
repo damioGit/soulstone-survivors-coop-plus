@@ -44,19 +44,95 @@ public enum PacketType : byte
     // 90-99: portals (docs/portais-notas.md)
     PortalTransition = 90, // host -> client: the host took the Endless/BossRush portal (with the map it drew) or restarted: follow it (ReliableOrdered)
     PortalRequest = 91,    // client -> host: the client walked into the Endless/BossRush portal; the host decides (ReliableOrdered)
+    // 100-119: phase 9, up to 8 players (docs/fase9-investigacao.md)
+    Relayed = 100,     // host -> client: origin slot u8 | a client's packet (type byte included), forwarded to the other clients
+    PlayersState = 101, // host -> clients: every player's position, 20 Hz (Sequenced): count u8 | count * (slot u8, x, y, z, yaw f32, sentMs u32)
+    Welcome = 102,     // host -> new client, first packet: yourSlot u8 | maxPlayers u8 | n u8 | n * slot u8 (the other clients)
+    PlayerLeft = 103,  // host -> clients: slot u8 left the session (ReliableOrdered, before the slot is handed out again)
+    PauseOverride = 104, // host -> clients: mask u8 of the players whose pause the host lifted (Esc closed on the host, or F4) (ReliableOrdered)
 }
 
 public static class PacketRouter
 {
-    public static void Handle(NetDataReader reader)
+    /// <summary>Phase 9: whose packet is being handled right now. On the host, the slot of the client it came from (the
+    /// transport knows the connection); on a client, 0 (the host) or the origin written in a Relayed envelope.</summary>
+    public static byte From { get; private set; }
+
+    /// <summary>Host: which client packets the other clients must see too, and how they are forwarded (null = host only).</summary>
+    private static DeliveryMethod? RelayMethod(PacketType type) => type switch
+    {
+        // Who it is and where: every client builds the ghosts of the others from these.
+        PacketType.Hello or PacketType.LobbyState => DeliveryMethod.ReliableOrdered,
+        // What the others see of that player: its pause, health bar, spells (visual) and summons; and its XP (team XP).
+        PacketType.PauseState or PacketType.PartnerHealth or PacketType.XpShare or PacketType.DashState => DeliveryMethod.ReliableOrdered,
+        PacketType.SkillCast or PacketType.SkillChannelEnd => DeliveryMethod.ReliableOrdered, // an end never overtakes its start
+        PacketType.SummonSpawn or PacketType.SummonDespawn => DeliveryMethod.ReliableOrdered,
+        PacketType.SummonStates => DeliveryMethod.Sequenced,
+        // Positions go in the host's PlayersState (one packet per tick); damage, ClientState, requests: host only.
+        _ => null,
+    };
+
+    public static void Handle(NetDataReader reader, byte from)
     {
         if (reader.AvailableBytes < 1) return;
+        int start = reader.Position, length = reader.AvailableBytes;
+        NetworkManager.CountReceived(from, length);
+        var type = (PacketType)reader.RawData[start];
+
+        if (NetworkManager.Role == NetRole.Host)
+        {
+            if (type == PacketType.Relayed) return; // only the host wraps packets
+            var relay = RelayMethod(type);
+            // Forwarded before it's handled here, so a throwing handler can't keep the others from seeing it.
+            if (relay.HasValue && Players.OtherCount > 1) NetworkManager.Relay(from, reader.RawData, start, length, relay.Value);
+        }
+        else if (type == PacketType.Relayed)
+        {
+            if (length < 3) return;
+            reader.GetByte();
+            byte origin = reader.GetByte();
+            if (origin == Players.MySlot || origin == Players.HostSlot || !Players.IsValid(origin)) return;
+            var inner = (PacketType)reader.RawData[reader.Position];
+            // A client the Welcome didn't list (it joined after us) shows up with its Hello / LobbyState.
+            if (!Players.IsPresent(origin))
+            {
+                if (inner != PacketType.Hello && inner != PacketType.LobbyState) return; // a late packet of a player who left
+                Players.MarkJoined(origin);
+            }
+            Dispatch(reader, origin);
+            return;
+        }
+        Dispatch(reader, from);
+    }
+
+    private static void Dispatch(NetDataReader reader, byte from)
+    {
+        var prev = From;
+        From = from;
+        try { DispatchCore(reader); }
+        finally { From = prev; }
+    }
+
+    private static void DispatchCore(NetDataReader reader)
+    {
         var type = (PacketType)reader.GetByte();
 
         switch (type)
         {
+            case PacketType.Welcome:
+                NetworkManager.OnWelcome(reader);
+                break;
+            case PacketType.PlayerLeft:
+                NetworkManager.OnPlayerLeft(reader);
+                break;
             case PacketType.PlayerInput:
                 // Task #6/#7: real input-driven simulation, not wired yet (current milestone mirrors raw transforms).
+                break;
+            case PacketType.PlayersState:
+                PlayerSync.OnPlayersStateReceived(reader);
+                break;
+            case PacketType.PauseOverride:
+                PauseSync.OnPauseOverride(reader);
                 break;
             case PacketType.PlayerState:
                 PlayerSync.OnPlayerStateReceived(reader);

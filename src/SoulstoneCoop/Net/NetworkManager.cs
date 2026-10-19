@@ -14,15 +14,18 @@ public enum NetRole
 public enum NetStatus
 {
     Idle,
-    Hosting,     // listening, no partner yet
+    Hosting,     // listening, no client yet
     Connecting,  // client: retrying until the host answers
     Connected,
-    Rejected,    // client: the host refused us (version, already full); LastError says why
+    Rejected,    // client: the host refused us (version, full); LastError says why
 }
 
 /// <summary>
 /// The one place the mod talks to the network through. Phase 7: the actual link is an ITransport (LiteNetLib by
 /// IP, or Steam P2P); everything above (Send, the events, Role/Status for the panel) is the same for both.
+/// Phase 9: a star around the host. The host holds up to MaxClients clients, each on a slot (Players); Send goes to
+/// every client, SendTo/SendExcept to one or all but one, and Relay forwards a client's packet to the others inside
+/// the Relayed envelope (PacketRouter). A client only ever talks to the host (slot 0).
 /// </summary>
 public static class NetworkManager
 {
@@ -31,8 +34,16 @@ public static class NetworkManager
     public static NetRole Role { get; private set; } = NetRole.None;
     public static ITransport? Transport { get; private set; }
 
-    /// <summary>The partner is there (handshake done). Replaces the old `RemotePeer != null`.</summary>
+    /// <summary>Somebody is there (host: at least one client; client: the host). Replaces the old `RemotePeer != null`.</summary>
     public static bool HasPeer => Transport?.HasPeer == true;
+
+    /// <summary>Slots of the connected peers (host: the clients; client: just 0).</summary>
+    public static IReadOnlyList<byte> PeerSlots => Transport?.PeerSlots ?? Array.Empty<byte>();
+
+    /// <summary>[Coop] MaxPlayers: how many players the host's session holds, the host included (2-8).</summary>
+    public static int MaxPlayers => Math.Clamp(Plugin.MaxPlayers?.Value ?? 8, 2, Players.MaxSlots);
+
+    public static int MaxClients => MaxPlayers - 1;
 
     public static NetStatus Status => Transport?.Status ?? _idleStatus;
 
@@ -45,10 +56,35 @@ public static class NetworkManager
     /// <summary>"IP" or "Steam" while a transport is up, null otherwise.</summary>
     public static string? Kind => Transport?.Kind;
 
-    public static int PingMs => Transport?.PingMs ?? -1;
+    /// <summary>Client: the round trip to the host. Host: the worst one among the clients (-1 = unknown / nobody).</summary>
+    public static int PingMs
+    {
+        get
+        {
+            var t = Transport;
+            if (t == null) return -1;
+            int worst = -1;
+            foreach (var s in t.PeerSlots) worst = Math.Max(worst, t.PingMs(s));
+            return worst;
+        }
+    }
 
-    /// <summary>Phase 8: seconds since anything arrived from the partner (0 without one).</summary>
-    public static float SilenceSeconds => HasPeer ? Transport!.SilenceSeconds : 0f;
+    public static int PingOf(byte slot) => Transport?.PingMs(slot) ?? -1;
+
+    /// <summary>Phase 8: seconds since anything arrived (host: from the quietest client; 0 without anyone).</summary>
+    public static float SilenceSeconds
+    {
+        get
+        {
+            var t = Transport;
+            if (t == null) return 0f;
+            float worst = 0f;
+            foreach (var s in t.PeerSlots) worst = Math.Max(worst, t.SilenceSeconds(s));
+            return worst;
+        }
+    }
+
+    public static float SilenceOf(byte slot) => Transport?.SilenceSeconds(slot) ?? 0f;
 
     /// <summary>Phase 8: past this much silence the panel and the banner say "conexão instável" (both transports
     /// send at least a ping per second; the drop itself comes much later: 10 s on IP, 15 s on Steam).</summary>
@@ -56,11 +92,15 @@ public static class NetworkManager
 
     public static bool Unstable => HasPeer && SilenceSeconds >= UnstableAfterSeconds;
 
-    /// <summary>Fired when a peer connects, on both host and client.</summary>
-    public static event System.Action? PeerConnected;
+    public static bool IsUnstable(byte slot) => SilenceOf(slot) >= UnstableAfterSeconds;
 
-    /// <summary>Fired when the peer goes away: remote disconnect, timeout, or our own Stop().</summary>
-    public static event System.Action? PeerDisconnected;
+    /// <summary>A peer finished the handshake (host: a client, with its slot; client: the host, slot 0). On the host
+    /// the Welcome has already gone out to it.</summary>
+    public static event System.Action<byte>? PeerConnected;
+
+    /// <summary>A peer went away (remote disconnect, timeout, or our own Stop()). On a client this is the host:
+    /// everyone else is gone with it (Players.Left fires for each right after).</summary>
+    public static event System.Action<byte>? PeerDisconnected;
 
     // What Status/LastError show once the transport is gone (a refusal must stay on the panel).
     private static NetStatus _idleStatus = NetStatus.Idle;
@@ -68,9 +108,9 @@ public static class NetworkManager
 
     private static TransportCallbacks Callbacks() => new()
     {
-        Connected = () => PeerConnected?.Invoke(),
-        Disconnected = () => PeerDisconnected?.Invoke(),
-        Data = reader => PacketRouter.Handle(reader),
+        Connected = OnTransportConnected,
+        Disconnected = OnTransportDisconnected,
+        Data = (reader, slot) => PacketRouter.Handle(reader, slot),
     };
 
     public static void StartHost()
@@ -94,7 +134,7 @@ public static class NetworkManager
         Begin(LiteNetTransport.Client(Callbacks(), address), NetRole.Client);
     }
 
-    /// <summary>Steam: host the partner who joins our lobby.</summary>
+    /// <summary>Steam: host the players who join our lobby.</summary>
     public static void StartSteamHost(ulong lobbyId)
     {
         Stop();
@@ -114,29 +154,104 @@ public static class NetworkManager
     {
         Transport = t;
         Role = role;
+        Players.SetMySlot(role == NetRole.Client ? Players.NoSlot : Players.HostSlot); // a client learns its slot from the Welcome
     }
 
-    /// <summary>Leave co-op: closes the transport and runs every module's disconnect cleanup if a partner was there.</summary>
+    /// <summary>Leave co-op: closes the transport and runs every module's disconnect cleanup for whoever was there.</summary>
     public static void Stop()
     {
         var t = Transport;
         if (t == null)
         {
             Role = NetRole.None;
+            Players.ClearAll();
             return;
         }
-        bool hadPeer = t.HasPeer;
+        var hadPeers = new List<byte>(t.PeerSlots);
+        var role = Role;
         _idleStatus = NetStatus.Idle;
         _idleError = t.LastError;
         try { t.Stop(); }
         catch (System.Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop] Transport stop failed: {ex.Message}"); }
         Transport = null;
         Role = NetRole.None;
-        if (hadPeer)
+        if (hadPeers.Count > 0)
         {
-            Plugin.StaticLog.LogInfo("[SoulstoneCoop] Stopped with a partner connected - running disconnect cleanup.");
-            PeerDisconnected?.Invoke();
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop] Stopped with {hadPeers.Count} peer(s) connected - running disconnect cleanup.");
+            foreach (var s in hadPeers) RaiseDisconnected(s, role);
         }
+        Players.ClearAll();
+    }
+
+    // ---------------- connection events ----------------
+
+    private static void OnTransportConnected(byte slot)
+    {
+        if (Role == NetRole.Host)
+        {
+            SendWelcome(slot); // first thing on the ordered channel: the client's slot and who else is here
+            Players.MarkJoined(slot);
+        }
+        else Players.MarkJoined(Players.HostSlot);
+        try { PeerConnected?.Invoke(slot); }
+        catch (System.Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] PeerConnected({slot}) handler: {ex}"); }
+    }
+
+    private static void OnTransportDisconnected(byte slot)
+    {
+        if (Role == NetRole.Host)
+        {
+            // The others drop that player before its slot can be handed out again (same ordered channel).
+            var w = new NetDataWriter();
+            w.Put((byte)PacketType.PlayerLeft);
+            w.Put(slot);
+            Send(w, DeliveryMethod.ReliableOrdered);
+        }
+        RaiseDisconnected(slot, Role);
+    }
+
+    private static void RaiseDisconnected(byte slot, NetRole role)
+    {
+        try { PeerDisconnected?.Invoke(slot); }
+        catch (System.Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] PeerDisconnected({slot}) handler: {ex}"); }
+        if (role == NetRole.Client) Players.ClearAll(); // no host, no session: everybody is gone
+        else Players.MarkLeft(slot);
+    }
+
+    /// <summary>Layout: type u8 | yourSlot u8 | maxPlayers u8 | n u8 | n * slot u8 (the other clients already here).</summary>
+    private static void SendWelcome(byte slot)
+    {
+        var w = new NetDataWriter();
+        w.Put((byte)PacketType.Welcome);
+        w.Put(slot);
+        w.Put((byte)MaxPlayers);
+        var others = new List<byte>();
+        foreach (var s in PeerSlots) if (s != slot) others.Add(s);
+        w.Put((byte)others.Count);
+        foreach (var s in others) w.Put(s);
+        SendTo(slot, w, DeliveryMethod.ReliableOrdered);
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][players] Welcome sent to slot {slot} (others: {string.Join(",", others)}).");
+    }
+
+    internal static void OnWelcome(NetDataReader r)
+    {
+        byte mine = r.GetByte();
+        byte max = r.GetByte();
+        int n = r.GetByte();
+        var others = new List<byte>();
+        for (int i = 0; i < n; i++) others.Add(r.GetByte());
+        if (Role != NetRole.Client) return;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][players] Welcome: I'm slot {mine} of up to {max} (others: {string.Join(",", others)}).");
+        Players.SetMySlot(mine);
+        Players.SetSessionMax(max);
+        foreach (var s in others) Players.MarkJoined(s);
+    }
+
+    internal static void OnPlayerLeft(NetDataReader r)
+    {
+        byte slot = r.GetByte();
+        if (Role != NetRole.Client || slot == Players.HostSlot) return;
+        Players.MarkLeft(slot);
     }
 
     // Call once per frame (CoopBehaviour.Update).
@@ -153,43 +268,139 @@ public static class NetworkManager
             if (status == NetStatus.Rejected) _idleStatus = NetStatus.Rejected;
         }
         LogStability();
+        LogTraffic();
     }
 
-    private static bool _wasUnstable;
-    private static float _worstSilence;
+    private static readonly bool[] _wasUnstable = new bool[Players.MaxSlots];
+    private static readonly float[] _worstSilence = new float[Players.MaxSlots];
 
-    /// <summary>Phase 8: one log line when the link goes quiet and one when it comes back (with how long).</summary>
+    /// <summary>Phase 8: one log line when a link goes quiet and one when it comes back (with how long).</summary>
     private static void LogStability()
     {
-        bool unstable = Unstable;
-        if (unstable)
+        var t = Transport;
+        for (byte s = 0; s < Players.MaxSlots; s++)
         {
-            float s = SilenceSeconds;
-            if (s > _worstSilence) _worstSilence = s;
-        }
-        if (unstable == _wasUnstable) return;
-        _wasUnstable = unstable;
-        if (unstable) Plugin.StaticLog.LogWarning($"[SoulstoneCoop][net] Link unstable: nothing from the partner for {SilenceSeconds:F1}s ({Kind}).");
-        else
-        {
-            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][net] Link back after {_worstSilence:F1}s of silence (peer={HasPeer}).");
-            _worstSilence = 0f;
+            bool connected = false;
+            if (t != null) foreach (var p in t.PeerSlots) if (p == s) { connected = true; break; }
+            float silence = connected ? t!.SilenceSeconds(s) : 0f;
+            bool unstable = connected && silence >= UnstableAfterSeconds;
+            if (unstable && silence > _worstSilence[s]) _worstSilence[s] = silence;
+            if (unstable == _wasUnstable[s]) continue;
+            _wasUnstable[s] = unstable;
+            if (unstable) Plugin.StaticLog.LogWarning($"[SoulstoneCoop][net] Link unstable: nothing from slot {s} for {silence:F1}s ({Kind}).");
+            else
+            {
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][net] Link to slot {s} back after {_worstSilence[s]:F1}s of silence (connected={connected}).");
+                _worstSilence[s] = 0f;
+            }
         }
     }
+
+    // ---------------- sending ----------------
 
     private static int _sendErrors;
 
-    /// <summary>Phase 8: never throws. Senders run inside our Update (and some inside game patches); one exception
-    /// here used to skip the rest of the mod's frame.</summary>
-    public static void Send(NetDataWriter writer, DeliveryMethod method)
+    /// <summary>To everyone: the host sends to every client, a client to the host. Phase 8: never throws. Senders run
+    /// inside our Update (and some inside game patches); one exception here used to skip the rest of the mod's frame.</summary>
+    public static void Send(NetDataWriter writer, DeliveryMethod method) => SendExcept(Players.NoSlot, writer, method);
+
+    /// <summary>To one peer only (host: one client).</summary>
+    public static void SendTo(byte slot, NetDataWriter writer, DeliveryMethod method)
     {
         var t = Transport;
         if (t == null) return;
-        try { t.Send(writer.Data, writer.Length, method); }
+        SendOne(t, slot, writer.Data, writer.Length, method);
+    }
+
+    /// <summary>To every peer but one (host: relays and "everyone else" notices).</summary>
+    public static void SendExcept(byte skip, NetDataWriter writer, DeliveryMethod method) =>
+        SendBytesExcept(skip, writer.Data, writer.Length, method);
+
+    private static readonly List<byte> SlotScratch = new();
+
+    private static void SendBytesExcept(byte skip, byte[] data, int length, DeliveryMethod method)
+    {
+        var t = Transport;
+        if (t == null) return;
+        SlotScratch.Clear();
+        SlotScratch.AddRange(t.PeerSlots); // a send can't change the list, but a copy keeps that a non-issue
+        foreach (var s in SlotScratch)
+            if (s != skip) SendOne(t, s, data, length, method);
+    }
+
+    private static void SendOne(ITransport t, byte slot, byte[] data, int length, DeliveryMethod method)
+    {
+        if (slot < Players.MaxSlots) { _upBytes[slot] += length; _upPackets[slot]++; }
+        try { t.Send(slot, data, length, method); }
         catch (System.Exception ex)
         {
             if (_sendErrors++ < 10)
-                Plugin.StaticLog.LogError($"[SoulstoneCoop] Send of packet {(writer.Length > 0 ? writer.Data[0] : -1)} ({writer.Length} B, {method}) failed: {ex.Message}");
+                Plugin.StaticLog.LogError($"[SoulstoneCoop] Send of packet {(length > 0 ? data[0] : -1)} ({length} B, {method}) to slot {slot} failed: {ex.Message}");
         }
+    }
+
+    private static byte[] _relayBuffer = new byte[2048];
+
+    /// <summary>Host: forward a client's packet (type byte included) to the other clients, wrapped in the Relayed
+    /// envelope with its origin, so they know whose ghost/caster/health it is.</summary>
+    internal static void Relay(byte origin, byte[] data, int offset, int length, DeliveryMethod method)
+    {
+        if (Role != NetRole.Host || length <= 0) return;
+        int total = length + 2;
+        if (_relayBuffer.Length < total) _relayBuffer = new byte[Math.Max(total, _relayBuffer.Length * 2)];
+        _relayBuffer[0] = (byte)PacketType.Relayed;
+        _relayBuffer[1] = origin;
+        Buffer.BlockCopy(data, offset, _relayBuffer, 2, length);
+        SendBytesExcept(origin, _relayBuffer, total, method);
+        RelayedPackets++;
+        RelayedBytes += total;
+    }
+
+    /// <summary>Host: send one client a packet "from" another player (the envelope a relay would have), e.g. the
+    /// Hello of everyone already here when it joins.</summary>
+    internal static void SendRelayedTo(byte to, byte origin, NetDataWriter inner, DeliveryMethod method)
+    {
+        var t = Transport;
+        if (Role != NetRole.Host || t == null || inner.Length <= 0) return;
+        var w = new NetDataWriter();
+        w.Put((byte)PacketType.Relayed);
+        w.Put(origin);
+        w.Put(inner.Data, 0, inner.Length);
+        SendOne(t, to, w.Data, w.Length, method);
+    }
+
+    internal static int RelayedPackets, RelayedBytes;
+
+    // Phase 9: traffic per peer slot (payload bytes, without the transport headers), logged every 5 s.
+    private static readonly long[] _upBytes = new long[Players.MaxSlots], _downBytes = new long[Players.MaxSlots];
+    private static readonly int[] _upPackets = new int[Players.MaxSlots], _downPackets = new int[Players.MaxSlots];
+    private static float _trafficTimer;
+
+    internal static void CountReceived(byte slot, int length)
+    {
+        if (slot >= Players.MaxSlots) return;
+        _downBytes[slot] += length;
+        _downPackets[slot]++;
+    }
+
+    private static void LogTraffic()
+    {
+        _trafficTimer += UnityEngine.Time.unscaledDeltaTime;
+        if (_trafficTimer < 5f) return;
+        float secs = _trafficTimer;
+        _trafficTimer = 0f;
+        if (HasPeer)
+        {
+            var parts = new List<string>();
+            long up = 0, down = 0;
+            foreach (var s in PeerSlots)
+            {
+                parts.Add($"{s}: up {_upBytes[s] / secs / 1024f:F1} KB/s ({_upPackets[s] / secs:F0} pkt/s) down {_downBytes[s] / secs / 1024f:F1} KB/s ({_downPackets[s] / secs:F0} pkt/s)");
+                up += _upBytes[s];
+                down += _downBytes[s];
+            }
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][net] {Role} total up {up / secs / 1024f:F1} KB/s down {down / secs / 1024f:F1} KB/s | {string.Join(" | ", parts)}");
+        }
+        Array.Clear(_upBytes); Array.Clear(_downBytes); Array.Clear(_upPackets); Array.Clear(_downPackets);
     }
 }

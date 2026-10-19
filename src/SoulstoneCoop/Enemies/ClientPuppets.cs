@@ -113,7 +113,7 @@ public static class ClientPuppets
     {
         if (_hooked) return;
         _hooked = true;
-        NetworkManager.PeerDisconnected += () =>
+        NetworkManager.PeerDisconnected += _ =>
         {
             if (CoopRole.IsClientSide) DespawnAll("peer disconnected");
         };

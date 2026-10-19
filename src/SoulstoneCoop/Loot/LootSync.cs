@@ -58,7 +58,7 @@ public static class LootSync
 
     // ---------------- host: capture ----------------
 
-    /// <summary>ProcessLoot prefix on the host. Layout: type u8 | netId u16 | pos 3*f32 | xp i32 | prestige f32 |
+    /// <summary>ProcessLoot prefix on the host. Layout: type u8 | netId u16 | pos 3*f32 | xpOwner u8 (phase 9) | xp i32 | prestige f32 |
     /// flags u8 (1 instant, 2 currencies) | interval i32 | [6 * i32] | nItems u8 * (id i32, chance f32, min i32,
     /// max i32) | nPowerUps u8 * (level i32, source i32, flags u8).</summary>
     internal static void CaptureOnHost(ref int experience, float prestige, PlayerProfileCurrencies? currencies,
@@ -71,9 +71,11 @@ public static class LootSync
         // Team XP: each orb exists in ONE world only - the nearest living player's - and whoever collects it
         // shares the amount (XpShare). Client's: the host drops nothing and sends the XP; host's: sends 0.
         int sendXp = 0;
+        byte xpOwner = Net.Players.HostSlot;
         if (experience > 0)
         {
-            if (ClientOwnsXp(sourcePosition))
+            xpOwner = OwnerOfXp(sourcePosition);
+            if (xpOwner != Net.Players.HostSlot)
             {
                 sendXp = experience;
                 experience = 0;
@@ -136,6 +138,7 @@ public static class LootSync
         w.Put((byte)PacketType.LootDrop);
         w.Put(netId);
         w.Put(sourcePosition.x); w.Put(sourcePosition.y); w.Put(sourcePosition.z);
+        w.Put(xpOwner); // phase 9: only that client drops the XP orb (team XP: whoever collects it shares it)
         w.Put(sendXp);
         w.Put(prestige);
         w.Put((byte)((instant ? 1 : 0) | (cur != null ? 2 : 0)));
@@ -156,15 +159,21 @@ public static class LootSync
         _sentPowerUps += pus.Count;
     }
 
-    /// <summary>Nearest living player owns the orb. No client player on our side (or dead) = the host's.</summary>
-    private static bool ClientOwnsXp(Vector3 pos)
+    /// <summary>Nearest living player owns the orb (phase 9: the host or any living client). Nobody alive = the host's.</summary>
+    private static byte OwnerOfXp(Vector3 pos)
     {
-        if (!Enemies.RemoteProxy.RemoteAlive || !Enemies.RemoteProxy.TryGetRemotePosition(out var clientPos, out _)) return false;
+        byte best = Net.Players.HostSlot;
+        float bestD = float.MaxValue;
         var host = GameState.LocalPlayerEntity;
-        if (host == null) return true;
-        bool hostDead = (host._health != null && host._health.HasBeenKilled) || Life.CoopLife.LocalDowned;
-        if (hostDead) return true;
-        return (clientPos - pos).sqrMagnitude < (host.transform.position - pos).sqrMagnitude;
+        bool hostUp = host != null && !(host._health != null && host._health.HasBeenKilled) && !Life.CoopLife.LocalDowned;
+        if (hostUp) bestD = (host!.transform.position - pos).sqrMagnitude;
+        foreach (var slot in Net.Players.Others)
+        {
+            if (!Enemies.RemoteProxy.IsAlive(slot) || !Enemies.RemoteProxy.TryGetPosition(slot, out var p, out _)) continue;
+            float d = (p - pos).sqrMagnitude;
+            if (d < bestD) { bestD = d; best = slot; }
+        }
+        return best;
     }
 
     // ---------------- both: shared XP ----------------
@@ -262,9 +271,11 @@ public static class LootSync
         {
             NetId = r.GetUShort(),
             Pos = new Vector3(r.GetFloat(), r.GetFloat(), r.GetFloat()),
-            Xp = r.GetInt(),
-            Prestige = r.GetFloat(),
         };
+        byte xpOwner = r.GetByte();
+        int xp = r.GetInt();
+        m.Xp = xpOwner == Net.Players.MySlot ? xp : 0; // phase 9: the orb exists in its owner's world only
+        m.Prestige = r.GetFloat();
         byte flags = r.GetByte();
         m.Instant = (flags & 1) != 0;
         m.Interval = r.GetInt();

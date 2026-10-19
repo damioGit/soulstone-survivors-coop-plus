@@ -94,7 +94,7 @@ public static class PortalSync
             if (string.IsNullOrEmpty(map))
             {
                 Plugin.StaticLog.LogWarning($"[SoulstoneCoop][portal] Host took the {kind} portal but the next map is unknown - partner not told.");
-                CoopSession.Notice($"Portal {Label(kind)}: não deu pra levar {CoopSession.PartnerName}", 6f);
+                CoopSession.Notice($"Portal {Label(kind)}: não deu pra levar {CoopSession.OthersLabel}", 6f);
             }
             else
             {
@@ -103,7 +103,7 @@ public static class PortalSync
                 w.Put((byte)kind);
                 w.Put(map!);
                 NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
-                CoopSession.Notice($"Portal {Label(kind)}: indo com {CoopSession.PartnerName} pra {map}", 5f);
+                CoopSession.Notice($"Portal {Label(kind)}: indo com {CoopSession.OthersLabel} pra {map}", 5f);
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][portal] Host took the {kind} portal: next map {map}, partner told.");
             }
         }
@@ -309,7 +309,7 @@ public static class PortalSync
             }
             return;
         }
-        if (isRequest) HostEnter(kind, $"{CoopSession.PartnerName} walked in");
+        if (isRequest) HostEnter(kind, "a client walked in");
         else ClientFollow(kind, map ?? "", obj);
     }
 

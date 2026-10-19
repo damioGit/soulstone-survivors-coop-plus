@@ -229,7 +229,8 @@ public static class HostEnemySync
         return 1;
     }
 
-    private static void SendSpawn(Tracked t)
+    /// <param name="to">Phase 9: one client only (a resync for the player who just entered the run), NoSlot = everyone.</param>
+    private static void SendSpawn(Tracked t, byte to = Net.Players.NoSlot)
     {
         var e = t.Entity;
         var health = e._health;
@@ -256,19 +257,20 @@ public static class HostEnemySync
         };
         var w = new NetDataWriter();
         msg.Write(w);
+        if (to != Net.Players.NoSlot) { NetworkManager.SendTo(to, w, DeliveryMethod.ReliableOrdered); _spawnsSent++; return; }
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
         _spawnsSent++;
     }
 
     /// <summary>Phase 6: the connection is made in the menu, so "the client entered my run" is now CoopSession's
     /// LobbyState, not PeerConnected. Same full resend.</summary>
-    internal static void ResyncToPeer(string why)
+    internal static void ResyncToPeer(byte slot, string why)
     {
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][enemies] Host: resync ({why}).");
-        OnPeerConnected();
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][enemies] Host: resync to slot {slot} ({why}).");
+        OnPeerConnected(slot);
     }
 
-    private static void OnPeerConnected()
+    private static void OnPeerConnected(byte slot)
     {
         try
         {
@@ -278,7 +280,7 @@ public static class HostEnemySync
             foreach (var t in All)
             {
                 if (t.DiedSent) continue;
-                SendSpawn(t);
+                SendSpawn(t, slot);
                 sent++;
             }
 
@@ -520,6 +522,7 @@ public static class EnemySyncStartMatchPatch
             RemoteProxy.OnMatchStarted();
             Skills.RemoteCaster.OnMatchStarted();
             Life.CoopLife.OnMatchStarted();
+            EnemyScaling.OnMatchStarted();
             Lobby.CoopSession.OnLocalMatchStarted();
         }
         catch (Exception ex)

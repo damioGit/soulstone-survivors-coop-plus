@@ -9,11 +9,11 @@ namespace SoulstoneCoop.Skills;
 
 /// <summary>One local cast, enough to replay it on the remote caster. Layout (after the type byte):
 /// key string | skillType i32 | level u8 | countA u8 | countB u8 | scale f32 | yaw f32 | flags u8 |
-/// [source v3] [ground v3] [front v3] [direction v3] | targetKind u8 | [targetNetId u16]</summary>
+/// [source v3] [ground v3] [front v3] [direction v3] | targetKind u8 | [targetNetId u16 | targetSlot u8]</summary>
 public sealed class CastMessage
 {
     public const byte FSource = 1, FGround = 2, FFront = 4, FDirection = 8, FChannel = 16, FFrontFunc = 32, FGroundFunc = 64;
-    public const byte TargetNone = 0, TargetSelf = 1, TargetEnemy = 2, TargetOtherPlayer = 3;
+    public const byte TargetNone = 0, TargetSelf = 1, TargetEnemy = 2, TargetPlayer = 3; // phase 9: TargetPlayer carries the slot
 
     public string Key = "";
     public int SkillType;
@@ -23,6 +23,7 @@ public sealed class CastMessage
     public Vector3 Source, Ground, Front, Direction;
     public byte TargetKind;
     public ushort TargetNetId;
+    public byte TargetSlot;
 
     public bool Has(byte flag) => (Flags & flag) != 0;
 
@@ -39,6 +40,7 @@ public sealed class CastMessage
         if (Has(FDirection)) PutV3(w, Direction);
         w.Put(TargetKind);
         if (TargetKind == TargetEnemy) w.Put(TargetNetId);
+        else if (TargetKind == TargetPlayer) w.Put(TargetSlot);
     }
 
     public static CastMessage Read(NetDataReader r)
@@ -57,6 +59,7 @@ public sealed class CastMessage
         if (m.Has(FDirection)) m.Direction = GetV3(r);
         m.TargetKind = r.GetByte();
         if (m.TargetKind == TargetEnemy) m.TargetNetId = r.GetUShort();
+        else if (m.TargetKind == TargetPlayer) m.TargetSlot = r.GetByte();
         return m;
     }
 
@@ -93,7 +96,7 @@ public static class CastSync
     // Telemetry window
     private static float _telemetryTimer;
     private static int _sent, _recv, _played, _noCaster, _noSkill, _rejected, _errors, _skippedSummon, _captureErrors;
-    private static int _channelEndsSent, _channelEndsRecv, _blockedEffects, _blockedDamage, _bytesSent;
+    private static int _channelEndsSent, _channelEndsRecv, _blockedEffects, _blockedDamage, _bytesSent, _culledFar;
 
     internal static void CountBlockedEffects() => _blockedEffects++;
     internal static void CountBlockedDamage() => _blockedDamage++;
@@ -129,12 +132,12 @@ public static class CastSync
                 $"[SoulstoneCoop][casts] {NetworkManager.Role}: sent={_sent} ({_bytesSent} B) recv={_recv} played={_played} failed={failed} " +
                 $"(noCaster={_noCaster} noSkill={_noSkill} rejected={_rejected} error={_errors}) skippedSummon={_skippedSummon} " +
                 $"captureErrors={_captureErrors} channelEnds={_channelEndsSent}/{_channelEndsRecv} openChannels={RemoteCaster.OpenChannels}/{LocalChannels.Count} " +
-                $"blockedEffects={_blockedEffects} blockedDamage={_blockedDamage} numbersHidden={numbersHidden} caster={RemoteCaster.Active} copies={RemoteCaster.CopyCount} " +
+                $"blockedEffects={_blockedEffects} blockedDamage={_blockedDamage} numbersHidden={numbersHidden} culledFar={_culledFar} caster={RemoteCaster.Active} copies={RemoteCaster.CopyCount} " +
                 $"ghostAnim={RemoteCaster.GhostAnimPlayed}/{RemoteCaster.GhostAnimPlayed + RemoteCaster.GhostAnimMissing}");
             RemoteCaster.GhostAnimPlayed = RemoteCaster.GhostAnimMissing = 0;
         }
         _sent = _recv = _played = _noCaster = _noSkill = _rejected = _errors = _skippedSummon = _captureErrors = 0;
-        _channelEndsSent = _channelEndsRecv = _blockedEffects = _blockedDamage = _bytesSent = 0;
+        _channelEndsSent = _channelEndsRecv = _blockedEffects = _blockedDamage = _bytesSent = _culledFar = 0;
     }
 
     // ---------------- sender ----------------
@@ -183,7 +186,7 @@ public static class CastSync
         if (target != null)
         {
             if (target.Pointer == _localPlayerPtr) m.TargetKind = CastMessage.TargetSelf;
-            else if (CoopRole.IsHostSide && RemoteProxy.IsProxy(target)) m.TargetKind = CastMessage.TargetOtherPlayer;
+            else if (CoopRole.IsHostSide && RemoteProxy.TryGetProxySlot(target, out m.TargetSlot)) m.TargetKind = CastMessage.TargetPlayer;
             else if (CoopRole.IsHostSide ? HostEnemySync.TryGetNetId(target, out m.TargetNetId) : ClientPuppets.TryGetNetId(target, out m.TargetNetId))
                 m.TargetKind = CastMessage.TargetEnemy;
         }
@@ -250,12 +253,13 @@ public static class CastSync
     {
         var m = CastMessage.Read(reader);
         _recv++;
-        switch (RemoteCaster.Play(m))
+        switch (RemoteCaster.Play(PacketRouter.From, m))
         {
             case RemoteCaster.PlayResult.Played: _played++; break;
             case RemoteCaster.PlayResult.NoCaster: _noCaster++; break;
             case RemoteCaster.PlayResult.NoSkill: _noSkill++; break;
             case RemoteCaster.PlayResult.Rejected: _rejected++; break;
+            case RemoteCaster.PlayResult.Culled: _culledFar++; break;
             default: _errors++; break;
         }
     }
@@ -264,7 +268,7 @@ public static class CastSync
     {
         string key = reader.GetString();
         _channelEndsRecv++;
-        RemoteCaster.OnChannelEnd(key);
+        RemoteCaster.OnChannelEnd(PacketRouter.From, key);
     }
 
     internal static void CountCaptureError() => _captureErrors++;

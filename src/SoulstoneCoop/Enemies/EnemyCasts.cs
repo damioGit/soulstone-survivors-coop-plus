@@ -20,7 +20,7 @@ namespace SoulstoneCoop.Enemies;
 /// </summary>
 public static class EnemyCasts
 {
-    private const byte TargetNone = 0, TargetSelf = 1, TargetEnemy = 2, TargetHostPlayer = 3, TargetClientPlayer = 4;
+    private const byte TargetNone = 0, TargetSelf = 1, TargetEnemy = 2, TargetPlayer = 3; // phase 9: TargetPlayer carries the slot (0 = host)
     private const float MinIntervalPerEnemy = 0.1f; // s: cap at 10 casts/s per enemy (multicast bursts)
     private const float ChannelReplaySeconds = 1.5f; // no channel-end message for enemies: keep the beam this long
     private const float TelemetryInterval = 5f;
@@ -91,16 +91,18 @@ public static class EnemyCasts
 
         byte kind = TargetNone;
         ushort targetNetId = 0;
+        byte targetSlot = Players.NoSlot;
         var target = p.TargetEntity;
         if (target != null)
         {
             if (target.Pointer == e.Pointer) kind = TargetSelf;
-            else if (GameState.LocalPlayerEntity != null && target.Pointer == GameState.LocalPlayerEntity.Pointer) kind = TargetHostPlayer;
-            else if (RemoteProxy.IsProxy(target)) kind = TargetClientPlayer;
+            else if (GameState.LocalPlayerEntity != null && target.Pointer == GameState.LocalPlayerEntity.Pointer) { kind = TargetPlayer; targetSlot = Players.HostSlot; }
+            else if (RemoteProxy.TryGetProxySlot(target, out targetSlot)) kind = TargetPlayer;
             else if (HostEnemySync.TryGetNetId(target, out targetNetId)) kind = TargetEnemy;
         }
         w.Put(kind);
         if (kind == TargetEnemy) w.Put(targetNetId);
+        else if (kind == TargetPlayer) w.Put(targetSlot);
 
         NetworkManager.Send(w, DeliveryMethod.ReliableUnordered);
         _sent++;
@@ -124,6 +126,7 @@ public static class EnemyCasts
         if ((flags & CastMessage.FDirection) != 0) dir = GetV3(r);
         byte kind = r.GetByte();
         ushort targetNetId = kind == TargetEnemy ? r.GetUShort() : (ushort)0;
+        byte targetSlot = kind == TargetPlayer ? r.GetByte() : Players.NoSlot;
         if (!CoopRole.IsClientSide) return;
         _recv++;
 
@@ -151,8 +154,8 @@ public static class EnemyCasts
             {
                 TargetSelf => e,
                 TargetEnemy => ClientPuppets.TryGetLivePuppet(targetNetId),
-                TargetHostPlayer => RemoteCaster.CasterEntity, // the ghost has no Entity; its stand-in follows it
-                TargetClientPlayer => GameState.LocalPlayerEntity,
+                // Us, or another player: the ghost has no Entity, its stand-in (remote caster) follows it.
+                TargetPlayer => targetSlot == Players.MySlot ? GameState.LocalPlayerEntity : RemoteCaster.CasterOf(targetSlot),
                 _ => null,
             };
             if (target != null)

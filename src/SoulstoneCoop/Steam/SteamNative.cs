@@ -30,7 +30,7 @@ internal static unsafe class SteamNative
     public const uint ChatEntered = 0x1, ChatLeft = 0x2, ChatDisconnected = 0x4, ChatKicked = 0x8, ChatBanned = 0x10;
 
     // ELobbyType
-    public const int LobbyFriendsOnly = 1;
+    public const int LobbyPrivate = 0, LobbyFriendsOnly = 1, LobbyPublic = 2;
 
     // Send flags
     public const int SendUnreliableNoNagle = 1;

@@ -20,6 +20,13 @@ public class Plugin : BasePlugin
     internal static BepInEx.Configuration.ConfigEntry<bool> AllowRejoin = null!;
     internal static BepInEx.Configuration.ConfigEntry<bool> EndRunWhenHostLeaves = null!;
     internal static BepInEx.Configuration.ConfigEntry<bool> SenderClock = null!;
+    internal static BepInEx.Configuration.ConfigEntry<int> MaxPlayers = null!;
+    internal static BepInEx.Configuration.ConfigEntry<SteamLobbyType> LobbyType = null!;
+    internal static BepInEx.Configuration.ConfigEntry<float> EnemyScalePerPlayer = null!;
+    internal static BepInEx.Configuration.ConfigEntry<float> ReplicaCastRadius = null!;
+
+    /// <summary>Phase 9: who may join the Steam lobby ([Coop] LobbyType).</summary>
+    public enum SteamLobbyType { FriendsOnly, Public, Private }
     private static int _simLatency, _simJitter, _simLoss;
 
     public override void Load()
@@ -46,6 +53,19 @@ public class Plugin : BasePlugin
             "Client: when the host disconnects mid-run, end the run (surrender) a few seconds later instead of staying in an empty map.");
         SenderClock = Config.Bind("Coop", "SenderClock", false,
             "Experimental: place the partner and the enemies by the sender's clock instead of the arrival time (smoother with jitter).");
+        // Phase 9 (docs/fase9-notas.md).
+        MaxPlayers = Config.Bind("Coop", "MaxPlayers", 8, new BepInEx.Configuration.ConfigDescription(
+            "Host: how many players fit in your co-op session, you included (2-8). Clients past that are refused.",
+            new BepInEx.Configuration.AcceptableValueRange<int>(2, 8)));
+        LobbyType = Config.Bind("Coop", "LobbyType", SteamLobbyType.FriendsOnly,
+            "Host, Steam: who can join your lobby. FriendsOnly = friends and invitees of the players in it (anyone in the group can invite). " +
+            "Public = anyone with the lobby code. Private = only who gets an invite.");
+        EnemyScalePerPlayer = Config.Bind("Coop", "EnemyScalePerPlayer", 0f, new BepInEx.Configuration.ConfigDescription(
+            "Host: more enemies alive at once for each extra player in the run (the game's limits x (1 + this x (players - 1)), up to 200). " +
+            "0 = off (the game's own numbers). Suggested: 0.25 (8 players: x2.75).", new BepInEx.Configuration.AcceptableValueRange<float>(0f, 2f)));
+        ReplicaCastRadius = Config.Bind("Coop", "ReplicaCastRadius", 60f,
+            "Spells of the other players are only replayed (visual only) when they are within this distance of you; farther ones are off screen anyway. " +
+            "Saves the effects of 7 builds on every PC. 0 = always replay.");
         _simLatency = simLatency.Value;
         _simJitter = simJitter.Value;
         _simLoss = simLoss.Value;
@@ -121,6 +141,10 @@ public class Plugin : BasePlugin
     /// the refusal with two instances that load the same DLL.</summary>
     internal static string? FakeVersionArg;
 
+    /// <summary>Phase 9, test only: the name sent in the Hello (--coop-name B), so several instances on one PC with the
+    /// same Steam account can be told apart.</summary>
+    internal static string? NameArg;
+
     /// <summary>Version sent and checked in the connection handshake.</summary>
     internal static string HandshakeVersion => FakeVersionArg ?? PluginVersion;
 
@@ -132,13 +156,14 @@ public class Plugin : BasePlugin
             if (args[i] == "--coop-host") HostArg = true;
             else if (args[i] == "--coop-connect" && i + 1 < args.Length) ConnectAddressArg = args[i + 1];
             else if (args[i] == "--coop-fake-version" && i + 1 < args.Length) FakeVersionArg = args[i + 1];
+            else if (args[i] == "--coop-name" && i + 1 < args.Length) NameArg = args[i + 1];
             // Phase 8: network simulation per instance (two games on one PC share the .cfg).
             else if (args[i] == "--coop-sim-latency" && i + 1 < args.Length && int.TryParse(args[i + 1], out var lat)) _simLatency = lat;
             else if (args[i] == "--coop-sim-jitter" && i + 1 < args.Length && int.TryParse(args[i + 1], out var jit)) _simJitter = jit;
             else if (args[i] == "--coop-sim-loss" && i + 1 < args.Length && int.TryParse(args[i + 1], out var loss)) _simLoss = loss;
         }
-        if (HostArg || ConnectAddressArg != null || FakeVersionArg != null)
-            Log.LogInfo($"Launch args: host={HostArg} connect={ConnectAddressArg ?? "-"} fakeVersion={FakeVersionArg ?? "-"}");
+        if (HostArg || ConnectAddressArg != null || FakeVersionArg != null || NameArg != null)
+            Log.LogInfo($"Launch args: host={HostArg} connect={ConnectAddressArg ?? "-"} fakeVersion={FakeVersionArg ?? "-"} name={NameArg ?? "-"}");
     }
 }
 

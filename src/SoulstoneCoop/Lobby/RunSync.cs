@@ -56,9 +56,10 @@ public static class RunSync
                 CoopSession.Notice("Cruzada ainda não funciona em co-op");
                 return false;
             }
-            if (CoopSession.RemotePlace != LobbyPlace.Menu)
+            var away = CoopSession.NamesWhere(r => r.Place != LobbyPlace.Menu);
+            if (away.Length > 0)
             {
-                CoopSession.Notice($"{CoopSession.PartnerName} ainda não voltou ao menu");
+                CoopSession.Notice($"{away} ainda não voltou ao menu");
                 return false;
             }
         }
@@ -81,7 +82,7 @@ public static class RunSync
 
         var p = BuildHostParams(scene!);
         _hostRun = p;
-        _rejoinSent = false;
+        _rejoinSent.Clear();
         if (!CoopSession.Connected) return;
 
         SendRunStart(p);
@@ -105,9 +106,9 @@ public static class RunSync
     // =====================================================================================
 
     private static RunParams? _hostRun;   // host: the run we're in (or loading)
-    private static bool _rejoinSent;      // once per connection
+    private static readonly HashSet<byte> _rejoinSent = new(); // phase 9: once per connection, per player
 
-    internal static void OnPeerConnected() => _rejoinSent = false;
+    internal static void OnPeerConnected(byte slot) => _rejoinSent.Remove(slot);
 
     /// <summary>Host took an Endless/BossRush portal (PortalSync): a partner joining later loads the current stage's
     /// map, with the same mode and the run's affixes.</summary>
@@ -128,15 +129,21 @@ public static class RunSync
 
     internal static void HostRejoinTick()
     {
-        if (_rejoinSent || _hostRun == null || !Plugin.AllowRejoin.Value) return;
+        if (_hostRun == null || !Plugin.AllowRejoin.Value) return;
         if (NetworkManager.Role != NetRole.Host || !CoopSession.Connected || !CoopSession.LocalInRun) return;
-        // Hello received (its LobbyState comes first on the same ordered channel) and the partner is in the menu.
-        if (!CoopSession.Remote.Known || CoopSession.RemotePlace != LobbyPlace.Menu) return;
         if (Life.CoopLife.RunEnding || Life.CoopLife.VictoryReached() || Life.CoopLife.LocalOut) return;
-        _rejoinSent = true;
-        SendRunStart(_hostRun);
-        CoopSession.Notice($"{CoopSession.PartnerName} chegou: entrando na sua partida", 6f);
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Host: partner connected mid-run - RunStart resent (scene={_hostRun.Scene} mode={_hostRun.Mode}).");
+        foreach (var r in CoopSession.Remotes)
+        {
+            // Hello received (its LobbyState comes first on the same ordered channel) and that player is in the menu.
+            if (_rejoinSent.Contains(r.Slot) || !r.Info.Known || r.Place != LobbyPlace.Menu) continue;
+            _rejoinSent.Add(r.Slot);
+            var w = new NetDataWriter();
+            w.Put((byte)PacketType.RunStart);
+            WriteParams(w, _hostRun);
+            NetworkManager.SendTo(r.Slot, w, DeliveryMethod.ReliableOrdered); // only the newcomer: the others are in the run
+            CoopSession.Notice($"{r.Name} chegou: entrando na sua partida", 6f);
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Host: slot {r.Slot} connected mid-run - RunStart resent (scene={_hostRun.Scene} mode={_hostRun.Mode}).");
+        }
     }
 
     /// <summary>The run the host is starting: Global (written by the game's Fight/Restart) and the host's affixes.</summary>
@@ -291,9 +298,9 @@ public static class RunSync
             CoopSession.Notice("Cruzada ainda não funciona em co-op: volte ao menu");
             return false;
         }
-        if (CoopSession.RemoteChangingScene)
+        if (CoopSession.AnyRemoteChangingScene)
         {
-            CoopSession.Notice($"{CoopSession.PartnerName} ainda está carregando");
+            CoopSession.Notice($"{CoopSession.NamesWhere(r => r.ChangingScene)} ainda está carregando");
             return false;
         }
         return true;
@@ -315,7 +322,7 @@ public static class RunSync
         }
 
         // Alone (phase 8 AllowRejoin keeps the run for a late partner) or the partner is in the menu: usual RunStart.
-        if (!CoopSession.Connected || CoopSession.RemotePlace == LobbyPlace.Menu)
+        if (!CoopSession.Connected || CoopSession.NamesWhere(r => r.Place != LobbyPlace.Menu).Length == 0)
         {
             AfterHostFight(scene);
             if (CoopSession.Connected) CoopSession.BeginStageTransition("restart");
@@ -324,7 +331,7 @@ public static class RunSync
 
         var p = BuildHostParams(scene!);
         _hostRun = p;
-        _rejoinSent = false;
+        _rejoinSent.Clear();
         var w = new NetDataWriter();
         w.Put((byte)PacketType.PortalTransition);
         w.Put((byte)PortalKind.Restart);
@@ -374,8 +381,8 @@ public static class RunSync
     {
         string reason = r.GetString();
         if (NetworkManager.Role != NetRole.Host) return;
-        Plugin.StaticLog.LogWarning($"[SoulstoneCoop][run] Host: the client refused the run: {reason}");
-        CoopSession.Notice($"{CoopSession.PartnerName} não entrou: {reason}", 8f);
+        Plugin.StaticLog.LogWarning($"[SoulstoneCoop][run] Host: slot {PacketRouter.From} refused the run: {reason}");
+        CoopSession.Notice($"{CoopSession.NameOf(PacketRouter.From)} não entrou: {reason}", 8f);
     }
 
     internal static void OnLocalMatchStarted()
@@ -487,14 +494,14 @@ public static class RunSync
         get
         {
             // Never in our own old scene during a portal/Restart: LoadNextStageAfterDelay waits on scaled time.
-            bool hold = CoopSession.LocalInRun && !CoopSession.StageTransition && CoopSession.RemoteChangingScene
+            bool hold = CoopSession.LocalInRun && !CoopSession.StageTransition && CoopSession.AnyRemoteChangingScene
                         && Time.unscaledTime - CoopSession.LocalRunStartTime < HoldTimeout;
             if (hold != _holding)
             {
                 _holding = hold;
                 Plugin.StaticLog.LogInfo(hold
-                    ? "[SoulstoneCoop][run] Partner still loading - holding our match."
-                    : $"[SoulstoneCoop][run] Hold released after {Time.unscaledTime - CoopSession.LocalRunStartTime:F1}s (partner {CoopSession.RemotePlace}).");
+                    ? $"[SoulstoneCoop][run] Others still loading ({CoopSession.DescribeOthers()}) - holding our match."
+                    : $"[SoulstoneCoop][run] Hold released after {Time.unscaledTime - CoopSession.LocalRunStartTime:F1}s (others {CoopSession.DescribeOthers()}).");
             }
             return hold;
         }

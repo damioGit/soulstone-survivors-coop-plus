@@ -147,9 +147,9 @@ public static class GodCasts
             m.Key = RemoteCaster.GodKeyPrefix + key;
             m.SkillType = (int)template.SkillType;
             m.TargetKind = CastMessage.TargetNone;
-            var caster = RemoteCaster.CasterEntity;
+            var caster = RemoteCaster.CasterOf(Players.HostSlot); // the meteors fall around the host: its stand-in plays them
             m.Yaw = caster != null ? caster.transform.eulerAngles.y : 0f;
-            var result = RemoteCaster.Play(m, template);
+            var result = RemoteCaster.Play(Players.HostSlot, m, template);
             if (result == RemoteCaster.PlayResult.Played) _played++;
             else _failed++;
             if (!_loggedFirst)

@@ -1,36 +1,28 @@
 using ECM2.Characters;
 using HarmonyLib;
 using SoulstoneCoop.Enemies;
+using SoulstoneCoop.Lobby;
 using SoulstoneCoop.Net;
 using UnityEngine;
 
 namespace SoulstoneCoop.Skills;
 
 /// <summary>
-/// Phase 4C, both sides: a stand-in that plays the OTHER player's skills, visual only. It's a "Creeps/Dummy"
+/// Phase 4C, both sides: a stand-in that plays ANOTHER player's skills, visual only. It's a "Creeps/Dummy"
 /// (same recipe as RemoteProxy: pool + Entity.Setup) in the Summons team - allied, so its projectiles fly at
 /// Monsters, but outside LootUtil's Players-team walk (the phase 3b NRE) - invisible, without a collider and
-/// ignored by target searches. It follows the remote ghost every frame. Each remote skill becomes a copy:
+/// ignored by target searches. It follows that player's ghost every frame. Each remote skill becomes a copy:
 /// the "Skill-Prefabs/&lt;key&gt;" prefab instantiated under the caster and set up with Skill.Setup(caster)
 /// (no AddSkill, so it never casts by itself). Every game effect of the caster is blocked (RemoteCasterDamageBlockPatch,
 /// RemoteCasterStatusBlockPatch, RemoteCasterPushbackBlockPatch): damage stays on the phase 3 paths.
 /// See docs/fase4c-investigacao.md.
+/// Phase 9: one caster per other player in the run (the host has one per client; a client has the host's and one per
+/// other client), each with its own skill copies and channels.
 /// </summary>
 public static class RemoteCaster
 {
     private const string CasterPrefabPath = "Creeps/Dummy";
     private const string SkillPrefabFolder = "Skill-Prefabs/";
-
-    private static Entity? _caster;
-    private static IntPtr _casterPtr;
-    private static IntPtr _casterStatsPtr;
-    private static ModifiedCharacter? _casterCharacter;
-    private static Team _originalTeam;
-    private static VfxReferences? _originalVfxOnSetup;
-    private static bool _matchStarted;
-    private static bool _hooked;
-    private static float _retryTimer;
-    private static int _createFailures;
 
     private sealed class Copy
     {
@@ -44,31 +36,64 @@ public static class RemoteCaster
         public string Kind = "";
     }
 
-    private static readonly Dictionary<string, Copy> Copies = new();
-    private static readonly HashSet<string> FailedKeys = new();
-    private static readonly Dictionary<string, bool> Channeling = new();
+    /// <summary>The stand-in of one other player.</summary>
+    private sealed class Caster
+    {
+        public byte Slot;
+        public Entity? Entity;
+        public IntPtr Ptr, StatsPtr;
+        public ModifiedCharacter? Character;
+        public float RetryTimer;
+        public int CreateFailures;
+        public readonly Dictionary<string, Copy> Copies = new();
+        public readonly HashSet<string> FailedKeys = new();
+        public readonly Dictionary<string, bool> Channeling = new();
+        public IntPtr AnimGhostPtr;
+        public Animator[]? GhostAnimators;
+    }
 
-    public static bool Active => _caster != null;
-    internal static Entity? CasterEntity => _caster; // phase 4D: stand-in target for enemy casts aimed at the host player
-    public static int CopyCount => Copies.Count;
-    public static int OpenChannels { get { int n = 0; foreach (var on in Channeling.Values) if (on) n++; return n; } }
+    private static readonly Dictionary<byte, Caster> Casters = new();
+    private static readonly HashSet<IntPtr> CasterPtrs = new();
+    private static readonly HashSet<IntPtr> StatsPtrs = new();
+    private static Team _originalTeam;
+    private static VfxReferences? _originalVfxOnSetup;
+    private static bool _matchStarted;
+    private static bool _hooked;
 
-    internal static bool IsCaster(Entity? e) => e != null && _casterPtr != IntPtr.Zero && e.Pointer == _casterPtr;
-    internal static bool IsCasterStats(StatsComponent? s) => s != null && _casterStatsPtr != IntPtr.Zero && s.Pointer == _casterStatsPtr;
+    /// <summary>At least one caster exists.</summary>
+    public static bool Active => CasterPtrs.Count > 0;
+
+    /// <summary>Phase 4D: the stand-in of that player (a target for enemy casts aimed at it: its ghost has no Entity).</summary>
+    internal static Entity? CasterOf(byte slot) => Casters.TryGetValue(slot, out var c) ? c.Entity : null;
+
+    public static int CopyCount { get { int n = 0; foreach (var c in Casters.Values) n += c.Copies.Count; return n; } }
+    public static int OpenChannels { get { int n = 0; foreach (var c in Casters.Values) foreach (var on in c.Channeling.Values) if (on) n++; return n; } }
+
+    internal static bool IsCaster(Entity? e) => e != null && CasterPtrs.Count > 0 && CasterPtrs.Contains(e.Pointer);
+    internal static bool IsCasterStats(StatsComponent? s) => s != null && StatsPtrs.Count > 0 && StatsPtrs.Contains(s.Pointer);
 
     public static void EnsureHooked()
     {
         if (_hooked) return;
         _hooked = true;
-        NetworkManager.PeerDisconnected += () => RemoveCaster("peer disconnected");
+        Players.Left += slot =>
+        {
+            RemoveCaster(slot, "player left");
+            Casters.Remove(slot);
+        };
     }
 
     public static void OnMatchStarted()
     {
-        // A new match: the caster and its copies from the previous scene are gone with it.
-        ForgetCaster();
+        // A new match: the casters and their copies from the previous scene are gone with it.
+        ForgetAll();
         _matchStarted = true;
-        _createFailures = 0;
+    }
+
+    private static Caster CasterFor(byte slot)
+    {
+        if (!Casters.TryGetValue(slot, out var c)) Casters[slot] = c = new Caster { Slot = slot };
+        return c;
     }
 
     public static void Tick(float unscaledDeltaTime)
@@ -76,28 +101,36 @@ public static class RemoteCaster
         if (NetworkManager.Role == NetRole.None) return;
         try
         {
-            if (!GameManagerUtil.HasGameManager) { _matchStarted = false; ForgetCaster(); }
-            else if (_casterPtr != IntPtr.Zero && (_caster == null || !_caster.gameObject.activeInHierarchy))
+            if (!GameManagerUtil.HasGameManager) { _matchStarted = false; ForgetAll(); }
+            foreach (var r in CoopSession.Remotes)
             {
-                Plugin.StaticLog.LogWarning("[SoulstoneCoop][casts] Remote caster went inactive/destroyed - will recreate.");
-                ForgetCaster();
-            }
-
-            bool haveRemote = RemoteProxy.TryGetRemotePosition(out var pos, out var rot);
-            if (_caster == null)
-            {
-                _retryTimer -= unscaledDeltaTime;
-                if (haveRemote && _matchStarted && GameState.LocalPlayerEntity != null && _retryTimer <= 0f && _createFailures < 5)
+                var c = CasterFor(r.Slot);
+                if (c.Ptr != IntPtr.Zero && (c.Entity == null || !c.Entity.gameObject.activeInHierarchy))
                 {
-                    _retryTimer = 2f;
-                    CreateCaster(pos, rot);
+                    Plugin.StaticLog.LogWarning($"[SoulstoneCoop][casts] Remote caster {c.Slot} went inactive/destroyed - will recreate.");
+                    ForgetCaster(c);
                 }
-            }
-            else if (haveRemote)
-            {
-                if (_casterCharacter != null) _casterCharacter.SetPosition(pos);
-                else _caster.transform.position = pos;
-                _caster.transform.rotation = rot;
+
+                bool haveRemote = r.TryGetPosition(out var pos, out var rot);
+                if (c.Entity == null)
+                {
+                    c.RetryTimer -= unscaledDeltaTime;
+                    if (haveRemote && _matchStarted && GameState.LocalPlayerEntity != null && c.RetryTimer <= 0f && c.CreateFailures < 5)
+                    {
+                        c.RetryTimer = 2f;
+                        CreateCaster(c, pos, rot);
+                    }
+                }
+                else if (haveRemote)
+                {
+                    if (c.Character != null) c.Character.SetPosition(pos);
+                    else c.Entity.transform.position = pos;
+                    c.Entity.transform.rotation = rot;
+                }
+                else if (r.Ghost == null)
+                {
+                    RemoveCaster(r.Slot, "player out of the run"); // its ghost is gone: nothing to cast from
+                }
             }
         }
         catch (Exception ex)
@@ -112,6 +145,7 @@ public static class RemoteCaster
     private sealed class Probe
     {
         public float At;
+        public Caster? Caster;
         public Copy? Copy;
         public Vector3 Source;
         public bool HasSource;
@@ -124,14 +158,15 @@ public static class RemoteCaster
     private const float ProbeDelay = 0.25f;
     private static readonly List<Probe> Probes = new();
     private static readonly Dictionary<string, int> ProbeCounts = new();
+    private static readonly HashSet<string> MissingStateLogged = new();
 
     /// <summary>The first casts of each key are checked 0.25 s later: what the replica put in the world.</summary>
-    private static void QueueVisualProbe(Copy c, CastMessage m)
+    private static void QueueVisualProbe(Caster caster, Copy c, CastMessage m)
     {
         ProbeCounts.TryGetValue(c.Key, out int n);
         if (n >= ProbesPerKey) return;
         ProbeCounts[c.Key] = n + 1;
-        Probes.Add(new Probe { At = Time.unscaledTime + ProbeDelay, Copy = c, Source = m.Source, HasSource = m.Has(CastMessage.FSource) });
+        Probes.Add(new Probe { At = Time.unscaledTime + ProbeDelay, Caster = caster, Copy = c, Source = m.Source, HasSource = m.Has(CastMessage.FSource) });
     }
 
     private static void QueueAnimProbe(Animator anim, string name, int hash, int layer)
@@ -169,7 +204,8 @@ public static class RemoteCaster
     private static void ProbeVisuals(Probe p)
     {
         var c = p.Copy!;
-        var ghost = GameState.RemoteGhostObject;
+        var caster = p.Caster;
+        var ghost = caster != null ? CoopSession.Get(caster.Slot)?.Ghost : null;
         Vector3 ghostPos = ghost != null ? ghost.transform.position : Vector3.zero;
         var cam = Camera.main;
         int projectiles = 0, areas = 0, rendOn = 0, rendTotal = 0;
@@ -203,9 +239,9 @@ public static class RemoteCaster
         string layerInfo = firstLayer < 0 ? "-" :
             $"{LayerMask.LayerToName(firstLayer)}({firstLayer}) drawn={(cam != null && (cam.cullingMask & (1 << firstLayer)) != 0)}";
         string firstInfo = first.HasValue ? $"{first.Value} ({Vector3.Distance(first.Value, ghostPos):0.0} m from the ghost)" : "-";
-        float casterGap = _caster != null ? Vector3.Distance(_caster.transform.position, ghostPos) : -1f;
+        float casterGap = caster?.Entity != null ? Vector3.Distance(caster.Entity.transform.position, ghostPos) : -1f;
         Plugin.StaticLog.LogInfo(
-            $"[SoulstoneCoop][casts] Probe '{c.Key}': projectiles={projectiles} areas={areas} first={firstInfo} renderers={rendOn}/{rendTotal} " +
+            $"[SoulstoneCoop][casts] Probe '{c.Key}' (slot {(caster != null ? caster.Slot : -1)}): projectiles={projectiles} areas={areas} first={firstInfo} renderers={rendOn}/{rendTotal} " +
             $"layer={layerInfo} copyActive={(c.Skill != null && c.Skill.gameObject.activeInHierarchy)} casterToGhost={casterGap:0.0} m " +
             $"source={(p.HasSource ? p.Source.ToString() : "none")}.");
     }
@@ -227,7 +263,7 @@ public static class RemoteCaster
 
     // ---------------- the caster entity ----------------
 
-    private static void CreateCaster(Vector3 pos, Quaternion rot)
+    private static void CreateCaster(Caster c, Vector3 pos, Quaternion rot)
     {
         Entity? inst = null;
         try
@@ -269,41 +305,43 @@ public static class RemoteCaster
             var col = inst._physical != null ? inst._physical.Collider : null;
             if (col != null) col.enabled = false; // no body: enemies walk through, their hits can't find it
 
-            _caster = inst;
-            _casterPtr = inst.Pointer;
-            _casterStatsPtr = stats != null ? stats.Pointer : IntPtr.Zero;
-            _casterCharacter = inst._character;
+            c.Entity = inst;
+            c.Ptr = inst.Pointer;
+            c.StatsPtr = stats != null ? stats.Pointer : IntPtr.Zero;
+            c.Character = inst._character;
+            CasterPtrs.Add(c.Ptr);
+            if (c.StatsPtr != IntPtr.Zero) StatsPtrs.Add(c.StatsPtr);
             Plugin.StaticLog.LogInfo(
-                $"[SoulstoneCoop][casts] Created remote caster '{inst.gameObject.name}' at {pos}: team {_originalTeam}->{team.Team} " +
+                $"[SoulstoneCoop][casts] Created remote caster {c.Slot} '{inst.gameObject.name}' at {pos}: team {_originalTeam}->{team.Team} " +
                 $"isPlayer={inst.IsPlayer()} skillCaster={(inst._skillCaster != null)} animator={inst.Animator.HasReference} " +
                 $"stats={(stats != null)} areaStat={(stats?.Stats != null ? stats.Stats.AreaModifier : -1f)}");
-            PreloadPartnerWeaponSkills();
+            PreloadWeaponSkills(c);
         }
         catch (Exception ex)
         {
-            _createFailures++;
-            Plugin.StaticLog.LogError($"[SoulstoneCoop][casts] CreateCaster failed (#{_createFailures}): {ex}");
-            if (inst != null && _caster == null)
+            c.CreateFailures++;
+            Plugin.StaticLog.LogError($"[SoulstoneCoop][casts] CreateCaster {c.Slot} failed (#{c.CreateFailures}): {ex}");
+            if (inst != null && c.Entity == null)
             {
                 try { RestoreForPool(inst); inst.Recycle(); } catch { /* best effort */ }
             }
         }
     }
 
-    /// <summary>Phase 5: the partner's weapon skills (WeaponDefinition.MainSkillId/OffhandSkillId of the weapon in their
+    /// <summary>Phase 5: that player's weapon skills (WeaponDefinition.MainSkillId/OffhandSkillId of the weapon in its
     /// Hello) are loaded now, so the first cast doesn't hit the disk, and logged: a skill of another character that
     /// isn't under Skill-Prefabs shows up here instead of as a silent noSkill later. Copies are still made on the first
     /// cast, which carries the SkillType Skill.Setup needs.</summary>
-    private static void PreloadPartnerWeaponSkills()
+    private static void PreloadWeaponSkills(Caster c)
     {
         try
         {
-            var r = Lobby.CoopSession.Remote;
-            if (!r.Known || string.IsNullOrEmpty(r.WeaponId)) return;
+            var r = CoopSession.Get(c.Slot)?.Info;
+            if (r == null || !r.Known || string.IsNullOrEmpty(r.WeaponId)) return;
             var weapons = Global.WeaponCollection;
             if (weapons == null || !weapons.TryGetWeaponDefinitionById(r.WeaponId, out var wd, out _) || wd == null)
             {
-                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][casts] Partner's weapon '{r.WeaponId}' is not in this game's collection.");
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][casts] Slot {c.Slot} weapon '{r.WeaponId}' is not in this game's collection.");
                 return;
             }
             var parts = new List<string>();
@@ -313,48 +351,63 @@ public static class RemoteCaster
                 var prefab = ResourcesUtil.Load<Skill>(SkillPrefabFolder + id + "-Skill");
                 parts.Add($"{id}={(prefab != null ? "ok" : "MISSING")}");
             }
-            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][casts] Partner plays {r.CharacterName} with '{r.WeaponId}': {string.Join(", ", parts)}.");
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][casts] Slot {c.Slot} plays {r.CharacterName} with '{r.WeaponId}': {string.Join(", ", parts)}.");
         }
         catch (Exception ex)
         {
-            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][casts] Preloading the partner's weapon skills: {ex.Message}");
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][casts] Preloading slot {c.Slot} weapon skills: {ex.Message}");
         }
     }
 
     /// <summary>Scene gone: just drop the references (the objects went with it).</summary>
-    private static void ForgetCaster()
+    private static void ForgetCaster(Caster c)
     {
-        _caster = null;
-        _casterStatsPtr = IntPtr.Zero;
-        _casterPtr = IntPtr.Zero;
-        _casterCharacter = null;
-        Copies.Clear();
-        FailedKeys.Clear();
-        Channeling.Clear();
+        if (c.Ptr != IntPtr.Zero) CasterPtrs.Remove(c.Ptr);
+        if (c.StatsPtr != IntPtr.Zero) StatsPtrs.Remove(c.StatsPtr);
+        c.Entity = null;
+        c.StatsPtr = IntPtr.Zero;
+        c.Ptr = IntPtr.Zero;
+        c.Character = null;
+        c.Copies.Clear();
+        c.FailedKeys.Clear();
+        c.Channeling.Clear();
+        c.GhostAnimators = null;
+        c.AnimGhostPtr = IntPtr.Zero;
+    }
+
+    private static void ForgetAll()
+    {
+        foreach (var c in Casters.Values)
+        {
+            ForgetCaster(c);
+            c.CreateFailures = 0;
+        }
+        CasterPtrs.Clear();
+        StatsPtrs.Clear();
         MissingStateLogged.Clear();
         Probes.Clear();
         ProbeCounts.Clear();
-        _ghostAnimators = null;
-        _animGhostPtr = IntPtr.Zero;
     }
 
-    private static void RemoveCaster(string reason)
+    private static void RemoveCaster(byte slot, string reason)
     {
-        var e = _caster;
-        var copies = Copies.Values.ToArray();
-        ForgetCaster();
+        if (!Casters.TryGetValue(slot, out var c)) return;
+        var e = c.Entity;
+        var copies = c.Copies.Values.ToArray();
+        ForgetCaster(c);
+        Probes.RemoveAll(p => p.Caster == c);
         if (e == null) return;
         try
         {
             // The Dummy goes back to the pool: our skill copies must not ride along.
-            foreach (var c in copies) DestroyCopy(c);
+            foreach (var copy in copies) DestroyCopy(copy);
             RestoreForPool(e);
             e.Recycle();
-            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][casts] Remote caster recycled ({reason}).");
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][casts] Remote caster {slot} recycled ({reason}).");
         }
         catch (Exception ex)
         {
-            Plugin.StaticLog.LogError($"[SoulstoneCoop][casts] RemoveCaster: {ex.Message}");
+            Plugin.StaticLog.LogError($"[SoulstoneCoop][casts] RemoveCaster {slot}: {ex.Message}");
         }
     }
 
@@ -386,58 +439,58 @@ public static class RemoteCaster
 
     // ---------------- skill copies ----------------
 
-    private static Copy? GetOrCreateCopy(string key, SkillType skillType, Skill? template = null)
+    private static Copy? GetOrCreateCopy(Caster caster, string key, SkillType skillType, Skill? template = null)
     {
-        if (Copies.TryGetValue(key, out var c))
+        if (caster.Copies.TryGetValue(key, out var c))
         {
             if (c.Skill != null) return c;
-            Copies.Remove(key);
+            caster.Copies.Remove(key);
         }
-        if (FailedKeys.Contains(key) || _caster == null) return null;
+        if (caster.FailedKeys.Contains(key) || caster.Entity == null) return null;
 
         try
         {
-            var inst = template != null ? CreateFromTemplate(key, template, out string how) : CreateSkillInstance(key, skillType, out how);
+            var inst = template != null ? CreateFromTemplate(caster, key, template, out string how) : CreateSkillInstance(caster, key, skillType, out how);
             inst.FillPools(3);
 
             c = new Copy { Key = key, Skill = inst, Ptr = inst.Pointer, Kind = inst.GetIl2CppType().Name };
-            Copies[key] = c;
-            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][casts] Copy '{key}' ({c.Kind}, type={skillType}, via {how}) set up on the remote caster.");
+            caster.Copies[key] = c;
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][casts] Copy '{key}' ({c.Kind}, type={skillType}, via {how}) set up on remote caster {caster.Slot}.");
             return c;
         }
         catch (Exception ex)
         {
-            FailedKeys.Add(key);
-            Plugin.StaticLog.LogError($"[SoulstoneCoop][casts] Could not copy skill '{key}' (won't retry this match): {ex}");
+            caster.FailedKeys.Add(key);
+            Plugin.StaticLog.LogError($"[SoulstoneCoop][casts] Could not copy skill '{key}' on caster {caster.Slot} (won't retry this match): {ex}");
             return null;
         }
     }
 
-    /// <summary>The skill the partner cast, straight from its prefab: "Skill-Prefabs/&lt;key&gt;" is the same asset on both
-    /// machines whatever character either side plays, so a skill the local character doesn't have resolves the same way.
+    /// <summary>The skill the other player cast, straight from its prefab: "Skill-Prefabs/&lt;key&gt;" is the same asset on all
+    /// machines whatever character anyone plays, so a skill the local character doesn't have resolves the same way.
     /// Phase 5 dropped the UnitUtil.SetupExtraSkillForEntity attempt that came first. It looks the id up in THIS match's
     /// MatchPowerUpData (the local character's power-ups), so it returned null for any other character's skill. For a
     /// shared skill it instantiated a copy and then threw on the Dummy (no PowerUpComponent at Entity+0x3C8), leaking
     /// that copy: those were the Buckshot/PowerBlast NREs of the 4C test.</summary>
-    private static Skill CreateSkillInstance(string key, SkillType skillType, out string how)
+    private static Skill CreateSkillInstance(Caster caster, string key, SkillType skillType, out string how)
     {
         var prefab = ResourcesUtil.Load<Skill>(SkillPrefabFolder + key);
         if (prefab == null) throw new Exception($"no skill prefab at Resources '{SkillPrefabFolder}{key}'");
-        var inst = UnityEngine.Object.Instantiate(prefab, _caster!.transform);
+        var inst = UnityEngine.Object.Instantiate(prefab, caster.Entity!.transform);
         if (inst == null) throw new Exception("Instantiate returned null");
-        SetupOnCaster(inst, skillType);
+        SetupOnCaster(caster.Entity, inst, skillType);
         how = "prefab + Skill.Setup";
         return inst;
     }
 
     /// <summary>Sets a fresh copy up on the caster; a half set-up copy is destroyed so it can't linger under it.</summary>
-    private static void SetupOnCaster(Skill inst, SkillType skillType)
+    private static void SetupOnCaster(Entity caster, Skill inst, SkillType skillType)
     {
-        var phys = _caster!.Physical;
+        var phys = caster.Physical;
         Collider? col = phys.HasReference && phys.Reference != null ? phys.Reference.Collider : null;
         try
         {
-            inst.Setup(_caster, skillType, _caster.Team, _caster.Stats, _caster.PassiveSkills, _caster.Animator, col!,
+            inst.Setup(caster, skillType, caster.Team, caster.Stats, caster.PassiveSkills, caster.Animator, col!,
                 new Il2CppSystem.Nullable<float>(), new Il2CppSystem.Nullable<bool>());
         }
         catch
@@ -450,7 +503,7 @@ public static class RemoteCaster
     /// <summary>A skill that is not a player power-up (the God-Entity's meteor): the Resources prefab when there is one
     /// under Skill-Prefabs, else a clone of the local scene instance (the template), set up on the caster like the
     /// path above. The copy belongs to the caster, so every effect of it is blocked by the patches below.</summary>
-    private static Skill CreateFromTemplate(string key, Skill template, out string how)
+    private static Skill CreateFromTemplate(Caster caster, string key, Skill template, out string how)
     {
         string prefabKey = key.StartsWith(GodKeyPrefix, StringComparison.Ordinal) ? key.Substring(GodKeyPrefix.Length) : key;
         Skill? source = null;
@@ -458,9 +511,9 @@ public static class RemoteCaster
         catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][casts] Load '{SkillPrefabFolder}{prefabKey}': {ex.Message}"); }
         how = source != null ? "Resources prefab" : "clone of the local instance";
         source ??= template;
-        var inst = UnityEngine.Object.Instantiate(source, _caster!.transform);
+        var inst = UnityEngine.Object.Instantiate(source, caster.Entity!.transform);
         if (inst == null) throw new Exception("Instantiate returned null");
-        SetupOnCaster(inst, template.SkillType);
+        SetupOnCaster(caster.Entity, inst, template.SkillType);
         return inst;
     }
 
@@ -469,13 +522,14 @@ public static class RemoteCaster
 
     /// <summary>Il2Cpp delegates for the funcs some skills require (channeling, updated front position). Built
     /// lazily and guarded: if the conversion fails only those skills are affected.</summary>
-    private static bool TryGetFuncs(Copy c, bool channel, bool front, bool ground)
+    private static bool TryGetFuncs(Caster caster, Copy c, bool channel, bool front, bool ground)
     {
         try
         {
             var copy = c;
+            var owner = caster;
             if (channel && c.ChannelFunc == null)
-                c.ChannelFunc = (Func<bool>)(() => _caster != null && Channeling.TryGetValue(copy.Key, out bool on) && on);
+                c.ChannelFunc = (Func<bool>)(() => owner.Entity != null && owner.Channeling.TryGetValue(copy.Key, out bool on) && on);
             if (front && c.FrontFunc == null) c.FrontFunc = (Func<Skill, Vector3>)(_ => copy.Front);
             if (ground && c.GroundFunc == null) c.GroundFunc = (Func<Skill, Vector3>)(_ => copy.Ground);
             return true;
@@ -489,29 +543,35 @@ public static class RemoteCaster
 
     // ---------------- playing a cast ----------------
 
-    public enum PlayResult { Played, NoCaster, NoSkill, Rejected, Error }
+    public enum PlayResult { Played, NoCaster, NoSkill, Rejected, Error, Culled }
 
+    /// <param name="slot">Whose cast it is: it plays on that player's caster.</param>
     /// <param name="template">Phase "pendências": a local skill instance to copy when the key isn't a player
-    /// power-up (God meteors, see GodCasts). Null for the other player's skills.</param>
-    internal static PlayResult Play(CastMessage m, Skill? template = null)
+    /// power-up (God meteors, see GodCasts, on the host's caster). Null for the other players' skills.</param>
+    internal static PlayResult Play(byte slot, CastMessage m, Skill? template = null)
     {
-        if (_caster == null || _caster._skillCaster == null) return PlayResult.NoCaster;
-        var c = GetOrCreateCopy(m.Key, (SkillType)m.SkillType, template);
+        if (!Casters.TryGetValue(slot, out var caster) || caster.Entity == null || caster.Entity._skillCaster == null) return PlayResult.NoCaster;
+        // Phase 9: a player far from us is off screen: its replica (visual only) would just cost effects. [Coop] ReplicaCastRadius.
+        float radius = Plugin.ReplicaCastRadius?.Value ?? 0f;
+        var me = GameState.LocalPlayerEntity;
+        if (radius > 0f && me != null && RemoteProxy.TryGetPosition(slot, out var at, out _)
+            && (at - me.transform.position).sqrMagnitude > radius * radius) return PlayResult.Culled;
+        var c = GetOrCreateCopy(caster, m.Key, (SkillType)m.SkillType, template);
         if (c == null) return PlayResult.NoSkill;
 
         try
         {
-            var tr = _caster.transform;
+            var tr = caster.Entity.transform;
             // 0.8.1: right on the ghost at cast time, transform included. Tick only moves it through
             // ModifiedCharacter.SetPosition, which may reach the transform a step later, and skills without a
             // source override start from the caster.
-            if (RemoteProxy.TryGetRemotePosition(out var ghostPos, out _))
+            if (RemoteProxy.TryGetPosition(slot, out var ghostPos, out _))
             {
-                if (_casterCharacter != null) _casterCharacter.SetPosition(ghostPos);
+                if (caster.Character != null) caster.Character.SetPosition(ghostPos);
                 tr.position = ghostPos;
             }
             tr.rotation = Quaternion.Euler(0f, m.Yaw, 0f); // front-of-caster skills aim with the caster's forward
-            ApplyFidelity(c, m);
+            ApplyFidelity(caster, c, m);
 
             var p = new SkillActivationParameters();
             // Raw writes: the interop setters for these Nullable<Vector3> fields throw (see ActivationParamsRaw).
@@ -520,7 +580,7 @@ public static class RemoteCaster
             if (m.Has(CastMessage.FFront)) ActivationParamsRaw.SetVector(p, ActivationParamsRaw.TargetFrontPosition, m.Front);
             if (m.Has(CastMessage.FDirection)) ActivationParamsRaw.SetVector(p, ActivationParamsRaw.TargetDirection, m.Direction);
 
-            var target = ResolveTarget(m);
+            var target = ResolveTarget(caster, m);
             if (target != null)
             {
                 p.TargetEntity = target;
@@ -530,10 +590,10 @@ public static class RemoteCaster
             c.Front = m.Has(CastMessage.FFront) ? m.Front : tr.position + tr.forward * 5f;
             c.Ground = m.Has(CastMessage.FGround) ? m.Ground : c.Front;
             bool wantChannel = m.Has(CastMessage.FChannel), wantFront = m.Has(CastMessage.FFrontFunc), wantGround = m.Has(CastMessage.FGroundFunc);
-            if ((wantChannel || wantFront || wantGround) && !TryGetFuncs(c, wantChannel, wantFront, wantGround)) return PlayResult.Error;
+            if ((wantChannel || wantFront || wantGround) && !TryGetFuncs(caster, c, wantChannel, wantFront, wantGround)) return PlayResult.Error;
             if (wantChannel)
             {
-                Channeling[m.Key] = true;
+                caster.Channeling[m.Key] = true;
                 p.IsBeingChanneled = c.ChannelFunc!;
             }
             if (wantFront) p.GetTargetFrontPosition = c.FrontFunc!;
@@ -541,35 +601,36 @@ public static class RemoteCaster
 
             // IgnoreAll: no cooldown, busy or combat checks, and no procs / chain casts / extra multicasts -
             // those arrive as their own cast messages from the other side.
-            bool ok = _caster._skillCaster.CastSkill(c.Skill, p, SkillActivationOptions.IgnoreAll);
+            bool ok = caster.Entity._skillCaster.CastSkill(c.Skill, p, SkillActivationOptions.IgnoreAll);
             if (!ok) return PlayResult.Rejected;
-            QueueVisualProbe(c, m);
-            if (template == null) PlayGhostAnimation(c.Skill); // a God cast is not the ghost's own
+            QueueVisualProbe(caster, c, m);
+            if (template == null) PlayGhostAnimation(caster, c.Skill); // a God cast is not the ghost's own
             return PlayResult.Played;
         }
         catch (Exception ex)
         {
-            Plugin.StaticLog.LogError($"[SoulstoneCoop][casts] Playing '{m.Key}': {ex}");
+            Plugin.StaticLog.LogError($"[SoulstoneCoop][casts] Playing '{m.Key}' for slot {slot}: {ex}");
             return PlayResult.Error;
         }
     }
 
-    internal static void OnChannelEnd(string key)
+    internal static void OnChannelEnd(byte slot, string key)
     {
-        if (Channeling.ContainsKey(key)) Channeling[key] = false;
+        if (Casters.TryGetValue(slot, out var c) && c.Channeling.ContainsKey(key)) c.Channeling[key] = false;
     }
 
-    private static Entity? ResolveTarget(CastMessage m)
+    private static Entity? ResolveTarget(Caster caster, CastMessage m)
     {
         switch (m.TargetKind)
         {
             case CastMessage.TargetSelf:
-                return _caster;
+                return caster.Entity;
             case CastMessage.TargetEnemy:
                 if (CoopRole.IsHostSide) return HostEnemySync.TryGet(m.TargetNetId, out var e) ? e : null;
                 return ClientPuppets.TryGetLivePuppet(m.TargetNetId);
-            case CastMessage.TargetOtherPlayer:
-                return GameState.LocalPlayerEntity;
+            case CastMessage.TargetPlayer:
+                // Us, or another player: its stand-in follows its ghost (the ghost has no Entity).
+                return m.TargetSlot == Players.MySlot ? GameState.LocalPlayerEntity : CasterOf(m.TargetSlot);
             default:
                 return null;
         }
@@ -577,7 +638,7 @@ public static class RemoteCaster
 
     /// <summary>Level, projectile/area counts and the sender's area scale (UnitUtil.GetAdjustedScale), put
     /// into the copy's own modifiers so the receiver's math lands on the same size.</summary>
-    private static void ApplyFidelity(Copy c, CastMessage m)
+    private static void ApplyFidelity(Caster caster, Copy c, CastMessage m)
     {
         var s = c.Skill;
         if (m.Level > 0) s.SkillLevel = m.Level;
@@ -598,7 +659,7 @@ public static class RemoteCaster
         if (m.Scale <= 0f || Mathf.Abs(m.Scale - c.AppliedScale) < 0.001f) return;
         var trait = s.Modifiers;
         var mods = trait != null ? trait.Modifiers : null;
-        var stats = _caster!._stats;
+        var stats = caster.Entity!._stats;
         if (mods == null || stats == null) return;
         // scale = (statArea + modArea) * k  (k = multiplicative stat, runes, shrink, 1 + modAreaMult).
         // Measure the caster's s0 and k with modArea = 0 / 1 and AreaMult = 0, then solve for modArea.
@@ -611,16 +672,13 @@ public static class RemoteCaster
         c.AppliedScale = m.Scale;
     }
 
-    private static IntPtr _animGhostPtr;
-    private static Animator[]? _ghostAnimators;
-    private static readonly HashSet<string> MissingStateLogged = new();
     internal static int GhostAnimPlayed, GhostAnimMissing;
 
     /// <summary>Bonus: the cast animation on the ghost. SkillAnimationTrait.Activate does a CrossFade on the caster's
     /// AnimatorComponent, i.e. on every Animator of its list (the character's and a weapon's that syncs with it); the
     /// ghost only has plain Animators, so the same CrossFade goes to each one whose controller has the state. Phase 5:
-    /// the ghost is the partner's character, so the states are there for any character (logged once if not).</summary>
-    private static void PlayGhostAnimation(Skill s)
+    /// the ghost is that player's character, so the states are there for any character (logged once if not).</summary>
+    private static void PlayGhostAnimation(Caster caster, Skill s)
     {
         try
         {
@@ -628,16 +686,17 @@ public static class RemoteCaster
                 ?? s.TryCast<AreaSkill>()?.AnimationTrait
                 ?? s.TryCast<MultiProjectileSkill>()?.AnimationTrait;
             if (trait == null || string.IsNullOrEmpty(trait.AnimationName)) return;
-            var ghost = GameState.RemoteGhostObject;
+            var who = CoopSession.Get(caster.Slot);
+            var ghost = who?.Ghost;
             if (ghost == null) return;
-            if (_ghostAnimators == null || ghost.Pointer != _animGhostPtr)
+            if (caster.GhostAnimators == null || ghost.Pointer != caster.AnimGhostPtr)
             {
-                _animGhostPtr = ghost.Pointer;
-                _ghostAnimators = ghost.GetComponentsInChildren<Animator>(true);
+                caster.AnimGhostPtr = ghost.Pointer;
+                caster.GhostAnimators = ghost.GetComponentsInChildren<Animator>(true);
             }
             int hash = Animator.StringToHash(trait.AnimationName);
             bool played = false;
-            foreach (var anim in _ghostAnimators)
+            foreach (var anim in caster.GhostAnimators)
             {
                 if (anim == null || !anim.isActiveAndEnabled) continue;
                 int layer = Mathf.Clamp(trait.AnimationLayer, 0, Mathf.Max(0, anim.layerCount - 1));
@@ -650,8 +709,8 @@ public static class RemoteCaster
             GhostAnimMissing++;
             if (MissingStateLogged.Add(trait.AnimationName))
                 Plugin.StaticLog.LogInfo(
-                    $"[SoulstoneCoop][casts] Ghost has no animator state '{trait.AnimationName}' (layer {trait.AnimationLayer}) for '{s.gameObject.name}' " +
-                    $"(ghost built from partner={VisualGhostFactory.BuiltFromRemote}, {_ghostAnimators.Length} animators).");
+                    $"[SoulstoneCoop][casts] Ghost {caster.Slot} has no animator state '{trait.AnimationName}' (layer {trait.AnimationLayer}) for '{s.gameObject.name}' " +
+                    $"(ghost built from that player={who!.GhostFromRemote}, {caster.GhostAnimators.Length} animators).");
         }
         catch (Exception ex)
         {

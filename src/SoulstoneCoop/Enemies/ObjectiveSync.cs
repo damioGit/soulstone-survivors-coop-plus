@@ -165,7 +165,7 @@ public static class ObjectiveSync
         };
         if (!CoopRole.IsClientSide) return;
         // Portal/Restart (Lobby.PortalSync): what the host sends from its old scene must not reach our next one.
-        if (!Lobby.CoopSession.RemoteInRun || Lobby.CoopSession.StageTransition) return;
+        if (!Lobby.CoopSession.HostInRun || Lobby.CoopSession.StageTransition) return;
         _recv++;
         _lastRecv = s;
         _hasRecv = true;

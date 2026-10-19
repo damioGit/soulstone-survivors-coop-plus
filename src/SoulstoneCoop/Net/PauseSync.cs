@@ -2,6 +2,7 @@ using HarmonyLib;
 using LiteNetLib;
 using LiteNetLib.Utils;
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 namespace SoulstoneCoop.Net;
 
@@ -10,35 +11,71 @@ public enum PauseReason : byte
     None = 0,
     Pause = 1,
     LevelUp = 2,
-    /// <summary>Level-up popup open WITHOUT stopping the time ([Coop] LevelUpPause): shown, never freezes the partner.</summary>
+    /// <summary>Level-up popup open WITHOUT stopping the time ([Coop] LevelUpPause): shown, never freezes the others.</summary>
     Choosing = 3,
 }
 
 /// <summary>
-/// Synchronized pause: if either side pauses or opens the level-up screen, both freeze.
+/// Synchronized pause: if anyone pauses, everyone freezes.
 /// TimeUtil.SetTime runs every frame and sets Time.timeScale to the product of the game's pause
 /// factors; our postfix reads the LOCAL state from those factors (before the remote state is applied,
-/// so the two sides can't latch each other paused) and then forces timeScale to 0 while the remote is paused.
+/// so two players can't latch each other paused) and then forces timeScale to 0 while someone else is paused.
 /// In co-op the level-up popup may skip the pause (LevelUpPolicy, [Coop] LevelUpPause): it is then sent as Choosing.
+/// Phase 9 (user's rule): Esc by anyone freezes everyone, and the host can unfreeze: when it closes its own pause
+/// menu, or presses F4, whoever was pausing stops counting (PauseOverride) until it pauses again. A level-up that
+/// pauses (LevelUpPause = Always) freezes the others only with two players; with three or more, only its own game.
+/// The host forwards every client's PauseState to the others (PacketRouter).
 /// </summary>
 public static class PauseSync
 {
     public static PauseReason LocalReason { get; private set; }
-    public static PauseReason RemoteReason { get; private set; }
-    /// <summary>The partner paused (or is choosing an upgrade) inside a run next to ours. Only counts while both are in
-    /// a run: a state latched from the end screen must not freeze the next run or the menu (phase 6).</summary>
-    public static bool RemotePaused =>
-        RemoteReason != PauseReason.None && RemoteReason != PauseReason.Choosing && NetworkManager.HasPeer
-        && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.RemoteInRun;
-    /// <summary>The partner is choosing an upgrade with the game running: no freeze, just the banner.</summary>
-    public static bool RemoteChoosing =>
-        RemoteReason == PauseReason.Choosing && NetworkManager.HasPeer
-        && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.RemoteInRun;
 
-    /// <summary>A new run is starting: forget the partner's old state and resend ours.</summary>
+    private static readonly PauseReason[] Reasons = new PauseReason[Players.MaxSlots];
+
+    /// <summary>Host: slots whose current pause the host lifted (bit per slot). Clients get it in PauseOverride.</summary>
+    private static int _overrideMask;
+
+    /// <summary>That player's last reported pause state.</summary>
+    public static PauseReason ReasonOf(byte slot) => slot < Players.MaxSlots ? Reasons[slot] : PauseReason.None;
+
+    /// <summary>That player's state freezes us: a pause (or, with two players, a pausing level-up) inside a run next
+    /// to ours, not lifted by the host. A state latched from the end screen must not freeze the next run (phase 6).</summary>
+    public static bool Freezes(byte slot)
+    {
+        if (slot >= Players.MaxSlots || (_overrideMask & (1 << slot)) != 0) return false;
+        var r = Reasons[slot];
+        bool freezes = r == PauseReason.Pause || (r == PauseReason.LevelUp && Players.Count <= 2);
+        return freezes && NetworkManager.HasPeer && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.InRun(slot);
+    }
+
+    /// <summary>Someone else's pause freezes us right now.</summary>
+    public static bool RemotePaused
+    {
+        get
+        {
+            foreach (var s in Players.Others) if (Freezes(s)) return true;
+            return false;
+        }
+    }
+
+    /// <summary>Someone else is choosing an upgrade with the game running (or pausing only its own game): no freeze, just the banner.</summary>
+    public static bool IsChoosing(byte slot)
+    {
+        if (slot >= Players.MaxSlots || !NetworkManager.HasPeer || !Lobby.CoopSession.LocalInRun || !Lobby.CoopSession.InRun(slot)) return false;
+        var r = Reasons[slot];
+        return r == PauseReason.Choosing || (r == PauseReason.LevelUp && !Freezes(slot));
+    }
+
+    /// <summary>That player is in its pause menu but the host lifted the freeze.</summary>
+    public static bool IsPausedAlone(byte slot) =>
+        slot < Players.MaxSlots && Reasons[slot] == PauseReason.Pause && (_overrideMask & (1 << slot)) != 0
+        && Lobby.CoopSession.InRun(slot);
+
+    /// <summary>A new run is starting: forget the others' old state (and the host's lifts) and resend ours.</summary>
     internal static void ResetForRun()
     {
-        RemoteReason = PauseReason.None;
+        Array.Clear(Reasons);
+        _overrideMask = 0;
         _sentOnce = false;
         LevelUpPolicy.ResetForRun();
     }
@@ -46,17 +83,34 @@ public static class PauseSync
     private static bool _sentOnce;
     private static PauseReason _lastSent;
     private static bool _hooked;
+    private static bool _prevF4;
 
     public static void EnsureHooked()
     {
         if (_hooked) return;
         _hooked = true;
-        NetworkManager.PeerConnected += () => _sentOnce = false; // resend our state to the new peer
-        NetworkManager.PeerDisconnected += () =>
+        NetworkManager.PeerConnected += slot =>
         {
-            if (RemoteReason != PauseReason.None)
-                Plugin.StaticLog.LogInfo("[SoulstoneCoop][pause] Peer disconnected - clearing remote pause.");
-            RemoteReason = PauseReason.None;
+            _sentOnce = false; // resend our state to the new peer
+            if (NetworkManager.Role != NetRole.Host) return;
+            // A newcomer gets the others' current state too, and the host's lifts.
+            foreach (var s in Players.Others)
+            {
+                if (s == slot || Reasons[s] == PauseReason.None) continue;
+                var w = new NetDataWriter();
+                w.Put((byte)PacketType.PauseState);
+                w.Put((byte)Reasons[s]);
+                NetworkManager.SendRelayedTo(slot, s, w, DeliveryMethod.ReliableOrdered);
+            }
+            if (_overrideMask != 0) SendOverride();
+        };
+        Players.Left += slot =>
+        {
+            if (slot >= Players.MaxSlots) return;
+            if (Reasons[slot] != PauseReason.None)
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][pause] Slot {slot} left - clearing its pause.");
+            Reasons[slot] = PauseReason.None;
+            SetOverride(slot, false);
         };
     }
 
@@ -70,9 +124,10 @@ public static class PauseSync
             Time.timeScale = TimeUtil.PauseTime * TimeUtil.DeathGuardTime * TimeUtil.SlowMotionTime
                 * TimeUtil.ControllerDisconnectedTime * TimeUtil.CreditsTime * TimeUtil.PlayerDataTime;
         }
+        var previous = LocalReason;
         LocalReason = levelUpPopup && !noPause ? PauseReason.LevelUp
                     : TimeUtil.PauseTime < 0.001f ? PauseReason.Pause
-                    : levelUpPopup && !overlay ? PauseReason.Choosing // the overlay plays on: no banner for the partner
+                    : levelUpPopup && !overlay ? PauseReason.Choosing // the overlay plays on: no banner for the others
                     : PauseReason.None;
         LevelUpPolicy.DebugHotkey();
 
@@ -87,17 +142,78 @@ public static class PauseSync
             _sentOnce = true;
         }
 
-        // Phase 6: also hold our match while the partner's is still loading (RunSync, bounded).
+        if (NetworkManager.Role == NetRole.Host)
+        {
+            // The host closed its own pause menu: whoever else was pausing is lifted too (until it pauses again).
+            if (previous == PauseReason.Pause && LocalReason != PauseReason.Pause) LiftOthers("host closed its pause menu");
+            HostUnpauseHotkey();
+        }
+
+        // Phase 6: also hold our match while someone else is still loading (RunSync, bounded).
         if (RemotePaused || Lobby.RunSync.HoldForPartner)
             Time.timeScale = 0f;
+    }
+
+    /// <summary>F4 on the host (F7/F8 are the specials debug keys): lift every other player's pause right away (the menu stays open on their side).</summary>
+    private static void HostUnpauseHotkey()
+    {
+        var kb = Keyboard.current;
+        bool f4 = kb != null && kb.f4Key.isPressed;
+        if (f4 && !_prevF4 && !Ui.CoopUi.IsTyping) LiftOthers("F4");
+        _prevF4 = f4;
+    }
+
+    private static void LiftOthers(string why)
+    {
+        int mask = _overrideMask;
+        foreach (var s in Players.Others)
+            if (Reasons[s] == PauseReason.Pause || Reasons[s] == PauseReason.LevelUp) mask |= 1 << s;
+        if (mask == _overrideMask) return;
+        _overrideMask = mask;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][pause] Host lifted the others' pause ({why}): mask={mask:X2}.");
+        Lobby.CoopSession.Notice("Você despausou o jogo", 3f);
+        SendOverride();
+    }
+
+    private static void SetOverride(byte slot, bool on)
+    {
+        int bit = 1 << slot;
+        int mask = on ? _overrideMask | bit : _overrideMask & ~bit;
+        if (mask == _overrideMask) return;
+        _overrideMask = mask;
+        if (NetworkManager.Role == NetRole.Host) SendOverride();
+    }
+
+    /// <summary>Host -> clients: which players' pause the host lifted (bit per slot).</summary>
+    private static void SendOverride()
+    {
+        if (NetworkManager.Role != NetRole.Host || !NetworkManager.HasPeer) return;
+        var w = new NetDataWriter();
+        w.Put((byte)PacketType.PauseOverride);
+        w.Put((byte)_overrideMask);
+        NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
+    }
+
+    public static void OnPauseOverride(NetDataReader reader)
+    {
+        int mask = reader.GetByte();
+        if (NetworkManager.Role != NetRole.Client) return;
+        if (mask != _overrideMask) Plugin.StaticLog.LogInfo($"[SoulstoneCoop][pause] Host lifted pauses: mask={mask:X2}.");
+        if ((mask & ~_overrideMask & (1 << Players.MySlot)) != 0)
+            Lobby.CoopSession.Notice("O host despausou: os outros continuam jogando", 5f);
+        _overrideMask = mask;
     }
 
     public static void OnPauseStateReceived(NetDataReader reader)
     {
         var reason = (PauseReason)reader.GetByte();
-        if (reason != RemoteReason)
-            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][pause] Remote state {RemoteReason} -> {reason}.");
-        RemoteReason = reason;
+        byte slot = PacketRouter.From;
+        if (slot >= Players.MaxSlots || !Players.IsPresent(slot)) return;
+        if (reason != Reasons[slot])
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][pause] Slot {slot} state {Reasons[slot]} -> {reason}.");
+        Reasons[slot] = reason;
+        // A lifted pause lasts until that player leaves it: its next pause freezes everyone again.
+        if (NetworkManager.Role == NetRole.Host && reason != PauseReason.Pause && reason != PauseReason.LevelUp) SetOverride(slot, false);
     }
 }
 

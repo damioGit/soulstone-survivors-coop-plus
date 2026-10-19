@@ -44,7 +44,7 @@ public class CoopBehaviour : MonoBehaviour
         if (!_networkEventsHooked)
         {
             _networkEventsHooked = true;
-            NetworkManager.PeerDisconnected += DestroyGhost;
+            Players.Left += slot => DestroyGhost(Lobby.CoopSession.Get(slot));
             Lobby.CoopSession.EnsureHooked();
             PauseSync.EnsureHooked();
             Enemies.HostEnemySync.EnsureHooked();
@@ -75,43 +75,46 @@ public class CoopBehaviour : MonoBehaviour
         }
     }
 
-    private static int _ghostRebuilds;
-
-    /// <summary>Phase 6: the ghost lives exactly while both players are in a run together. It used to be created on
-    /// PeerConnected, which no longer happens inside a run (the connection is made in the menu).</summary>
+    /// <summary>Phase 6: a ghost lives exactly while we and that player are in a run together. It used to be created on
+    /// PeerConnected, which no longer happens inside a run (the connection is made in the menu). Phase 9: one ghost
+    /// per other player in the run with us.</summary>
     private static void UpdateGhostLifecycle()
     {
         var local = GameState.LocalPlayerEntity;
-        // Not while our own scene is on its way out (portal/Restart taken): the partner may already be in the next one.
-        bool want = Lobby.CoopSession.Connected && Lobby.CoopSession.LocalInRun && !Lobby.CoopSession.StageTransition
-                    && Lobby.CoopSession.RemoteInRun && local != null;
-        var ghost = GameState.RemoteGhostObject;
-        if (want && ghost == null)
+        // Not while our own scene is on its way out (portal/Restart taken): the others may already be in the next one.
+        bool weCan = Lobby.CoopSession.Connected && Lobby.CoopSession.LocalInRun && !Lobby.CoopSession.StageTransition && local != null;
+        foreach (var r in Lobby.CoopSession.Remotes)
         {
-            PlayerSync.ResetForNewGhost();
-            _ghostRebuilds = 0;
-            _identityRebuilds = 0;
-            Life.PartnerHealth.Reset(); // the partner's 1 s refresh fills it again, and ours goes out now
-            var t = local!.gameObject.transform;
-            var spawnPos = t.position + t.right * 2f;
-            GameState.RemoteGhostObject = VisualGhostFactory.Create(local, spawnPos, t.rotation, "SoulstoneCoop_RemoteGhost");
-            Plugin.StaticLog.LogInfo("[SoulstoneCoop] Both players in the run - remote ghost created.");
-        }
-        else if (!want && GameState.RemoteGhostObject is not null)
-        {
-            // Also covers a ghost destroyed with the previous scene (Unity-null but not C#-null).
-            DestroyGhost();
+            bool want = weCan && r.InRun;
+            if (want && r.Ghost == null)
+            {
+                PlayerSync.ResetForNewGhost(r);
+                r.GhostRebuilds = 0;
+                r.IdentityRebuilds = 0;
+                Life.PartnerHealth.Reset(r.Slot); // its 1 s refresh fills it again, and ours goes out now
+                var t = local!.gameObject.transform;
+                var spawnPos = t.position + t.right * 2f;
+                r.Ghost = VisualGhostFactory.Create(local, r, spawnPos, t.rotation, $"SoulstoneCoop_RemoteGhost{r.Slot}");
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop] Slot {r.Slot} ({r.Name}) is in the run with us - ghost created.");
+            }
+            else if (!want && r.Ghost is not null)
+            {
+                // Also covers a ghost destroyed with the previous scene (Unity-null but not C#-null).
+                DestroyGhost(r);
+            }
         }
     }
 
-    private static void DestroyGhost()
+    private static void DestroyGhost(Lobby.RemotePlayer? r)
     {
-        var ghost = GameState.RemoteGhostObject;
-        GameState.RemoteGhostObject = null;
+        if (r == null) return;
+        var ghost = r.Ghost;
+        r.Ghost = null;
+        r.ModelAnimator = null;
         if (ghost != null)
         {
             UnityEngine.Object.Destroy(ghost);
-            Plugin.StaticLog.LogInfo("[SoulstoneCoop] Remote ghost removed.");
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop] Ghost of slot {r.Slot} removed.");
         }
     }
 
@@ -152,6 +155,7 @@ public class CoopBehaviour : MonoBehaviour
             Enemies.EnemyCasts.Tick(Time.unscaledDeltaTime);
             Enemies.SpecialsDebug.Tick(Time.unscaledDeltaTime);
             Enemies.ObjectiveSync.Tick(Time.unscaledDeltaTime);
+            Enemies.EnemyScaling.Tick(Time.unscaledDeltaTime);
             RebuildGhostIfModelInactive();
             HandleDebugHotkeys();
             LogSyncStats();
@@ -169,9 +173,9 @@ public class CoopBehaviour : MonoBehaviour
     /// player's model child (e.g. "HoundMasterRegular(Clone)", the one with the Animator) inactive - it's turned
     /// on later. The ghost cloned at that moment keeps the model off for good: only the blue ground ring shows
     /// clone again.
-    /// Phase 5: the partner's model is built from its prefab and switched on explicitly, so this mostly matters for the
-    /// local-clone fallback. The ghost is also rebuilt when the partner's identity (Hello) differs from the one it
-    /// was built for, e.g. the Hello arrived after the ghost was made from the fallback.
+    /// Phase 5: the other player's model is built from its prefab and switched on explicitly, so this mostly matters for
+    /// the local-clone fallback. A ghost is also rebuilt when its player's identity (Hello) differs from the one it was
+    /// built for, e.g. the Hello arrived after the ghost was made from the fallback.
     /// </summary>
     private void RebuildGhostIfModelInactive()
     {
@@ -179,46 +183,47 @@ public class CoopBehaviour : MonoBehaviour
         if (_ghostCheckTimer < 1f) return;
         _ghostCheckTimer = 0f;
 
-        var ghost = GameState.RemoteGhostObject;
         var local = GameState.LocalPlayerEntity;
-        if (ghost == null || local == null) return;
-
-        var remote = Lobby.CoopSession.Remote;
-        string key = VisualGhostFactory.KeyFor(remote);
-        if (remote.Known && key != VisualGhostFactory.BuiltForKey && _identityRebuilds < 3)
+        if (local == null) return;
+        foreach (var r in Lobby.CoopSession.Remotes)
         {
-            _identityRebuilds++;
-            Plugin.StaticLog.LogInfo($"[SoulstoneCoop] Partner identity is now {key} (ghost built for {VisualGhostFactory.BuiltForKey}) - rebuilding the ghost (#{_identityRebuilds}).");
-            RebuildGhost(ghost, local);
-            return;
-        }
+            var ghost = r.Ghost;
+            if (ghost == null) continue;
 
-        if (_ghostRebuilds >= 3) return;
-        var ghostAnimator = VisualGhostFactory.ModelAnimator;
-        if (ghostAnimator == null)
-        {
-            var ghostAnimators = ghost.GetComponentsInChildren<Animator>(true);
-            if (ghostAnimators.Length == 0) return;
-            ghostAnimator = ghostAnimators[0];
-        }
-        var localAnimators = local.gameObject.GetComponentsInChildren<Animator>(true);
-        if (localAnimators.Length == 0) return;
-        if (ghostAnimator.gameObject.activeInHierarchy || !localAnimators[0].gameObject.activeInHierarchy) return;
+            string key = VisualGhostFactory.KeyFor(r.Info);
+            if (r.Info.Known && key != r.GhostKey && r.IdentityRebuilds < 3)
+            {
+                r.IdentityRebuilds++;
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop] Slot {r.Slot} identity is now {key} (ghost built for {r.GhostKey}) - rebuilding the ghost (#{r.IdentityRebuilds}).");
+                RebuildGhost(r, ghost, local);
+                continue;
+            }
 
-        _ghostRebuilds++;
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop] Ghost model '{ghostAnimator.gameObject.name}' was cloned inactive - rebuilding the ghost (#{_ghostRebuilds}).");
-        RebuildGhost(ghost, local);
+            if (r.GhostRebuilds >= 3) continue;
+            var ghostAnimator = r.ModelAnimator;
+            if (ghostAnimator == null)
+            {
+                var ghostAnimators = ghost.GetComponentsInChildren<Animator>(true);
+                if (ghostAnimators.Length == 0) continue;
+                ghostAnimator = ghostAnimators[0];
+            }
+            var localAnimators = local.gameObject.GetComponentsInChildren<Animator>(true);
+            if (localAnimators.Length == 0) continue;
+            if (ghostAnimator.gameObject.activeInHierarchy || !localAnimators[0].gameObject.activeInHierarchy) continue;
+
+            r.GhostRebuilds++;
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop] Ghost {r.Slot} model '{ghostAnimator.gameObject.name}' was cloned inactive - rebuilding the ghost (#{r.GhostRebuilds}).");
+            RebuildGhost(r, ghost, local);
+        }
     }
 
-    private static int _identityRebuilds;
-
-    private static void RebuildGhost(GameObject ghost, Entity local)
+    private static void RebuildGhost(Lobby.RemotePlayer r, GameObject ghost, Entity local)
     {
         var t = ghost.transform;
         Vector3 pos = t.position;
         Quaternion rot = t.rotation;
         UnityEngine.Object.Destroy(ghost);
-        GameState.RemoteGhostObject = VisualGhostFactory.Create(local, pos, rot, "SoulstoneCoop_RemoteGhost");
+        r.Ghost = VisualGhostFactory.Create(local, r, pos, rot, $"SoulstoneCoop_RemoteGhost{r.Slot}");
     }
     // The pause notice (phase 1) moved to the co-op banner (Ui/CoopUi): IMGUI is partly stripped in this build.
 
@@ -232,16 +237,20 @@ public class CoopBehaviour : MonoBehaviour
         _statsTimer = 0f;
 
         var local = GameState.LocalPlayerEntity;
-        var ghost = GameState.RemoteGhostObject;
         string localPos = local != null ? local.gameObject.transform.position.ToString() : "-";
-        string ghostPos = ghost != null ? ghost.transform.position.ToString() : "-";
+        var ghosts = new List<string>();
+        foreach (var r in Lobby.CoopSession.Remotes)
+        {
+            var g = r.Ghost;
+            ghosts.Add($"{r.Slot}:{r.Place}/ping={NetworkManager.PingOf(r.Slot)}/{(g != null ? g.transform.position.ToString() : "-")}/recv={r.PositionsReceived}{(g != null && !g.activeInHierarchy ? "/inactive" : "")}");
+        }
         Plugin.StaticLog.LogInfo(
-            $"[SoulstoneCoop][sync] role={NetworkManager.Role} peer={NetworkManager.HasPeer} " +
+            $"[SoulstoneCoop][sync] role={NetworkManager.Role} slot={Players.MySlot} peers={NetworkManager.PeerSlots.Count} " +
             $"ping={NetworkManager.PingMs} silence={NetworkManager.SilenceSeconds:F1}s{(NetSim.Enabled ? " SIM" : "")} " +
-            $"place={Lobby.CoopSession.LocalPlace}/{Lobby.CoopSession.RemotePlace} " +
-            $"sent={PlayerSync.SentCount} recv={PlayerSync.ReceivedCount} dashes={PlayerSync.DashesSent}/{PlayerSync.DashesReceived} lastRecv={PlayerSync.LastReceivedPosition} " +
-            $"local={localPos} ghost={ghostPos} ghostActive={(ghost != null && ghost.activeInHierarchy)} " +
+            $"place={Lobby.CoopSession.LocalPlace} sent={PlayerSync.SentCount} recv={PlayerSync.ReceivedCount} dashes={PlayerSync.DashesSent}/{PlayerSync.DashesReceived} local={localPos} " +
+            $"others=[{string.Join(" ", ghosts)}] relayed={NetworkManager.RelayedPackets} ({NetworkManager.RelayedBytes} B) " +
             $"runInBg={Application.runInBackground} timeScale={Time.timeScale} focused={Application.isFocused}");
+        NetworkManager.RelayedPackets = NetworkManager.RelayedBytes = 0;
     }
 
     private void HandleDebugHotkeys()
@@ -275,6 +284,8 @@ public class CoopBehaviour : MonoBehaviour
         _prevPageDown = pageDownNow;
     }
 
+    private static GameObject? _debugGhost;
+
     private static void DebugRespawnGhost()
     {
         var local = GameState.LocalPlayerEntity;
@@ -284,14 +295,9 @@ public class CoopBehaviour : MonoBehaviour
             return;
         }
 
-        if (GameState.RemoteGhostObject != null)
-        {
-            UnityEngine.Object.Destroy(GameState.RemoteGhostObject);
-            GameState.RemoteGhostObject = null;
-        }
-
+        if (_debugGhost != null) UnityEngine.Object.Destroy(_debugGhost);
         var t = local.gameObject.transform;
         var spawnPos = t.position + t.right * 2f;
-        GameState.RemoteGhostObject = VisualGhostFactory.Create(local, spawnPos, t.rotation, "SoulstoneCoop_DebugGhost");
+        _debugGhost = VisualGhostFactory.Create(local, null, spawnPos, t.rotation, "SoulstoneCoop_DebugGhost");
     }
 }
