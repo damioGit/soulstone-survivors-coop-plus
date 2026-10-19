@@ -58,9 +58,20 @@ public static class PlayerSync
     private static readonly int ForwardMovement = Animator.StringToHash("ForwardMovement");
     private static readonly int SidewaysMovement = Animator.StringToHash("SidewaysMovement");
     private static readonly int OnGround = Animator.StringToHash("OnGround");
+    private static readonly int Dash = Animator.StringToHash("Dash");
     private static IntPtr _animGhostPtr;
     private static Animator[]? _ghostAnimators;
 
+    // Dash (phase 5): the sender's ModifiedCharacter.IsDashing() (the _isDashing flag PlayerAnimator.OnUpdate writes
+    // into the "Dash" bool), sent on change as DashState. Applied InterpDelay after arrival, like the positions,
+    // so the ghost's dash pose lines up with the dash movement it's showing.
+    private struct DashEvent { public float At; public bool On; }
+    private static readonly List<DashEvent> DashEvents = new();
+    private static bool _ghostDashing;
+    private static float _ghostDashSince;
+    private static bool _lastSentDash;
+    private const float MaxDashSeconds = 1.5f; // safety: a lost "end" never leaves the ghost dashing
+    public static int DashesSent, DashesReceived;
 
     private static Vector3 _lastGhostPos;
     private static bool _hasLastGhostPos;
@@ -74,6 +85,9 @@ public static class PlayerSync
         if (!NetworkManager.HasPeer) return;
         var local = GameState.LocalPlayerEntity;
         if (local == null) return;
+
+        try { SendDashIfChanged(local); }
+        catch (System.Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][sync] Dash state: {ex.Message}"); }
 
         _timeSinceLastSend += deltaTime;
         if (_timeSinceLastSend < SendIntervalSeconds) return;
@@ -99,6 +113,46 @@ public static class PlayerSync
         _hasLastGhostPos = false;
         _ghostAnimators = null;
         _animGhostPtr = IntPtr.Zero;
+        DashEvents.Clear();
+        _ghostDashing = false;
+    }
+
+    // ---------------- dash ----------------
+
+    private static void SendDashIfChanged(Entity local)
+    {
+        var ch = local._character;
+        bool dashing = ch != null && ch.IsDashing();
+        if (dashing == _lastSentDash) return;
+        _lastSentDash = dashing;
+        var w = new NetDataWriter();
+        w.Put((byte)PacketType.DashState);
+        w.Put(dashing);
+        NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
+        if (dashing) DashesSent++;
+    }
+
+    public static void OnDashStateReceived(NetDataReader reader)
+    {
+        bool on = reader.GetBool();
+        if (on) DashesReceived++;
+        DashEvents.Add(new DashEvent { At = Time.unscaledTime + InterpDelay, On = on });
+        if (DashEvents.Count > 16) DashEvents.RemoveAt(0);
+    }
+
+    /// <summary>Applies the dash events that are due; true while the ghost should show the dash.</summary>
+    private static bool UpdateGhostDash()
+    {
+        float now = Time.unscaledTime;
+        while (DashEvents.Count > 0 && DashEvents[0].At <= now)
+        {
+            bool on = DashEvents[0].On;
+            DashEvents.RemoveAt(0);
+            if (on && !_ghostDashing) _ghostDashSince = now;
+            _ghostDashing = on;
+        }
+        if (_ghostDashing && now - _ghostDashSince > MaxDashSeconds) _ghostDashing = false;
+        return _ghostDashing;
     }
 
     public static void OnPlayerStateReceived(NetDataReader reader)
@@ -166,7 +220,6 @@ public static class PlayerSync
         if (snap) _hasLastGhostPos = false;
     }
 
-    /// <summary>Same parameters PlayerAnimator.OnUpdate writes: local velocity / max speed, damped 0.1 s.</summary>
     /// <summary>Same parameters PlayerAnimator.OnUpdate writes: local velocity / max speed, damped 0.1 s. The game
     /// writes them on ModifiedCharacter._animator, which PlayerPrefabReferences.Setup points at the model's
     /// AnimatorComponent.Animators[0]: VisualGhostFactory.ModelAnimator on the ghost. Only that one gets them (the
@@ -205,6 +258,7 @@ public static class PlayerSync
         Vector3 lv = t.InverseTransformDirection(vel) / maxSpeed;
         float fwd = Mathf.Clamp(lv.z, -1f, 1f), side = Mathf.Clamp(lv.x, -1f, 1f);
         float animDt = Time.deltaTime > 0f ? Time.deltaTime : dt;
+        bool dashing = UpdateGhostDash();
         foreach (var a in _ghostAnimators)
         {
             try
@@ -213,6 +267,7 @@ public static class PlayerSync
                 a.SetFloat(ForwardMovement, fwd, 0.1f, animDt);
                 a.SetFloat(SidewaysMovement, side, 0.1f, animDt);
                 a.SetBool(OnGround, true);
+                a.SetBool(Dash, dashing); // PlayerAnimator writes it every frame too, so the player controller has it
             }
             catch (System.Exception ex)
             {
