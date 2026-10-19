@@ -36,8 +36,8 @@ function Fail([string]$msg) { Write-Host "ERROR: $msg" -ForegroundColor Red; exi
 function Step([string]$msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Git { & git @args; if ($LASTEXITCODE -ne 0) { Fail "git $($args -join ' ') failed" } }
 
-$gh = (Get-Command gh -ErrorAction SilentlyContinue).Source
-if (-not $gh) { $gh = 'C:\Program Files\GitHub CLI\gh.exe' }
+$ghCmd = Get-Command gh -ErrorAction SilentlyContinue
+$gh = if ($ghCmd) { $ghCmd.Source } else { 'C:\Program Files\GitHub CLI\gh.exe' }
 if (-not (Test-Path $gh)) { Fail "GitHub CLI not found (winget install GitHub.cli)" }
 
 # ---------------------------------------------------------------- version and checks
