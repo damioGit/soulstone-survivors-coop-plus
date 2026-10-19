@@ -60,7 +60,7 @@ public static class RemoteCaster
     {
         if (_hooked) return;
         _hooked = true;
-        NetworkManager.PeerDisconnected += () => RemoveCaster("peer disconnected");
+        NetworkManager.PeerDisconnected += _ => RemoveCaster("peer disconnected");
     }
 
     public static void OnMatchStarted()

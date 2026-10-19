@@ -20,6 +20,7 @@ public class Plugin : BasePlugin
     internal static BepInEx.Configuration.ConfigEntry<bool> AllowRejoin = null!;
     internal static BepInEx.Configuration.ConfigEntry<bool> EndRunWhenHostLeaves = null!;
     internal static BepInEx.Configuration.ConfigEntry<bool> SenderClock = null!;
+    internal static BepInEx.Configuration.ConfigEntry<int> MaxPlayers = null!;
     private static int _simLatency, _simJitter, _simLoss;
 
     public override void Load()
@@ -46,6 +47,10 @@ public class Plugin : BasePlugin
             "Client: when the host disconnects mid-run, end the run (surrender) a few seconds later instead of staying in an empty map.");
         SenderClock = Config.Bind("Coop", "SenderClock", false,
             "Experimental: place the partner and the enemies by the sender's clock instead of the arrival time (smoother with jitter).");
+        // Phase 9 (docs/fase9-notas.md).
+        MaxPlayers = Config.Bind("Coop", "MaxPlayers", 2, new BepInEx.Configuration.ConfigDescription(
+            "Host: how many players fit in your co-op session, you included (2-8). Clients past that are refused.",
+            new BepInEx.Configuration.AcceptableValueRange<int>(2, 8)));
         _simLatency = simLatency.Value;
         _simJitter = simJitter.Value;
         _simLoss = simLoss.Value;
@@ -121,6 +126,10 @@ public class Plugin : BasePlugin
     /// the refusal with two instances that load the same DLL.</summary>
     internal static string? FakeVersionArg;
 
+    /// <summary>Phase 9, test only: the name sent in the Hello (--coop-name B), so several instances on one PC with the
+    /// same Steam account can be told apart.</summary>
+    internal static string? NameArg;
+
     /// <summary>Version sent and checked in the connection handshake.</summary>
     internal static string HandshakeVersion => FakeVersionArg ?? PluginVersion;
 
@@ -132,13 +141,14 @@ public class Plugin : BasePlugin
             if (args[i] == "--coop-host") HostArg = true;
             else if (args[i] == "--coop-connect" && i + 1 < args.Length) ConnectAddressArg = args[i + 1];
             else if (args[i] == "--coop-fake-version" && i + 1 < args.Length) FakeVersionArg = args[i + 1];
+            else if (args[i] == "--coop-name" && i + 1 < args.Length) NameArg = args[i + 1];
             // Phase 8: network simulation per instance (two games on one PC share the .cfg).
             else if (args[i] == "--coop-sim-latency" && i + 1 < args.Length && int.TryParse(args[i + 1], out var lat)) _simLatency = lat;
             else if (args[i] == "--coop-sim-jitter" && i + 1 < args.Length && int.TryParse(args[i + 1], out var jit)) _simJitter = jit;
             else if (args[i] == "--coop-sim-loss" && i + 1 < args.Length && int.TryParse(args[i + 1], out var loss)) _simLoss = loss;
         }
-        if (HostArg || ConnectAddressArg != null || FakeVersionArg != null)
-            Log.LogInfo($"Launch args: host={HostArg} connect={ConnectAddressArg ?? "-"} fakeVersion={FakeVersionArg ?? "-"}");
+        if (HostArg || ConnectAddressArg != null || FakeVersionArg != null || NameArg != null)
+            Log.LogInfo($"Launch args: host={HostArg} connect={ConnectAddressArg ?? "-"} fakeVersion={FakeVersionArg ?? "-"} name={NameArg ?? "-"}");
     }
 }
 

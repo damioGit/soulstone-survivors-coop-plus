@@ -66,7 +66,7 @@ public static class CoopLife
     {
         if (_hooked) return;
         _hooked = true;
-        NetworkManager.PeerDisconnected += OnPeerDisconnected;
+        NetworkManager.PeerDisconnected += _ => OnPeerDisconnected();
     }
 
     public static void OnMatchStarted()

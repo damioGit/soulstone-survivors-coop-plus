@@ -34,8 +34,8 @@ public static class PartnerHealth
     {
         if (_hooked) return;
         _hooked = true;
-        NetworkManager.PeerConnected += Reset;
-        NetworkManager.PeerDisconnected += Reset;
+        NetworkManager.PeerConnected += _ => Reset();
+        NetworkManager.PeerDisconnected += _ => Reset();
     }
 
     /// <summary>New partner or new run: nothing known until their first packet, and ours goes out right away.</summary>

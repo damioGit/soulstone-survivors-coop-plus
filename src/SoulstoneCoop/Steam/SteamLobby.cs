@@ -25,7 +25,7 @@ internal static unsafe class SteamLobby
     private const string KeyVersion = "scoop_ver";
     private const string KeyHost = "scoop_host";
     private const string KeyProto = "scoop_proto";
-    internal const string Proto = "1";
+    internal const string Proto = "2"; // phase 9: slots, relay envelope (a two-player build is refused)
 
     public static LobbyState State { get; private set; } = LobbyState.None;
     public static ulong LobbyId { get; private set; }

@@ -72,7 +72,7 @@ public static class HostEnemySync
     {
         if (_hooked) return;
         _hooked = true;
-        NetworkManager.PeerConnected += OnPeerConnected;
+        NetworkManager.PeerConnected += _ => OnPeerConnected();
     }
 
     internal static bool IsTrackable(Entity e)

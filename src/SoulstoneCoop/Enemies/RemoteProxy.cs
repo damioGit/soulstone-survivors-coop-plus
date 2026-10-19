@@ -170,7 +170,7 @@ public static class RemoteProxy
     {
         if (_hooked) return;
         _hooked = true;
-        NetworkManager.PeerDisconnected += () =>
+        NetworkManager.PeerDisconnected += _ =>
         {
             if (!CoopRole.IsHostSide) return;
             RemoveProxy("peer disconnected");

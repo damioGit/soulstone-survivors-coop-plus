@@ -51,8 +51,8 @@ public static class PauseSync
     {
         if (_hooked) return;
         _hooked = true;
-        NetworkManager.PeerConnected += () => _sentOnce = false; // resend our state to the new peer
-        NetworkManager.PeerDisconnected += () =>
+        NetworkManager.PeerConnected += _ => _sentOnce = false; // resend our state to the new peer
+        NetworkManager.PeerDisconnected += _ =>
         {
             if (RemoteReason != PauseReason.None)
                 Plugin.StaticLog.LogInfo("[SoulstoneCoop][pause] Peer disconnected - clearing remote pause.");

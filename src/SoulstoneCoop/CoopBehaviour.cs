@@ -44,7 +44,7 @@ public class CoopBehaviour : MonoBehaviour
         if (!_networkEventsHooked)
         {
             _networkEventsHooked = true;
-            NetworkManager.PeerDisconnected += DestroyGhost;
+            NetworkManager.PeerDisconnected += _ => DestroyGhost();
             Lobby.CoopSession.EnsureHooked();
             PauseSync.EnsureHooked();
             Enemies.HostEnemySync.EnsureHooked();

@@ -61,7 +61,7 @@ public static class SummonSync
     {
         if (_hooked) return;
         _hooked = true;
-        NetworkManager.PeerDisconnected += () => { ClearOwn(); ClearRemote("peer disconnected"); };
+        NetworkManager.PeerDisconnected += _ => { ClearOwn(); ClearRemote("peer disconnected"); };
     }
 
     /// <summary>PortalSync.OnLocalSceneGone: both lists belong to the scene that just went.</summary>

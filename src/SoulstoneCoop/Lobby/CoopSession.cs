@@ -65,6 +65,9 @@ public static class CoopSession
     /// <summary>The partner is on its way to the next scene (still in the old one, or loading).</summary>
     public static bool RemoteChangingScene => Connected && (RemotePlace == LobbyPlace.Loading || RemotePlace == LobbyPlace.Transition);
 
+    /// <summary>Phase 9: that player is on its way to the next scene (the transport allows a longer silence meanwhile).</summary>
+    public static bool ChangingScene(byte slot) => RemoteChangingScene;
+
     public static string PartnerName => Remote.Known && Remote.Name.Length > 0 ? Remote.Name : "Parceiro";
 
     internal const string MenuScene = "Menu-Survivors";
@@ -90,7 +93,7 @@ public static class CoopSession
     {
         if (_hooked) return;
         _hooked = true;
-        NetworkManager.PeerConnected += () =>
+        NetworkManager.PeerConnected += _ =>
         {
             Remote = new PlayerInfo();
             RemotePlace = LobbyPlace.Menu;
@@ -99,7 +102,7 @@ public static class CoopSession
             RefreshLocalInfo();
             RunSync.OnPeerConnected();
         };
-        NetworkManager.PeerDisconnected += () =>
+        NetworkManager.PeerDisconnected += _ =>
         {
             string who = PartnerName;
             bool partnerWasInRun = RemotePlace != LobbyPlace.Menu;
@@ -244,7 +247,7 @@ public static class CoopSession
     internal static bool RefreshLocalInfo()
     {
         var info = new PlayerInfo { Known = true, ModVersion = Plugin.HandshakeVersion };
-        info.Name = SteamName.TryGet() ?? (NetworkManager.Role == NetRole.Host ? "Host" : "Cliente");
+        info.Name = Plugin.NameArg ?? SteamName.TryGet() ?? (NetworkManager.Role == NetRole.Host ? "Host" : "Cliente");
         try
         {
             var prof = Global.PlayerProfile;
