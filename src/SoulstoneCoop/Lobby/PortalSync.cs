@@ -43,7 +43,7 @@ public static class PortalSync
     private static bool _pendingIsRequest;
 
     private static float _lastRequestTime = -10f;
-    private static bool _prevF6;
+    private static bool _prevF5;
 
     // =====================================================================================
     // The game's portal entry (SurvivorsGameManager.OnPlayerEnterEndlessPortal / OnPlayerEnterBossRushPortal)
@@ -55,7 +55,13 @@ public static class PortalSync
     {
         var obj = GameManagerUtil.GameData?.EnterPortalObjective;
         wasCompleted = obj == null || obj.Completed;
-        if (!CoopSession.Connected || FromNetwork) return true;
+        if (FromNetwork) return true;
+        if (!CoopSession.Connected)
+        {
+            // Alone as host: only note the next map (phase 8 AllowRejoin sends it to a partner joining later).
+            if (NetworkManager.Role == NetRole.Host) { _capturing = true; _drawnMap = null; }
+            return true;
+        }
 
         if (NetworkManager.Role == NetRole.Client)
         {
@@ -63,7 +69,7 @@ public static class PortalSync
             return false;
         }
 
-        // Host: entering for real (own trigger, F6 or the client's request).
+        // Host: entering for real (own trigger, F5 or the client's request).
         if (!wasCompleted) Life.CoopLife.PrepareForStageTransition();
         _capturing = true;
         _drawnMap = null;
@@ -74,14 +80,17 @@ public static class PortalSync
     {
         bool capturing = _capturing;
         _capturing = false;
-        if (!CoopSession.Connected) return;
+        string? map = kind == PortalKind.BossRush ? BossRushMap() : _drawnMap;
+        _drawnMap = null;
         var obj = GameManagerUtil.GameData?.EnterPortalObjective;
         if (wasCompleted || obj == null || !obj.Completed) return; // the game didn't take anyone through
 
+        if (NetworkManager.Role == NetRole.Host && capturing && !string.IsNullOrEmpty(map))
+            RunSync.OnHostStageChanged(map!);
+        if (!CoopSession.Connected) return;
+
         if (NetworkManager.Role == NetRole.Host && capturing)
         {
-            string? map = kind == PortalKind.BossRush ? BossRushMap() : _drawnMap;
-            _drawnMap = null;
             if (string.IsNullOrEmpty(map))
             {
                 Plugin.StaticLog.LogWarning($"[SoulstoneCoop][portal] Host took the {kind} portal but the next map is unknown - partner not told.");
@@ -336,31 +345,31 @@ public static class PortalSync
         _pendingMap = null;
     }
 
-    /// <summary>Debug, host: F6 enters the Endless portal, Shift+F6 the BossRush one, once the portals are open (F10
+    /// <summary>Debug, host: F5 enters the Endless portal, Shift+F5 the BossRush one, once the portals are open (F10
     /// forces the victory). Needed to test: early in a match the game doesn't show those portals at all
     /// (MinTimeForEndlessRush / MinTimeForBossRush) or the profile hasn't unlocked them.</summary>
     private static void HandleHotkey()
     {
         var kb = Keyboard.current;
         if (kb == null) return;
-        bool f6 = kb.f6Key.isPressed;
-        bool pressed = f6 && !_prevF6;
-        _prevF6 = f6;
+        bool f5 = kb.f5Key.isPressed;
+        bool pressed = f5 && !_prevF5;
+        _prevF5 = f5;
         if (!pressed || NetworkManager.Role != NetRole.Host || Ui.CoopUi.IsTyping) return;
 
         var kind = kb.leftShiftKey.isPressed || kb.rightShiftKey.isPressed ? PortalKind.BossRush : PortalKind.Endless;
         var data = GameManagerUtil.GameData;
         if (data == null || Global.SelectedGameMode != GameModes.Survivor || !HasPortalOwner())
         {
-            Plugin.StaticLog.LogWarning("[SoulstoneCoop][portal] F6: only in a Survivors-mode match.");
+            Plugin.StaticLog.LogWarning("[SoulstoneCoop][portal] F5: only in a Survivors-mode match.");
             return;
         }
         if (data.EnterPortalObjective == null)
         {
-            CoopSession.Notice("F6: os portais ainda não abriram (F10 primeiro)", 4f);
+            CoopSession.Notice("F5: os portais ainda não abriram (F10 primeiro)", 4f);
             return;
         }
-        HostEnter(kind, "F6");
+        HostEnter(kind, "F5");
     }
 
     // =====================================================================================
@@ -376,6 +385,7 @@ public static class PortalSync
             bool newMatchUp = CoopSession.LocalInRun && !CoopSession.StageTransition;
             Enemies.ClientPuppets.DropStaleFromHostScene(newMatchUp);
             Loot.LootSync.DropPendingFromOldScene();
+            Enemies.ObjectiveSync.ResetForNewScene();
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][portal] Client: host left its scene - stale puppets/loot dropped (our next match up: {newMatchUp}).");
         }
         catch (Exception ex)
@@ -392,6 +402,7 @@ public static class PortalSync
         CoopSession.OnGameManagerUnset();
         Enemies.ClientPuppets.OnLocalSceneGone();
         Enemies.EnemyCasts.ClearMatchCaches();
+        Enemies.ObjectiveSync.ResetForNewScene();
     }
 }
 

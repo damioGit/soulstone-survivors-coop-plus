@@ -17,17 +17,41 @@ public class Plugin : BasePlugin
     internal static ManualLogSource StaticLog = null!;
     internal static BepInEx.Configuration.ConfigEntry<bool> AutoHost = null!;
     internal static BepInEx.Configuration.ConfigEntry<string> LastAddress = null!;
+    internal static BepInEx.Configuration.ConfigEntry<bool> AllowRejoin = null!;
+    internal static BepInEx.Configuration.ConfigEntry<bool> EndRunWhenHostLeaves = null!;
+    internal static BepInEx.Configuration.ConfigEntry<bool> SenderClock = null!;
+    private static int _simLatency, _simJitter, _simLoss;
 
     public override void Load()
     {
         StaticLog = Log;
         Log.LogInfo($"{PluginName} {PluginVersion} loading...");
+        Net.LevelUpPolicy.Bind(Config);
 
         AutoHost = Config.Bind("Debug", "AutoHost", false,
             "Start hosting automatically when the main menu opens (instead of the Co-op panel or Insert).");
         LastAddress = Config.Bind("Coop", "LastAddress", "127.0.0.1",
             "Host address last typed in the Co-op panel (filled in automatically next time).");
+
+        // Phase 8 (docs/fase8-notas.md).
+        var simLatency = Config.Bind("Debug", "SimulateLatencyMs", 0,
+            "Test only: extra delay in ms on one direction of the co-op link (turn it on in both games: 75 + 75 = about 150 ms of ping). 0 = off.");
+        var simJitter = Config.Bind("Debug", "SimulateJitterMs", 0,
+            "Test only: random +- variation in ms on top of SimulateLatencyMs. 0 = off.");
+        var simLoss = Config.Bind("Debug", "SimulatePacketLossPercent", 0,
+            "Test only: percent of packets lost (0-50). Reliable messages are resent, so they arrive late instead. 0 = off.");
+        AllowRejoin = Config.Bind("Coop", "AllowRejoin", false,
+            "Host only, experimental: a partner who connects while you are in a run is brought into it (as a new character). Off = they wait in the menu.");
+        EndRunWhenHostLeaves = Config.Bind("Coop", "EndRunWhenHostLeaves", true,
+            "Client: when the host disconnects mid-run, end the run (surrender) a few seconds later instead of staying in an empty map.");
+        SenderClock = Config.Bind("Coop", "SenderClock", false,
+            "Experimental: place the partner and the enemies by the sender's clock instead of the arrival time (smoother with jitter).");
+        _simLatency = simLatency.Value;
+        _simJitter = simJitter.Value;
+        _simLoss = simLoss.Value;
         ParseLaunchArgs();
+        Net.NetSim.Configure(_simLatency, _simJitter, _simLoss);
+        Net.NetSim.LogBanner();
 
         var harmony = new Harmony(PluginGuid);
         harmony.PatchAll(typeof(Plugin).Assembly);
@@ -108,6 +132,10 @@ public class Plugin : BasePlugin
             if (args[i] == "--coop-host") HostArg = true;
             else if (args[i] == "--coop-connect" && i + 1 < args.Length) ConnectAddressArg = args[i + 1];
             else if (args[i] == "--coop-fake-version" && i + 1 < args.Length) FakeVersionArg = args[i + 1];
+            // Phase 8: network simulation per instance (two games on one PC share the .cfg).
+            else if (args[i] == "--coop-sim-latency" && i + 1 < args.Length && int.TryParse(args[i + 1], out var lat)) _simLatency = lat;
+            else if (args[i] == "--coop-sim-jitter" && i + 1 < args.Length && int.TryParse(args[i + 1], out var jit)) _simJitter = jit;
+            else if (args[i] == "--coop-sim-loss" && i + 1 < args.Length && int.TryParse(args[i + 1], out var loss)) _simLoss = loss;
         }
         if (HostArg || ConnectAddressArg != null || FakeVersionArg != null)
             Log.LogInfo($"Launch args: host={HostArg} connect={ConnectAddressArg ?? "-"} fakeVersion={FakeVersionArg ?? "-"}");

@@ -53,13 +53,18 @@ public static class RemoteProxy
     {
         public bool Dead;
         public float Health, MaxHealth, Armor, DamageReduction, BlockChance;
+        // pendências: status resistance (StatsComponent.AbnormalStatusDampening / Factor). The game has no dodge stat
+        // (only the dash dodge, a timing thing) and no elemental resistances: these are the remaining defensive numbers.
+        public bool HasDampening;
+        public float StatusDampening, StatusDampeningFactor;
     }
 
     private static RemotePlayerState? _remoteState;
     private static bool _appliedDead;
 
     /// <summary>Client -> host, every 0.5 s: alive/dead plus the defensive numbers the host's damage math reads
-    /// from the TARGET (the proxy). Layout: type u8 | dead u8 | hp, maxHp, armor, damageReduction, block f32.</summary>
+    /// from the TARGET (the proxy). Layout: type u8 | dead u8 | hp, maxHp, armor, damageReduction, block f32
+    /// | [statusDampening, statusDampeningFactor f32] (optional tail, pendências).</summary>
     public static void OnClientState(NetDataReader r)
     {
         var s = new RemotePlayerState
@@ -71,6 +76,12 @@ public static class RemoteProxy
             DamageReduction = r.GetFloat(),
             BlockChance = r.GetFloat(),
         };
+        if (r.AvailableBytes >= 8)
+        {
+            s.HasDampening = true;
+            s.StatusDampening = r.GetFloat();
+            s.StatusDampeningFactor = r.GetFloat();
+        }
         if (!CoopRole.IsHostSide) return;
         bool changed = !_remoteState.HasValue || _remoteState.Value.Dead != s.Dead;
         _remoteState = s;
@@ -90,6 +101,12 @@ public static class RemoteProxy
             st.Stats.ArmorModifier = s.Armor;
             st.Stats.DamageReduction = s.DamageReduction;
             st.Stats.BlockChance = s.BlockChance;
+            if (s.HasDampening && !float.IsNaN(s.StatusDampening) && !float.IsNaN(s.StatusDampeningFactor))
+            {
+                // The proxy's statuses scale the DoT damage the host forwards (DamageToClient): resist like the client.
+                st.AbnormalStatusDampening = s.StatusDampening;
+                st.AbnormalStatusDampeningFactor = s.StatusDampeningFactor;
+            }
             // Percent-of-max-HP skills read the target's max health (the Dummy has 100M -> 1.67M hits).
             float cur = st.GetMaxHealth();
             if (cur > 0f && Mathf.Abs(cur - s.MaxHealth) > 0.5f) st.Stats.MaxHealth *= s.MaxHealth / cur;
@@ -147,6 +164,7 @@ public static class RemoteProxy
         if (team != null) team.Team = Team.Players;
     }
     internal static bool IsProxy(Entity e) => _proxyPtr != IntPtr.Zero && e.Pointer == _proxyPtr;
+    internal static Entity? ProxyEntity => _proxy; // pendências: ProxyStatusForward caches its components
 
     public static void EnsureHooked()
     {
@@ -326,6 +344,13 @@ public static class RemoteProxy
     private static void RemoveProxy(string reason)
     {
         var e = _proxy;
+        if (e != null)
+        {
+            // Phase 8: enemies chasing the proxy would keep a pooled, inactive entity as target until their next
+            // refresh (seekers forever: RetargetSeeker stops once the proxy is gone). Point them back at the host.
+            try { ReleaseTargets(e); }
+            catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][proxy] Releasing the proxy's chasers: {ex.Message}"); }
+        }
         _proxy = null;
         _proxyPtr = IntPtr.Zero;
         _proxyCharacter = null;
@@ -340,6 +365,40 @@ public static class RemoteProxy
         {
             Plugin.StaticLog.LogError($"[SoulstoneCoop][proxy] RemoveProxy: {ex.Message}");
         }
+    }
+
+    /// <summary>Seekers (always after a player) go to the host like RetargetSeeker does; every other AI drops the
+    /// target, as when the client dies (DropAsTarget), and its next RefreshTarget picks the closest one.</summary>
+    private static void ReleaseTargets(Entity proxy)
+    {
+        var all = EntityRegistry.AllEntities;
+        if (all == null) return;
+        var host = GameState.LocalPlayerEntity;
+        int seekers = 0, dropped = 0;
+        for (int i = 0; i < all.Count; i++)
+        {
+            var ai = all[i] != null ? all[i]._basicAI : null;
+            if (ai == null) continue;
+            var t = ai._entityToFollow;
+            if (t == null || t.Pointer != proxy.Pointer) continue;
+            var seeker = ai.TryCast<PlayerSeekerAIComponent>();
+            if (seeker != null && host != null)
+            {
+                seeker._entityToFollow = host;
+                seeker._hasEntityToFollow = true;
+                seeker._transformToFollow = host.transform;
+                seeker._hasTransformToFollow = true;
+                var phys = host._physical;
+                seeker._entityToFollowRadius = phys != null ? phys.ColliderRadius : 0f;
+                seekers++;
+            }
+            else
+            {
+                ai.RemoveTarget();
+                dropped++;
+            }
+        }
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][proxy] Proxy going away: {seekers} seekers back on the host, {dropped} enemies dropped it as target.");
     }
 
     /// <summary>The instance goes back to the Dummy pool: undo what would leak into a cheat-spawned dummy.</summary>
@@ -525,6 +584,8 @@ public static class ClientIncomingDamage
         w.Put(st.Stats.ArmorModifier);
         w.Put(st.Stats.DamageReduction);
         w.Put(st.Stats.BlockChance);
+        w.Put(st.AbnormalStatusDampening);
+        w.Put(st.AbnormalStatusDampeningFactor);
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
     }
 

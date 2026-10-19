@@ -27,6 +27,9 @@ public sealed unsafe class SteamTransport : ITransport
     private const string ConnectionKey = "soulstonecoop-v1";
     private const int ChannelMain = 0, ChannelSequenced = 1;
     private const float HelloInterval = 1f, ConnectTimeout = 30f, PingInterval = 1f, SilenceTimeout = 15f;
+    /// <summary>Phase 8: our pings are sent from the game's main thread, which a scene load can freeze for a while:
+    /// while either side is loading a run, allow a longer silence before calling the partner gone.</summary>
+    private const float LoadingSilenceTimeout = 45f;
 
     public string Kind => "Steam";
     public bool HasPeer => _connected;
@@ -34,6 +37,11 @@ public sealed unsafe class SteamTransport : ITransport
     public string? LastError { get; private set; }
     public int PingMs { get; private set; } = -1;
     public bool WantsStop { get; private set; }
+    public float SilenceSeconds => _connected ? Time.unscaledTime - _lastHeard : 0f;
+
+    // Phase 8: simulated latency/loss on what we send (null = off). Handshake packets (40-43) skip it.
+    private readonly SimSendQueue? _sim;
+    private readonly SimSendQueue.SendNow _sendNow;
 
     public ulong PeerId => _peer;
 
@@ -60,6 +68,12 @@ public sealed unsafe class SteamTransport : ITransport
         _isHost = hostId == 0;
         _peer = hostId;
         _msgs = SteamNative.SteamAPI_SteamNetworkingMessages_SteamAPI_v002();
+        _sendNow = SendRaw;
+        if (NetSim.Enabled)
+        {
+            _sim = new SimSendQueue();
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][netsim] Steam transport: simulating {NetSim.Describe()} on outgoing messages.");
+        }
         _current = this;
         Status = _isHost ? NetStatus.Hosting : NetStatus.Connecting;
         _lastHeard = Time.unscaledTime;
@@ -74,6 +88,7 @@ public sealed unsafe class SteamTransport : ITransport
     public void Poll()
     {
         if (_msgs == IntPtr.Zero) return;
+        _sim?.Pump(_sendNow);
         Receive(ChannelMain);
         Receive(ChannelSequenced);
 
@@ -99,9 +114,10 @@ public sealed unsafe class SteamTransport : ITransport
                 var w = new NetDataWriter();
                 w.Put((byte)T.Ping);
                 w.Put(NowMs());
-                Raw(_peer, w, SteamNative.SendUnreliableNoNagle, ChannelMain);
+                Out(_peer, w.Data, w.Length, SteamNative.SendUnreliableNoNagle, ChannelMain);
             }
-            if (Time.unscaledTime - _lastHeard > SilenceTimeout)
+            bool loading = Lobby.CoopSession.LocalLoading || Lobby.CoopSession.RemoteChangingScene;
+            if (Time.unscaledTime - _lastHeard > (loading ? LoadingSilenceTimeout : SilenceTimeout))
             {
                 PeerGone("Conexão perdida (tempo esgotado)");
                 return;
@@ -226,7 +242,7 @@ public sealed unsafe class SteamTransport : ITransport
                 var w = new NetDataWriter();
                 w.Put((byte)T.Pong);
                 w.Put(r.TryGetUInt(out var t) ? t : 0u);
-                Raw(_peer, w, SteamNative.SendUnreliableNoNagle, ChannelMain);
+                Out(_peer, w.Data, w.Length, SteamNative.SendUnreliableNoNagle, ChannelMain);
                 break;
             }
             case T.Pong when from == _peer && _connected:
@@ -318,6 +334,7 @@ public sealed unsafe class SteamTransport : ITransport
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][steam] Partner {_peer} gone: {reason}.");
         _connected = false;
         PingMs = -1;
+        _sim?.Clear();
         if (_isHost)
         {
             CloseSession(_peer);
@@ -350,21 +367,28 @@ public sealed unsafe class SteamTransport : ITransport
         {
             case DeliveryMethod.Sequenced:
             {
-                if (length + 2 > _scratch.Length) { SendRaw(_peer, data, length, SteamNative.SendUnreliableNoNagle, ChannelMain); return; }
+                if (length + 2 > _scratch.Length) { Out(_peer, data, length, SteamNative.SendUnreliableNoNagle, ChannelMain); return; }
                 _seqOut++;
                 _scratch[0] = (byte)_seqOut;
                 _scratch[1] = (byte)(_seqOut >> 8);
                 Buffer.BlockCopy(data, 0, _scratch, 2, length);
-                SendRaw(_peer, _scratch, length + 2, SteamNative.SendUnreliableNoNagle, ChannelSequenced);
+                Out(_peer, _scratch, length + 2, SteamNative.SendUnreliableNoNagle, ChannelSequenced);
                 break;
             }
             case DeliveryMethod.Unreliable:
-                SendRaw(_peer, data, length, SteamNative.SendUnreliableNoNagle, ChannelMain);
+                Out(_peer, data, length, SteamNative.SendUnreliableNoNagle, ChannelMain);
                 break;
             default: // ReliableOrdered, ReliableUnordered, ReliableSequenced: Steam's reliable is ordered
-                SendRaw(_peer, data, length, SteamNative.SendReliable, ChannelMain);
+                Out(_peer, data, length, SteamNative.SendReliable, ChannelMain);
                 break;
         }
+    }
+
+    /// <summary>Game traffic and pings: through the simulation queue when it is on (it copies the bytes).</summary>
+    private void Out(ulong to, byte[] data, int length, int flags, int channel)
+    {
+        if (_sim != null) _sim.Enqueue(to, data, length, flags, channel, reliable: flags == SteamNative.SendReliable);
+        else SendRaw(to, data, length, flags, channel);
     }
 
     private void Raw(ulong to, NetDataWriter w, int flags, int channel) => SendRaw(to, w.Data, w.Length, flags, channel);
@@ -404,6 +428,7 @@ public sealed unsafe class SteamTransport : ITransport
     {
         if (_connected)
         {
+            _sim?.FlushReliable(_sendNow); // a simulated delay must not swallow our last reliable messages
             // No CloseSessionWithUser here: it would drop this Bye. The idle session expires by itself, and the
             // partner also sees us leave the lobby.
             var w = new NetDataWriter();

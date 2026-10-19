@@ -122,13 +122,16 @@ public static class CastSync
         if (_telemetryTimer < TelemetryInterval) return;
         _telemetryTimer = 0f;
         int failed = _noCaster + _noSkill + _rejected + _errors;
-        if (_sent + _recv + failed + _blockedEffects + _blockedDamage + _captureErrors > 0)
+        int numbersHidden = ReplicaCombatText.TakeHidden();
+        if (_sent + _recv + failed + _blockedEffects + _blockedDamage + _captureErrors + numbersHidden > 0)
         {
             Plugin.StaticLog.LogInfo(
                 $"[SoulstoneCoop][casts] {NetworkManager.Role}: sent={_sent} ({_bytesSent} B) recv={_recv} played={_played} failed={failed} " +
                 $"(noCaster={_noCaster} noSkill={_noSkill} rejected={_rejected} error={_errors}) skippedSummon={_skippedSummon} " +
                 $"captureErrors={_captureErrors} channelEnds={_channelEndsSent}/{_channelEndsRecv} openChannels={RemoteCaster.OpenChannels}/{LocalChannels.Count} " +
-                $"blockedEffects={_blockedEffects} blockedDamage={_blockedDamage} caster={RemoteCaster.Active} copies={RemoteCaster.CopyCount}");
+                $"blockedEffects={_blockedEffects} blockedDamage={_blockedDamage} numbersHidden={numbersHidden} caster={RemoteCaster.Active} copies={RemoteCaster.CopyCount} " +
+                $"ghostAnim={RemoteCaster.GhostAnimPlayed}/{RemoteCaster.GhostAnimPlayed + RemoteCaster.GhostAnimMissing}");
+            RemoteCaster.GhostAnimPlayed = RemoteCaster.GhostAnimMissing = 0;
         }
         _sent = _recv = _played = _noCaster = _noSkill = _rejected = _errors = _skippedSummon = _captureErrors = 0;
         _channelEndsSent = _channelEndsRecv = _blockedEffects = _blockedDamage = _bytesSent = 0;

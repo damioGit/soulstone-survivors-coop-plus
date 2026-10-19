@@ -47,6 +47,15 @@ public static class NetworkManager
 
     public static int PingMs => Transport?.PingMs ?? -1;
 
+    /// <summary>Phase 8: seconds since anything arrived from the partner (0 without one).</summary>
+    public static float SilenceSeconds => HasPeer ? Transport!.SilenceSeconds : 0f;
+
+    /// <summary>Phase 8: past this much silence the panel and the banner say "conexão instável" (both transports
+    /// send at least a ping per second; the drop itself comes much later: 10 s on IP, 15 s on Steam).</summary>
+    public const float UnstableAfterSeconds = 2f;
+
+    public static bool Unstable => HasPeer && SilenceSeconds >= UnstableAfterSeconds;
+
     /// <summary>Fired when a peer connects, on both host and client.</summary>
     public static event System.Action? PeerConnected;
 
@@ -143,10 +152,44 @@ public static class NetworkManager
             Stop();
             if (status == NetStatus.Rejected) _idleStatus = NetStatus.Rejected;
         }
+        LogStability();
     }
 
+    private static bool _wasUnstable;
+    private static float _worstSilence;
+
+    /// <summary>Phase 8: one log line when the link goes quiet and one when it comes back (with how long).</summary>
+    private static void LogStability()
+    {
+        bool unstable = Unstable;
+        if (unstable)
+        {
+            float s = SilenceSeconds;
+            if (s > _worstSilence) _worstSilence = s;
+        }
+        if (unstable == _wasUnstable) return;
+        _wasUnstable = unstable;
+        if (unstable) Plugin.StaticLog.LogWarning($"[SoulstoneCoop][net] Link unstable: nothing from the partner for {SilenceSeconds:F1}s ({Kind}).");
+        else
+        {
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][net] Link back after {_worstSilence:F1}s of silence (peer={HasPeer}).");
+            _worstSilence = 0f;
+        }
+    }
+
+    private static int _sendErrors;
+
+    /// <summary>Phase 8: never throws. Senders run inside our Update (and some inside game patches); one exception
+    /// here used to skip the rest of the mod's frame.</summary>
     public static void Send(NetDataWriter writer, DeliveryMethod method)
     {
-        Transport?.Send(writer.Data, writer.Length, method);
+        var t = Transport;
+        if (t == null) return;
+        try { t.Send(writer.Data, writer.Length, method); }
+        catch (System.Exception ex)
+        {
+            if (_sendErrors++ < 10)
+                Plugin.StaticLog.LogError($"[SoulstoneCoop] Send of packet {(writer.Length > 0 ? writer.Data[0] : -1)} ({writer.Length} B, {method}) failed: {ex.Message}");
+        }
     }
 }

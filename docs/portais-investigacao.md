@@ -174,4 +174,4 @@ Pacotes 90–99.
 4. **Transição local:** novo `LobbyPlace.Transition` (portal tomado, cena velha ainda viva). Depois Loading (no `UnsetGameManager`) e InRun (`StartMatch`). A barreira trava quem chega primeiro.
 5. **Reiniciar:** como na seção 4.
 6. Tirar os bloqueios da 4A (Endless/BossRush) e da fase 6 (Reiniciar). A Cruzada continua bloqueada.
-7. **Atalho de teste (host):** F6 entra no portal Endless e Shift+F6 no BossRush, por código, depois que o `EnterPortalObjective` existe.
+7. **Atalho de teste (host):** F5 entra no portal Endless e Shift+F5 no BossRush, por código, depois que o `EnterPortalObjective` existe.

@@ -69,7 +69,10 @@ public static class RunSync
     /// written the mode/difficulty to Global.</summary>
     internal static void AfterHostFight(string? scene)
     {
-        if (NetworkManager.Role != NetRole.Host || !CoopSession.Connected) return;
+        if (NetworkManager.Role != NetRole.Host) return;
+        // Phase 8: with AllowRejoin the run is remembered even without a partner yet, for one who joins mid-run.
+        if (!CoopSession.Connected && !Plugin.AllowRejoin.Value) return;
+        _hostRun = null;
         if (string.IsNullOrEmpty(scene))
         {
             Plugin.StaticLog.LogWarning("[SoulstoneCoop][run] Host started a run but the scene name is unknown - client not told.");
@@ -77,14 +80,63 @@ public static class RunSync
         }
 
         var p = BuildHostParams(scene!);
+        _hostRun = p;
+        _rejoinSent = false;
+        if (!CoopSession.Connected) return;
+
+        SendRunStart(p);
+        PauseSync.ResetForRun();
+        CoopSession.BeginLoading();
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Host: RunStart sent: {Describe(p)}");
+    }
+
+    private static void SendRunStart(RunParams p)
+    {
         var w = new NetDataWriter();
         w.Put((byte)PacketType.RunStart);
         WriteParams(w, p);
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
+    }
 
-        PauseSync.ResetForRun();
-        CoopSession.BeginLoading();
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Host: RunStart sent: {Describe(p)}");
+    // =====================================================================================
+    // Phase 8, host, [Coop] AllowRejoin (off by default): a partner who connects while we're in a run is sent
+    // the same RunStart and loads into it, as a new character (level 1, no items); the enemies come with the
+    // usual resync when its LobbyState says InRun. See docs/fase8-notas.md.
+    // =====================================================================================
+
+    private static RunParams? _hostRun;   // host: the run we're in (or loading)
+    private static bool _rejoinSent;      // once per connection
+
+    internal static void OnPeerConnected() => _rejoinSent = false;
+
+    /// <summary>Host took an Endless/BossRush portal (PortalSync): a partner joining later loads the current stage's
+    /// map, with the same mode and the run's affixes.</summary>
+    internal static void OnHostStageChanged(string scene)
+    {
+        if (_hostRun == null || NetworkManager.Role != NetRole.Host) return;
+        var p = new RunParams
+        {
+            Scene = scene,
+            Mode = _hostRun.Mode,
+            MasteryTier = _hostRun.MasteryTier,
+            MasteryLevel = _hostRun.MasteryLevel,
+            HasAffixes = _hostRun.HasAffixes,
+        };
+        p.Affixes.AddRange(_hostRun.Affixes);
+        _hostRun = p;
+    }
+
+    internal static void HostRejoinTick()
+    {
+        if (_rejoinSent || _hostRun == null || !Plugin.AllowRejoin.Value) return;
+        if (NetworkManager.Role != NetRole.Host || !CoopSession.Connected || !CoopSession.LocalInRun) return;
+        // Hello received (its LobbyState comes first on the same ordered channel) and the partner is in the menu.
+        if (!CoopSession.Remote.Known || CoopSession.RemotePlace != LobbyPlace.Menu) return;
+        if (Life.CoopLife.RunEnding || Life.CoopLife.VictoryReached() || Life.CoopLife.LocalOut) return;
+        _rejoinSent = true;
+        SendRunStart(_hostRun);
+        CoopSession.Notice($"{CoopSession.PartnerName} chegou: entrando na sua partida", 6f);
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Host: partner connected mid-run - RunStart resent (scene={_hostRun.Scene} mode={_hostRun.Mode}).");
     }
 
     /// <summary>The run the host is starting: Global (written by the game's Fight/Restart) and the host's affixes.</summary>
@@ -251,7 +303,8 @@ public static class RunSync
     /// A partner already in the menu gets the usual RunStart; one still on its end screen restarts from there.</summary>
     internal static void AfterHostRestart(EndGamePanelManager panel, bool wasRequested)
     {
-        if (NetworkManager.Role != NetRole.Host || !CoopSession.Connected) return;
+        if (NetworkManager.Role != NetRole.Host) return;
+        if (!CoopSession.Connected && !Plugin.AllowRejoin.Value) return;
         if (wasRequested || !panel.RequestedGoToMenu) return; // the game didn't restart
         string? scene = null;
         try { scene = GameManagerUtil.MatchStats?.MapId; } catch { }
@@ -261,14 +314,17 @@ public static class RunSync
             return;
         }
 
-        if (CoopSession.RemotePlace == LobbyPlace.Menu)
+        // Alone (phase 8 AllowRejoin keeps the run for a late partner) or the partner is in the menu: usual RunStart.
+        if (!CoopSession.Connected || CoopSession.RemotePlace == LobbyPlace.Menu)
         {
             AfterHostFight(scene);
-            CoopSession.BeginStageTransition("restart");
+            if (CoopSession.Connected) CoopSession.BeginStageTransition("restart");
             return;
         }
 
         var p = BuildHostParams(scene!);
+        _hostRun = p;
+        _rejoinSent = false;
         var w = new NetDataWriter();
         w.Put((byte)PacketType.PortalTransition);
         w.Put((byte)PortalKind.Restart);
@@ -336,6 +392,7 @@ public static class RunSync
         if (CoopSession.StageTransition) { _holding = false; return; }
         RestoreAffixFlag();
         _clientRun = null;
+        _hostRun = null;
         _holding = false;
     }
 

@@ -10,7 +10,7 @@ Feedback que originou: "o avanço das fases, modo infinito e desafio não funcio
 
 O jogo já leva a progressão de cada jogador para a próxima fase (nível, XP, poderes, itens, afixos), em cada máquina (`SetEndlessData` → `InitialEndlessData`). O único sorteio é o mapa do Endless. O BossRush tem mapa fixo.
 
-**Host entra** (trigger do portal, F6 ou pedido do cliente):
+**Host entra** (trigger do portal, F5 ou pedido do cliente):
 - `Lobby/PortalSync.cs`: prefix/postfix em `OnPlayerEnterEndlessPortal` e `OnPlayerEnterBossRushPortal` de `SurvivorsGameManager` **e** de `SurvivorsBossRoomGameManager` (a cena do BossRush);
 - o fluxo nativo roda e um postfix só de leitura em `MapCollectionSO.GetRandomMapExcluding` captura o mapa sorteado;
 - se o portal realmente abriu (`EnterPortalObjective.Completed`), o host manda `PortalTransition` (90) com o tipo e o mapa.
@@ -42,6 +42,19 @@ O jogo já leva a progressão de cada jogador para a próxima fase (nível, XP, 
 - `PauseSync.ResetForRun()` na transição;
 - `CoopLife.PrepareForStageTransition()`: revive e liga `RunEnding` nos últimos segundos da cena velha.
 
+### Integração com o master (fases 5, 8, pendências, level-up sem pausa, ObjectiveSync)
+
+- **ObjectiveSync (4D):** o cliente guardava o último estado do host sem zerar entre cenas. Na fase nova isso aplicaria kills/tier da velha e o "catch-up" criaria um objetivo de kill falso. Agora:
+  - `ObjectiveSync.ResetForNewScene()` roda no `UnsetGameManager` local e na marca "host saiu da cena";
+  - o cliente ignora `ObjectiveSync` enquanto o host não está InRun ou enquanto ele mesmo está em transição.
+- **Fase 8:**
+  - o timeout de silêncio maior durante o carregamento (Steam) e o aviso de conexão instável contam também o estado `Transition` (`CoopSession.RemoteChangingScene`);
+  - a reentrada (`AllowRejoin`) acompanha a fase: o portal atualiza o `RunStart` guardado do host (`RunSync.OnHostStageChanged`) e o Reiniciar grava a run nova;
+  - `CoopLife.VictoryReached` reconhece a vitória da sala do BossRush.
+  - Se o host cair durante a transição, o cliente desiste de seguir e o `RunEnding` (já ligado no portal) evita o "Surrender" automático em cima da vitória.
+- **Fase 5:** a barra de vida, o ícone do minimapa e a identidade do fantasma são recriados com o fantasma, que nasce de novo em cada fase. Nada a mudar.
+- **Level-up sem pausa:** o atalho F6 já é dele (+1 nível). O dos portais virou **F5**. Durante a transição o parceiro não está InRun, então o popup de level-up volta a pausar só localmente (como no solo).
+
 ### Reiniciar (tela final)
 
 `Lobby/RunSync.cs`, `CoopRestartPatch` no lugar do bloqueio da fase 6:
@@ -59,8 +72,8 @@ O portal de desafio leva a uma cena com outro game manager: não tem `SurvivorsG
 
 ### Atalho de teste (host)
 
-- **F6:** entra no portal **Endless** por código, depois que os portais abriram (F10 antes).
-- **Shift+F6:** entra no **BossRush**.
+- **F5:** entra no portal **Endless** por código, depois que os portais abriram (F10 antes).
+- **Shift+F5:** entra no **BossRush**.
 
 Motivo: com F10 cedo o jogo **não mostra** os portais roxo/vermelho (`MinTimeForEndlessRush`/`MinTimeForBossRush` contra o tempo de partida). Eles também dependem do progresso do perfil local.
 
@@ -108,13 +121,13 @@ Dois jogos conectados pela aba Co-op (ou convite Steam), host = A, cliente = B. 
 
 1. A começa a run. B entra junto (fase 6).
 2. A aperta **F10**: vitória nos dois. Espere uns 6 s até aparecer o objetivo "entre no portal".
-3. **Endless pelo host:** A aperta **F6** (ou entra no portal roxo, se aparecer).
+3. **Endless pelo host:** A aperta **F5** (ou entra no portal roxo, se aparecer).
    - A: "Portal infinito: indo com B pra <mapa>". B: "Seguindo o host pelo portal infinito".
    - Os dois carregam **o mesmo mapa**; quem chegar primeiro vê "Aguardando … carregar…".
    - Na fase nova cada um mantém nível, skills e itens; o fantasma aparece; B vê os inimigos do host.
-4. Na fase 2: **F10** de novo e depois **F6**. Os dois vão de novo pro mesmo mapa (a dificuldade sobe).
+4. Na fase 2: **F10** de novo e depois **F5**. Os dois vão de novo pro mesmo mapa (a dificuldade sobe).
 5. **Endless pelo cliente:** numa fase com o portal roxo visível em B, B entra nele. B: "chamando o host…", e os dois vão juntos.
-6. **BossRush:** volte ao menu, comece outra run, **F10** e depois **Shift+F6**.
+6. **BossRush:** volte ao menu, comece outra run, **F10** e depois **Shift+F5**.
    - Os dois vão para a sala do desafio.
    - B **não** deve ter bosses próprios (log `blocked SurvivorsBossRoomGameManager.SpawnNextBoss`); vê os do host.
    - Mate os bosses ou aperte **F10** em A: vitória nos dois (log de B: `Victory (BossRush room)`).
