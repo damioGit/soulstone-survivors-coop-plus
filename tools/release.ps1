@@ -34,7 +34,7 @@ Set-Location $RepoRoot
 
 function Fail([string]$msg) { Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
 function Step([string]$msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
-function Git { & git @args; if ($LASTEXITCODE -ne 0) { Fail "git $($args -join ' ') failed" } }
+function Invoke-Git { & git.exe @args; if ($LASTEXITCODE -ne 0) { Fail "git $($args -join ' ') failed" } }
 
 $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
 $gh = if ($ghCmd) { $ghCmd.Source } else { 'C:\Program Files\GitHub CLI\gh.exe' }
@@ -52,7 +52,7 @@ $branch = (& git rev-parse --abbrev-ref HEAD).Trim()
 if ($branch -ne 'master') { Fail "releases come from master (current branch: $branch)" }
 if (& git status --porcelain) { Fail "working tree is not clean; commit or stash first" }
 
-Git fetch --quiet origin --tags
+Invoke-Git fetch --quiet origin --tags
 $local = (& git rev-parse HEAD).Trim()
 $remote = (& git rev-parse origin/master).Trim()
 if ($local -ne $remote) { Fail "master ($local) is not in sync with origin/master ($remote); push or pull first" }
@@ -85,8 +85,8 @@ if ($DryRun) {
 # ---------------------------------------------------------------- tag and release
 
 Step "Tagging $Tag"
-Git tag -a $Tag -m "Soulstone Coop $Version"
-Git push origin $Tag
+Invoke-Git tag -a $Tag -m "Soulstone Coop $Version"
+Invoke-Git push origin $Tag
 
 Step "Creating the GitHub release"
 $relArgs = @('release', 'create', $Tag, $zip, '--title', "Soulstone Coop $Version", '--verify-tag') + $notesArgs
