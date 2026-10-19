@@ -72,3 +72,24 @@ Duas máquinas, conectadas pela aba Co-op ou pelo convite da Steam.
 - `[sync] Ghost animator ...: ForwardMovement=True ...`;
 - `[casts] Partner plays ...` e o `ghostAnim=` da telemetria;
 - qualquer `Ghost has no animator state` e qualquer erro com `[hpbar]`.
+
+## Correções para a 0.8.1 (regressões do teste da 0.8.0, host Demon Hunter e cliente Sentinel)
+
+1. **Fantasma deslizando: corrigido.** A leitura de `Animator.parameters` quebra no interop: `AnimatorControllerParameter` não é um objeto Il2Cpp, então não dá para montar o `Il2CppReferenceArray` dele. A exceção (`violates the constraint of type parameter 'T'`) desligava a locomoção inteira.
+   - Agora não se lê mais a lista. `ForwardMovement`, `SidewaysMovement` e `OnGround` vão só para o `ModelAnimator`, o mesmo Animator que o `PlayerAnimator` do jogo controla: `ModifiedCharacter._animator`, apontado pelo `PlayerPrefabReferences.Setup` para `AnimatorComponent.Animators[0]`.
+   - O try/catch é por animator e não desliga nada. No fallback (clone local) vão para todos os animators, como na 0.7.0.
+2. **Fantasma sem arma: corrigido.** O laço final do `SetHandOffsetToMatchDefaultRig` percorre `spawned.ItemFollowBone.Followers` sem conferir nulo. O jogo preenche o `ItemFollowBone` no `FirstTimeSetup` (`GetComponentInChildren<ItemFollowBoneUtil>`), e o fantasma não preenchia.
+   - Agora ele é preenchido antes da rotina de armas.
+   - O `ItemFollowBoneUtil` do modelo do parceiro fica vivo no fantasma: é o `LateUpdateAll` dele que leva as armas às mãos, e ele só mexe em transforms do próprio modelo.
+3. **Animação de cast: causa não confirmada, com diagnóstico.**
+   - Hipótese descartada: o jogo não troca o `runtimeAnimatorController` do modelo em gameplay. O `CharacterAnimatorCollection` só é usado no menu e com skin de mod (únicos chamadores: a rotina de armas e `GetModsAnimatorByCharacterId`), então o controller é o do prefab. O próprio `ghostAnim=4/4` só conta quando `HasState` deu verdadeiro, o que exige um controller.
+   - Mudança: `cullingMode = AlwaysAnimate` no animator do modelo.
+   - Logs novos: `model animator '...' controller=... avatar=... human=... layers=[...] skinnedMeshes=N boundUnderAnimator=M` ao montar o fantasma, e `Anim probe '<estado>' ... inState=... transitioning=... weight=...` 0,25 s depois dos três primeiros casts de cada estado.
+4. **Magias do parceiro invisíveis: causa não confirmada, com diagnóstico e um ajuste.**
+   - O lançador nasceu na posição do fantasma no momento, `(0,0,0)` no log, provavelmente o spawn do mapa. Ele segue o fantasma pelo `ModifiedCharacter.SetPosition` no `Tick`. Agora ele também é encaixado no fantasma (transform e motor) logo antes de cada cast.
+   - A cópia via prefab + `Skill.Setup` é o mesmo caminho que rodou na 4C: lá o `SetupExtraSkillForEntity` sempre dava NRE no Dummy e caía nesse fallback.
+   - O `e225e80` só corta o número de dano (`RequestCombatText`), não o visual.
+   - `blockedDamage=20` mostra que os projéteis das réplicas existem e acertam inimigos.
+   - Log novo, 0,25 s depois das três primeiras réplicas de cada skill: `Probe '<skill>': projectiles=N areas=N first=<posição> (X m from the ghost) renderers=ligados/total layer=<nome> drawn=<a câmera desenha a layer?> casterToGhost=X m source=...`.
+
+**O que mandar do log da 0.8.1 (dos dois lados):** as linhas `model animator ...`, `Ghost locomotion drives ...`, `Anim probe ...`, `Probe '...'` e o `built as the partner: ... (main=... offhand=..., bone follower ok)`.
