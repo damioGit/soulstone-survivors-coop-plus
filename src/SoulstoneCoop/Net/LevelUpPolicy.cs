@@ -38,7 +38,7 @@ public static class LevelUpPolicy
 
     internal static void Bind(ConfigFile cfg)
     {
-        Mode = cfg.Bind("Coop", "LevelUpPause", LevelUpPauseMode.NotWhenFullBuild,
+        Mode = cfg.Bind("Coop", "LevelUpPause", LevelUpPauseMode.Overlay,
             "Co-op: does your level-up screen pause both games? Always = always pauses (as before). " +
             "NotWhenFullBuild = pauses until all your skill slots are full; after that it opens as a small see-through " +
             "panel and you keep playing (1-4 pick, Tab hides it). Overlay = never pauses, always the small panel. " +
