@@ -36,6 +36,8 @@ public static class CoopUi
     // overlay canvas
     private static GameObject? _root;
     private static TMP_FontAsset? _font;
+    /// <summary>The game's menu font once the UI found it (phase 5: the ghost's name tag uses it too).</summary>
+    internal static TMP_FontAsset? GameFont => _font;
     private static Sprite? _frameSprite, _titleSprite, _tabSprite, _tabSelectedSprite;
     private static GameObject? _fallbackButton;
     private static GameObject? _panel;
@@ -257,6 +259,8 @@ public static class CoopUi
             string who = !r.Known ? "parceiro" : r.CharacterName.Length > 0 ? $"{r.Name} ({r.CharacterName})" : r.Name;
             int ping = NetworkManager.PingMs;
             text = $"Conectado com <color=#f2cc73>{who}</color> ({NetworkManager.Kind}{(ping >= 0 ? $", {ping} ms" : "")}).";
+            if (NetworkManager.Unstable)
+                text += $" <color=#ff8080>Conexão instável ({NetworkManager.SilenceSeconds:0} s sem resposta)</color>";
             if (role == NetRole.Client)
                 text += CoopSession.RemotePlace == LobbyPlace.Menu
                     ? "\nAguardando o host começar a partida."
@@ -271,6 +275,7 @@ public static class CoopUi
             text += $"\n<color=#ff8080>{NetworkManager.LastError}</color>";
         if (role == NetRole.Host && steam && Steam.SteamLobby.LastError != null)
             text += $"\n<color=#ff8080>{Steam.SteamLobby.LastError}</color>";
+        if (NetSim.Enabled) text += $"\n<color=#ffb060>Simulação de rede ligada: {NetSim.Describe()}</color>";
 
         if (text != _lastStatus)
         {
@@ -293,7 +298,11 @@ public static class CoopUi
     private static void RefreshBanner()
     {
         string? text;
-        if (RunSync.HoldForPartner) text = $"Aguardando {CoopSession.PartnerName} carregar...";
+        // Phase 8: silence well before the transport gives up (10 s IP, 15 s Steam). Not while a side is loading
+        // a run: a scene load freezes the game, and the Steam pings with it.
+        if (NetworkManager.Unstable && !CoopSession.LocalLoading && CoopSession.RemotePlace != LobbyPlace.Loading)
+            text = $"Conexão instável com {CoopSession.PartnerName} ({NetworkManager.SilenceSeconds:0} s sem resposta)...";
+        else if (RunSync.HoldForPartner) text = $"Aguardando {CoopSession.PartnerName} carregar...";
         else if (PauseSync.RemotePaused)
             text = PauseSync.RemoteReason == PauseReason.LevelUp
                 ? $"{CoopSession.PartnerName} escolhendo upgrade..."

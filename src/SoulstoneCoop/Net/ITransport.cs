@@ -24,6 +24,10 @@ public interface ITransport
     /// <summary>Round trip to the partner in ms, -1 if unknown.</summary>
     int PingMs { get; }
 
+    /// <summary>Phase 8: seconds since anything arrived from the partner (0 without a partner). Feeds the
+    /// "conexão instável" warning, well before the transport gives up.</summary>
+    float SilenceSeconds { get; }
+
     /// <summary>Set from inside a transport callback when it wants to be torn down; NetworkManager stops it right
     /// after Poll (stopping from inside a LiteNetLib event is not safe).</summary>
     bool WantsStop { get; }

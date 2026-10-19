@@ -70,7 +70,7 @@ public struct EnemySpawnMsg
 /// <summary>
 /// Snapshot slice layout (Unreliable; every slice is self-contained, so a lost or reordered slice only
 /// costs the entries in it, and per-puppet sequence checks drop stale ones):
-///   type u8 | seq u16 | base x,y,z f32 | count u8 | count * entry
+///   type u8 | seq u16 | hostMs u32 (phase 8) | base x,y,z f32 | count u8 | count * entry
 ///   entry: netId u16 | dx i16 (1/32 u) | dz i16 (1/32 u) | dy i16 (1/64 u) | yaw u8 | hp u16 (0..65535 = 0..100%)
 /// (hp was u8 until phase 4D: 1/255 of a 470k-HP boss is ~1.8k HP, visible as different numbers on the two boss bars)
 /// Offsets are relative to the base (the host player), so the range is about +-1000 u around it; the
@@ -78,18 +78,22 @@ public struct EnemySpawnMsg
 /// </summary>
 public static class EnemySnapshotFormat
 {
-    public const int HeaderBytes = 1 + 2 + 12 + 1;
+    public const int HeaderBytes = 1 + 2 + 4 + 12 + 1;
     public const int EntryBytes = 11;
-    public const int MaxPacketBytes = 1200;
-    public const int MaxEntriesPerSlice = (MaxPacketBytes - HeaderBytes) / EntryBytes; // 107
+    /// <summary>Phase 8: was 1200. LiteNetLib 1.3.1 keeps its MTU at 1024 and throws on a bigger Unreliable packet
+    /// (with more than ~90 enemies every snapshot failed), and 1200 sat at the edge of a Steam relay packet.</summary>
+    public const int MaxPacketBytes = 1000;
+    public const int MaxEntriesPerSlice = (MaxPacketBytes - HeaderBytes) / EntryBytes; // 89
 
     private const float XzScale = 32f;
     private const float YScale = 64f;
 
-    public static void WriteHeader(NetDataWriter w, ushort seq, Vector3 basePos, byte count)
+    /// <param name="hostMs">Phase 8: the host's clock when the snapshot was taken (RemoteClock.NowMs).</param>
+    public static void WriteHeader(NetDataWriter w, ushort seq, uint hostMs, Vector3 basePos, byte count)
     {
         w.Put((byte)PacketType.EnemySnapshot);
         w.Put(seq);
+        w.Put(hostMs);
         w.Put(basePos.x); w.Put(basePos.y); w.Put(basePos.z);
         w.Put(count);
     }

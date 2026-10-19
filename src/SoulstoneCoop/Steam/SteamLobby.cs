@@ -133,8 +133,9 @@ internal static unsafe class SteamLobby
             Join(id);
         }
 
-        // Host: the friend can only come in from the menu (phase 6), so close the lobby during a run.
-        bool inRun = Lobby.CoopSession.LocalInRun || Lobby.CoopSession.LocalLoading;
+        // Host: the friend can only come in from the menu (phase 6), so close the lobby during a run. Phase 8:
+        // with AllowRejoin it stays open, so a friend who dropped can come back into the run.
+        bool inRun = (Lobby.CoopSession.LocalInRun || Lobby.CoopSession.LocalLoading) && !Plugin.AllowRejoin.Value;
         if (State == LobbyState.Hosting && inRun != _closedForRun)
         {
             _closedForRun = inRun;

@@ -87,13 +87,18 @@ public static class CoopSession
             _helloSent = false;
             _placeSent = false;
             RefreshLocalInfo();
+            RunSync.OnPeerConnected();
         };
         NetworkManager.PeerDisconnected += () =>
         {
             string who = PartnerName;
+            bool partnerWasInRun = RemotePlace != LobbyPlace.Menu;
             Remote = new PlayerInfo();
             RemotePlace = LobbyPlace.Menu;
-            Notice($"{who} desconectou", 6f);
+            // Phase 8: the host keeps playing (the client's case is CoopLife's: its run ends).
+            Notice(LocalInRun && partnerWasInRun && NetworkManager.Role == NetRole.Host
+                ? $"{who} desconectou. Você continua sozinho."
+                : $"{who} desconectou", 6f);
         };
     }
 
@@ -172,6 +177,8 @@ public static class CoopSession
             bool changed = !LocalInRun && RefreshLocalInfo();
             if (changed || !_helloSent) SendHello();
         }
+
+        RunSync.HostRejoinTick(); // phase 8, AllowRejoin only
     }
 
     private static void SendPlace(bool force)
