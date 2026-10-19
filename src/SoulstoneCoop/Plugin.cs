@@ -21,6 +21,10 @@ public class Plugin : BasePlugin
     internal static BepInEx.Configuration.ConfigEntry<bool> EndRunWhenHostLeaves = null!;
     internal static BepInEx.Configuration.ConfigEntry<bool> SenderClock = null!;
     internal static BepInEx.Configuration.ConfigEntry<int> MaxPlayers = null!;
+    internal static BepInEx.Configuration.ConfigEntry<SteamLobbyType> LobbyType = null!;
+
+    /// <summary>Phase 9: who may join the Steam lobby ([Coop] LobbyType).</summary>
+    public enum SteamLobbyType { FriendsOnly, Public, Private }
     private static int _simLatency, _simJitter, _simLoss;
 
     public override void Load()
@@ -48,9 +52,12 @@ public class Plugin : BasePlugin
         SenderClock = Config.Bind("Coop", "SenderClock", false,
             "Experimental: place the partner and the enemies by the sender's clock instead of the arrival time (smoother with jitter).");
         // Phase 9 (docs/fase9-notas.md).
-        MaxPlayers = Config.Bind("Coop", "MaxPlayers", 2, new BepInEx.Configuration.ConfigDescription(
+        MaxPlayers = Config.Bind("Coop", "MaxPlayers", 8, new BepInEx.Configuration.ConfigDescription(
             "Host: how many players fit in your co-op session, you included (2-8). Clients past that are refused.",
             new BepInEx.Configuration.AcceptableValueRange<int>(2, 8)));
+        LobbyType = Config.Bind("Coop", "LobbyType", SteamLobbyType.FriendsOnly,
+            "Host, Steam: who can join your lobby. FriendsOnly = friends and invitees of the players in it (anyone in the group can invite). " +
+            "Public = anyone with the lobby code. Private = only who gets an invite.");
         _simLatency = simLatency.Value;
         _simJitter = simJitter.Value;
         _simLoss = simLoss.Value;

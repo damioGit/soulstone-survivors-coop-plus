@@ -41,7 +41,7 @@ public static class NetworkManager
     public static IReadOnlyList<byte> PeerSlots => Transport?.PeerSlots ?? Array.Empty<byte>();
 
     /// <summary>[Coop] MaxPlayers: how many players the host's session holds, the host included (2-8).</summary>
-    public static int MaxPlayers => Math.Clamp(Plugin.MaxPlayers?.Value ?? 2, 2, Players.MaxSlots);
+    public static int MaxPlayers => Math.Clamp(Plugin.MaxPlayers?.Value ?? 8, 2, Players.MaxSlots);
 
     public static int MaxClients => MaxPlayers - 1;
 

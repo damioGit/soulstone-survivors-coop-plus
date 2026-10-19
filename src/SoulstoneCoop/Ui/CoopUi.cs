@@ -45,6 +45,7 @@ public static class CoopUi
     private static TMP_InputField? _ipField;
     private static Button? _hostButton, _joinButton, _leaveButton, _pasteButton;
     private static Button? _inviteButton, _copyCodeButton; // phase 7 (Steam)
+    private static TextMeshProUGUI? _inviteLabel; // phase 9: "Convidar amigo (n/8)"
     private static RectTransform? _bannerRt;
     private static TextMeshProUGUI? _bannerText;
 
@@ -301,8 +302,13 @@ public static class CoopUi
         bool busy = lobbyState == Steam.SteamLobby.LobbyState.Creating || lobbyState == Steam.SteamLobby.LobbyState.Joining;
         bool idle = role == NetRole.None && !busy;
         bool steamHosting = role == NetRole.Host && steam;
-        SetInteractable(_inviteButton!, Steam.SteamLobby.Available && (idle || steamHosting));
-        SetInteractable(_copyCodeButton!, steamHosting && Steam.SteamLobby.LobbyId != 0);
+        // Phase 9: anyone in the Steam lobby can invite its own friends, while there's a free seat.
+        bool steamMember = steamHosting || (role == NetRole.Client && steam && Steam.SteamLobby.State == Steam.SteamLobby.LobbyState.Joined);
+        bool full = Players.Count >= Players.SessionMax;
+        SetInteractable(_inviteButton!, Steam.SteamLobby.Available && (idle || (steamMember && !full)));
+        SetInteractable(_copyCodeButton!, steamMember && Steam.SteamLobby.LobbyId != 0);
+        string inviteLabel = steamMember ? $"Convidar amigo ({Players.Count}/{Players.SessionMax})" : "Convidar amigo";
+        if (_inviteLabel != null && _inviteLabel.text != inviteLabel) _inviteLabel.text = inviteLabel;
         SetInteractable(_hostButton!, idle);
         SetInteractable(_joinButton!, idle);
         SetInteractable(_pasteButton!, idle);
@@ -497,7 +503,8 @@ public static class CoopUi
         PlaceTopLeft(close.GetComponent<RectTransform>(), 650f, 46f, 50f, 50f);
 
         // Phase 7: Steam invite first (the real way to play), IP below it (local tests, LAN, VPN).
-        _inviteButton = MakeButton(panel, "Invite", "Convidar amigo", OnInvite, 34f);
+        _inviteButton = MakeButton(panel, "Invite", "Convidar amigo", OnInvite, 30f);
+        _inviteLabel = _inviteButton.GetComponentInChildren<TextMeshProUGUI>(true);
         PlaceTopLeft(_inviteButton.GetComponent<RectTransform>(), 60f, 70f, 390f, 70f);
 
         _copyCodeButton = MakeButton(panel, "CopyCode", "Copiar código", OnCopyCode, 28f);
