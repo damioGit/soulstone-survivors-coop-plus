@@ -214,7 +214,7 @@ ALTERNATIVA: POR IP
 
 DESINSTALAR
 - Na pasta do jogo, apague: winhttp.dll, doorstop_config.ini, .doorstop_version, a pasta dotnet,
-  a pasta BepInEx e este LEIA-ME.txt. Só isso: o jogo volta ao normal.
+  a pasta BepInEx, este LEIA-ME.txt e o README.txt. Só isso: o jogo volta ao normal.
 - Obs.: o "Verificar integridade dos arquivos" da Steam conserta arquivos do jogo, mas NÃO apaga
   os do mod. Pra tirar o mod, apague os arquivos acima.
 
@@ -223,6 +223,62 @@ DEU PROBLEMA?
   sem abrir o jogo de novo antes (ele é reescrito toda vez que o jogo abre).
 "@
 [IO.File]::WriteAllText((Join-Path $Stage 'LEIA-ME.txt'), ($readme -replace "`r?`n", "`r`n"), (New-Object Text.UTF8Encoding($true)))
+
+$readmeEn = @"
+SOULSTONE COOP $Version - online co-op mod for Soulstone Survivors
+=====================================================================
+
+REQUIREMENTS
+- Windows and Soulstone Survivors $ExpectedGameVersion (the current Steam version).
+- BOTH players on this SAME mod version ($Version). Different versions refuse to connect.
+- Internet the first time you open the game with the mod.
+
+INSTALL
+1. Close the game.
+2. In Steam: right-click Soulstone Survivors > Manage > Browse local files.
+   This opens the game folder (the one with "Soulstone Survivors.exe").
+3. Open this zip, select everything (Ctrl+A) and drag it into that folder. Accept replacing files.
+   Check: winhttp.dll and the BepInEx folder must end up NEXT TO "Soulstone Survivors.exe",
+   not inside a "SoulstoneCoop-$Version" subfolder.
+
+FIRST LAUNCH
+- Launch the game from Steam as usual.
+- A black text window (the BepInEx console) opens too. That's normal. DON'T close it: closing it
+  closes the game.
+- The first time takes A FEW MINUTES before the game shows up (BepInEx prepares everything).
+  It looks frozen, it isn't. Wait. Next launches are fast.
+- If your antivirus complains about winhttp.dll: it's the BepInEx loader, the mod needs it.
+
+DID IT WORK?
+- A "Co-op" tab shows up in the main menu. If it's there, the mod is loaded.
+
+HOW TO PLAY (Steam invite - no IP, no port forwarding)
+- Both players launch the game FROM STEAM and stay in the main menu.
+- Host: Co-op tab > Invite friend. If the Steam overlay opens, pick your friend.
+  If it doesn't: in the Steam friends list (outside the game), right-click the friend >
+  "Invite to game".
+- Guest: accept the invite in Steam chat. The Co-op panel shows "Connected with <name> (Steam, x ms)".
+  If the game is closed, accepting the invite launches it and joins once it reaches the menu.
+- If the invite doesn't arrive: the host clicks Copy code and sends the number in chat; the guest
+  pastes it into the Co-op panel field (Paste button) > Join.
+- Once connected: each player picks their own character, and the HOST picks the map and presses
+  Fight. The guest's run starts by itself on the same map.
+
+ALTERNATIVE: BY IP
+- Host: Co-op tab > Host by IP (allow it if Windows asks about the firewall).
+- Guest: type the host's IP > Join. Over the internet this needs a gaming VPN (Tailscale, ZeroTier,
+  Radmin VPN - use the VPN IP) or UDP port 7777 forwarded on the host's router.
+
+UNINSTALL
+- In the game folder, delete: winhttp.dll, doorstop_config.ini, .doorstop_version, the dotnet folder,
+  the BepInEx folder, LEIA-ME.txt and README.txt. That's it.
+- Note: Steam's "Verify integrity of game files" does NOT remove the mod's files.
+
+SOMETHING WENT WRONG?
+- Send BepInEx\LogOutput.log (inside the game folder) right after the problem, before opening the
+  game again (it's rewritten every launch).
+"@
+[IO.File]::WriteAllText((Join-Path $Stage 'README.txt'), ($readmeEn -replace "`r?`n", "`r`n"), (New-Object Text.UTF8Encoding($true)))
 
 # ---------------------------------------------------------------- zip
 
@@ -243,7 +299,7 @@ try {
 # Lista branca: qualquer coisa fora disso no zip e erro (interop, unity-libs, cache, logs,
 # steam_appid.txt, arquivos do jogo, outros plugins como o UnityExplorer...).
 $allowed = @(
-    '^winhttp\.dll$', '^doorstop_config\.ini$', '^\.doorstop_version$', '^LEIA-ME\.txt$',
+    '^winhttp\.dll$', '^doorstop_config\.ini$', '^\.doorstop_version$', '^LEIA-ME\.txt$', '^README\.txt$',
     '^dotnet/', '^BepInEx/core/',
     ('^BepInEx/plugins/SoulstoneCoop/(' + (($PluginFiles | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'),
     '^BepInEx/config/BepInEx\.cfg$', ('^BepInEx/config/' + [regex]::Escape("$PluginGuid.cfg") + '$')
@@ -256,7 +312,7 @@ try {
     $total = ($zip.Entries | Measure-Object Length -Sum).Sum
 } finally { $zip.Dispose() }
 if ($bad) { Remove-Item $zipPath -Force; Fail ("entradas proibidas no zip (zip apagado):`n  " + ($bad -join "`n  ")) }
-foreach ($need in @('winhttp.dll', 'doorstop_config.ini', 'BepInEx/core/BepInEx.Unity.IL2CPP.dll', 'dotnet/coreclr.dll', 'LEIA-ME.txt') +
+foreach ($need in @('winhttp.dll', 'doorstop_config.ini', 'BepInEx/core/BepInEx.Unity.IL2CPP.dll', 'dotnet/coreclr.dll', 'LEIA-ME.txt', 'README.txt') +
                   @($PluginFiles | ForEach-Object { "BepInEx/plugins/SoulstoneCoop/$_" })) {
     if ($entries -notcontains $need) { Fail "falta $need no zip" }
 }
