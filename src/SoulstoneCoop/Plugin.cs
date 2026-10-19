@@ -26,6 +26,7 @@ public class Plugin : BasePlugin
     {
         StaticLog = Log;
         Log.LogInfo($"{PluginName} {PluginVersion} loading...");
+        Net.LevelUpPolicy.Bind(Config);
 
         AutoHost = Config.Bind("Debug", "AutoHost", false,
             "Start hosting automatically when the main menu opens (instead of the Co-op panel or Insert).");
