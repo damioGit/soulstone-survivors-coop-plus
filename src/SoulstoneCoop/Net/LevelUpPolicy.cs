@@ -9,14 +9,17 @@ public enum LevelUpPauseMode
     Always,
     NotWhenFullBuild,
     Never,
+    Overlay,
 }
 
 /// <summary>
-/// Whether the local level-up popup stops the time in co-op ([Coop] LevelUpPause, docs/levelup-notas.md).
+/// Whether the local level-up popup stops the time in co-op ([Coop] LevelUpPause, docs/levelup-notas.md), and
+/// whether it then shows as the compact overlay (Ui/LevelUpOverlay: smaller, see-through, the player keeps moving).
 /// The popup (LevelUpPanelManager.OnUpdate) writes TimeUtil.LevelUpTime = 0 while it's visible, and nothing but
-/// TimeUtil.SetTime reads it; so "no pause" is PauseSync recomputing timeScale without that factor. The popup,
-/// its input (UI map: the player stands still, autocast keeps going) and the Esc / death guard factors are untouched.
-/// Solo (no partner in the run) always keeps the game's own pause.
+/// TimeUtil.SetTime reads it; so "no pause" is PauseSync recomputing timeScale without that factor. Esc and the
+/// death guard factors are untouched. Solo (no partner in the run) always keeps the game's own pause.
+///   Always = pause. NotWhenFullBuild = pause until every skill slot is taken, then the overlay.
+///   Overlay = never pause, always the overlay. Never = never pause, the game's full-screen popup (0.8.0 behaviour).
 /// </summary>
 public static class LevelUpPolicy
 {
@@ -24,8 +27,8 @@ public static class LevelUpPolicy
 
     private const float FullBuildRecheckSeconds = 0.5f;
 
-    private static bool _open, _skip, _fullBuild, _coop;
-    private static float _openedAt, _nextFullCheck;
+    private static bool _open, _skip, _overlay, _fullBuild, _coop;
+    private static float _openedAt, _nextFullCheck = float.NegativeInfinity;
     private static int _queueAtOpen;
     // Session telemetry (reset with the run).
     private static int _popups, _popupsNoPause;
@@ -35,10 +38,13 @@ public static class LevelUpPolicy
 
     internal static void Bind(ConfigFile cfg)
     {
-        Mode = cfg.Bind("Coop", "LevelUpPause", LevelUpPauseMode.NotWhenFullBuild,
+        Mode = cfg.Bind("Coop", "LevelUpPause", LevelUpPauseMode.Overlay,
             "Co-op: does your level-up screen pause both games? Always = always pauses (as before). " +
-            "NotWhenFullBuild = pauses until all your skill slots are full, then you choose with the game running. " +
-            "Never = never pauses. Solo games always pause. Each player's setting applies to their own level-ups.");
+            "NotWhenFullBuild = pauses until all your skill slots are full; after that it opens as a small see-through " +
+            "panel and you keep playing (1-4 pick, Tab hides it). Overlay = never pauses, always the small panel. " +
+            "Never = never pauses, with the game's full-screen panel (you stand still while choosing). " +
+            "Solo games always pause. Each player's setting applies to their own level-ups.");
+        Ui.LevelUpOverlay.Bind(cfg);
     }
 
     /// <summary>A new run: forget the session counters.</summary>
@@ -47,12 +53,31 @@ public static class LevelUpPolicy
         _open = false;
         _popups = _popupsNoPause = 0;
         _secondsPaused = _secondsNoPause = 0f;
+        Ui.LevelUpOverlay.ResetForRun();
+    }
+
+    /// <summary>This frame's decision for an open popup: skip the pause? and if so, as the compact overlay?</summary>
+    internal static bool Decide(out bool overlay, out bool coop)
+    {
+        coop = NetworkManager.HasPeer && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.RemoteInRun;
+        var mode = Mode.Value;
+        float now = Time.realtimeSinceStartup;
+        if (mode == LevelUpPauseMode.NotWhenFullBuild && now >= _nextFullCheck)
+        {
+            _fullBuild = IsFullBuild();
+            _nextFullCheck = now + FullBuildRecheckSeconds;
+        }
+        bool skip = coop && (mode == LevelUpPauseMode.Never || mode == LevelUpPauseMode.Overlay
+            || (mode == LevelUpPauseMode.NotWhenFullBuild && _fullBuild));
+        overlay = skip && mode != LevelUpPauseMode.Never;
+        return skip;
     }
 
     /// <summary>Called every frame from the TimeUtil.SetTime postfix. True when this frame's level-up popup must
-    /// NOT stop the time.</summary>
-    internal static bool SkipPause(bool popupOpen)
+    /// NOT stop the time; <paramref name="overlay"/> = it shows as the compact overlay.</summary>
+    internal static bool SkipPause(bool popupOpen, out bool overlay)
     {
+        overlay = false;
         float now = Time.realtimeSinceStartup;
         if (!popupOpen)
         {
@@ -60,14 +85,9 @@ public static class LevelUpPolicy
             return false;
         }
 
-        bool coop = NetworkManager.HasPeer && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.RemoteInRun;
+        if (!_open) _nextFullCheck = float.NegativeInfinity; // fresh popup: re-read the build now
+        bool skip = Decide(out overlay, out bool coop);
         var mode = Mode.Value;
-        if (!_open || now >= _nextFullCheck)
-        {
-            _fullBuild = mode == LevelUpPauseMode.NotWhenFullBuild && IsFullBuild();
-            _nextFullCheck = now + FullBuildRecheckSeconds;
-        }
-        bool skip = coop && (mode == LevelUpPauseMode.Never || (mode == LevelUpPauseMode.NotWhenFullBuild && _fullBuild));
 
         if (!_open)
         {
@@ -75,21 +95,25 @@ public static class LevelUpPolicy
             _openedAt = now;
             _queueAtOpen = QueueCount();
             _skip = skip;
+            _overlay = overlay;
             _coop = coop;
             if (NetworkManager.Role != NetRole.None)
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][levelup] Popup opened: mode={mode} fullBuild={_fullBuild} " +
-                    $"coop={coop} -> {(skip ? "NO PAUSE" : "pause")} (queued={_queueAtOpen}, level={LocalLevel()}).");
+                    $"coop={coop} -> {Describe(skip, overlay)} (queued={_queueAtOpen}, level={LocalLevel()}).");
         }
-        else if (skip != _skip || coop != _coop)
+        else if (skip != _skip || overlay != _overlay || coop != _coop)
         {
             // E.g. the last slot got filled while more choices were queued, or the partner left / joined the run.
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][levelup] Policy changed with the popup open: fullBuild={_fullBuild} " +
-                $"coop={coop} -> {(skip ? "NO PAUSE" : "pause")}.");
+                $"coop={coop} -> {Describe(skip, overlay)}.");
             _skip = skip;
+            _overlay = overlay;
             _coop = coop;
         }
         return skip;
     }
+
+    private static string Describe(bool skip, bool overlay) => !skip ? "pause" : overlay ? "NO PAUSE (overlay)" : "NO PAUSE (full panel)";
 
     private static void OnClosed(float now)
     {
@@ -99,7 +123,7 @@ public static class LevelUpPolicy
         if (_skip) { _popupsNoPause++; _secondsNoPause += secs; }
         else _secondsPaused += secs;
         if (NetworkManager.Role == NetRole.None) return;
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][levelup] Popup closed after {secs:F1} s ({(_skip ? "no pause" : "paused")}, " +
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][levelup] Popup closed after {secs:F1} s ({(_skip ? (_overlay ? "overlay" : "no pause") : "paused")}, " +
             $"queued at open={_queueAtOpen}, level={LocalLevel()}). Run so far: {_popups} popups, " +
             $"{_popups - _popupsNoPause} paused ({_secondsPaused:F0} s), {_popupsNoPause} without pause ({_secondsNoPause:F0} s).");
     }

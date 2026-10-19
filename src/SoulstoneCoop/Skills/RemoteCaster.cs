@@ -104,6 +104,125 @@ public static class RemoteCaster
         {
             Plugin.StaticLog.LogError($"[SoulstoneCoop][casts] RemoteCaster.Tick: {ex}");
         }
+        RunProbes();
+    }
+
+    // ---------------- 0.8.1 diagnostics: replica visuals and the ghost's cast animation ----------------
+
+    private sealed class Probe
+    {
+        public float At;
+        public Copy? Copy;
+        public Vector3 Source;
+        public bool HasSource;
+        public Animator? Anim;
+        public string AnimName = "";
+        public int Hash, Layer;
+    }
+
+    private const int ProbesPerKey = 3;
+    private const float ProbeDelay = 0.25f;
+    private static readonly List<Probe> Probes = new();
+    private static readonly Dictionary<string, int> ProbeCounts = new();
+
+    /// <summary>The first casts of each key are checked 0.25 s later: what the replica put in the world.</summary>
+    private static void QueueVisualProbe(Copy c, CastMessage m)
+    {
+        ProbeCounts.TryGetValue(c.Key, out int n);
+        if (n >= ProbesPerKey) return;
+        ProbeCounts[c.Key] = n + 1;
+        Probes.Add(new Probe { At = Time.unscaledTime + ProbeDelay, Copy = c, Source = m.Source, HasSource = m.Has(CastMessage.FSource) });
+    }
+
+    private static void QueueAnimProbe(Animator anim, string name, int hash, int layer)
+    {
+        string k = "anim:" + name;
+        ProbeCounts.TryGetValue(k, out int n);
+        if (n >= ProbesPerKey) return;
+        ProbeCounts[k] = n + 1;
+        Probes.Add(new Probe { At = Time.unscaledTime + ProbeDelay, Anim = anim, AnimName = name, Hash = hash, Layer = layer });
+    }
+
+    private static void RunProbes()
+    {
+        if (Probes.Count == 0) return;
+        float now = Time.unscaledTime;
+        for (int i = Probes.Count - 1; i >= 0; i--)
+        {
+            var p = Probes[i];
+            if (p.At > now) continue;
+            Probes.RemoveAt(i);
+            try
+            {
+                if (p.Copy != null) ProbeVisuals(p);
+                else if (p.Anim != null) ProbeAnim(p);
+            }
+            catch (Exception ex)
+            {
+                Plugin.StaticLog.LogWarning($"[SoulstoneCoop][casts] Probe: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>Projectiles and areas whose Skill (SkillProjectile+0x88, SkillAreaEffect+0x48) is the copy: how many,
+    /// where, active, renderers on, and whether the camera draws their layer. Plus where the caster and the ghost are.</summary>
+    private static void ProbeVisuals(Probe p)
+    {
+        var c = p.Copy!;
+        var ghost = GameState.RemoteGhostObject;
+        Vector3 ghostPos = ghost != null ? ghost.transform.position : Vector3.zero;
+        var cam = Camera.main;
+        int projectiles = 0, areas = 0, rendOn = 0, rendTotal = 0;
+        Vector3? first = null;
+        int firstLayer = -1;
+
+        void Count(GameObject go)
+        {
+            first ??= go.transform.position;
+            if (firstLayer < 0) firstLayer = go.layer;
+            foreach (var r in go.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r == null) continue;
+                rendTotal++;
+                if (r.enabled && r.gameObject.activeInHierarchy) rendOn++;
+            }
+        }
+
+        foreach (var sp in UnityEngine.Object.FindObjectsOfType<SkillProjectile>())
+        {
+            if (sp == null || sp.Skill == null || sp.Skill.Pointer != c.Ptr) continue;
+            projectiles++;
+            Count(sp.gameObject);
+        }
+        foreach (var ae in UnityEngine.Object.FindObjectsOfType<SkillAreaEffect>())
+        {
+            if (ae == null || ae.Skill == null || ae.Skill.Pointer != c.Ptr) continue;
+            areas++;
+            Count(ae.gameObject);
+        }
+        string layerInfo = firstLayer < 0 ? "-" :
+            $"{LayerMask.LayerToName(firstLayer)}({firstLayer}) drawn={(cam != null && (cam.cullingMask & (1 << firstLayer)) != 0)}";
+        string firstInfo = first.HasValue ? $"{first.Value} ({Vector3.Distance(first.Value, ghostPos):0.0} m from the ghost)" : "-";
+        float casterGap = _caster != null ? Vector3.Distance(_caster.transform.position, ghostPos) : -1f;
+        Plugin.StaticLog.LogInfo(
+            $"[SoulstoneCoop][casts] Probe '{c.Key}': projectiles={projectiles} areas={areas} first={firstInfo} renderers={rendOn}/{rendTotal} " +
+            $"layer={layerInfo} copyActive={(c.Skill != null && c.Skill.gameObject.activeInHierarchy)} casterToGhost={casterGap:0.0} m " +
+            $"source={(p.HasSource ? p.Source.ToString() : "none")}.");
+    }
+
+    /// <summary>Is the animator in (or going to) the state the CrossFade asked for, and does its layer have weight.</summary>
+    private static void ProbeAnim(Probe p)
+    {
+        var a = p.Anim!;
+        if (a == null || !a.isActiveAndEnabled) { Plugin.StaticLog.LogInfo($"[SoulstoneCoop][casts] Anim probe '{p.AnimName}': animator gone/inactive."); return; }
+        var cur = a.GetCurrentAnimatorStateInfo(p.Layer);
+        var next = a.GetNextAnimatorStateInfo(p.Layer);
+        bool inState = cur.shortNameHash == p.Hash || cur.fullPathHash == p.Hash;
+        bool going = next.shortNameHash == p.Hash || next.fullPathHash == p.Hash;
+        Plugin.StaticLog.LogInfo(
+            $"[SoulstoneCoop][casts] Anim probe '{p.AnimName}' on '{a.gameObject.name}' layer {p.Layer} (weight {a.GetLayerWeight(p.Layer):0.##}): " +
+            $"inState={inState} transitioning={going} normalizedTime={cur.normalizedTime:0.00} speed={a.speed:0.##} " +
+            $"controller='{(a.runtimeAnimatorController != null ? a.runtimeAnimatorController.name : "NONE")}'.");
     }
 
     // ---------------- the caster entity ----------------
@@ -213,6 +332,8 @@ public static class RemoteCaster
         FailedKeys.Clear();
         Channeling.Clear();
         MissingStateLogged.Clear();
+        Probes.Clear();
+        ProbeCounts.Clear();
         _ghostAnimators = null;
         _animGhostPtr = IntPtr.Zero;
     }
@@ -381,6 +502,14 @@ public static class RemoteCaster
         try
         {
             var tr = _caster.transform;
+            // 0.8.1: right on the ghost at cast time, transform included. Tick only moves it through
+            // ModifiedCharacter.SetPosition, which may reach the transform a step later, and skills without a
+            // source override start from the caster.
+            if (RemoteProxy.TryGetRemotePosition(out var ghostPos, out _))
+            {
+                if (_casterCharacter != null) _casterCharacter.SetPosition(ghostPos);
+                tr.position = ghostPos;
+            }
             tr.rotation = Quaternion.Euler(0f, m.Yaw, 0f); // front-of-caster skills aim with the caster's forward
             ApplyFidelity(c, m);
 
@@ -414,6 +543,7 @@ public static class RemoteCaster
             // those arrive as their own cast messages from the other side.
             bool ok = _caster._skillCaster.CastSkill(c.Skill, p, SkillActivationOptions.IgnoreAll);
             if (!ok) return PlayResult.Rejected;
+            QueueVisualProbe(c, m);
             if (template == null) PlayGhostAnimation(c.Skill); // a God cast is not the ghost's own
             return PlayResult.Played;
         }
@@ -514,6 +644,7 @@ public static class RemoteCaster
                 if (!anim.HasState(layer, hash)) continue;
                 anim.CrossFade(trait.AnimationName, trait.Fade, layer);
                 played = true;
+                QueueAnimProbe(anim, trait.AnimationName, hash, layer);
             }
             if (played) { GhostAnimPlayed++; return; }
             GhostAnimMissing++;

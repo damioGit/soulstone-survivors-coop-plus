@@ -34,6 +34,9 @@ public enum PacketType : byte
     RunStartRefused = 33, // client -> host: could not follow RunStart, with the reason (phase 6) (ReliableOrdered)
     // 50-59: phase 5
     PartnerHealth = 50, // either way: sender's hp f32 | maxHp f32 | flags u8 (1 down, 2 dead), on change at <= 5 Hz + every 1 s (ReliableOrdered)
+    SummonSpawn = 51,   // either way: one of the sender's summons/companions/panther, to show as a visual-only clone (ReliableOrdered, refreshed every 3 s)
+    SummonDespawn = 52, // either way: that summon is gone (ReliableOrdered)
+    SummonStates = 53,  // either way: positions/yaw of the sender's live summons, ~12 Hz (Sequenced)
     // 70-79: small pending items (docs/pendencias-notas.md)
     GodCast = 70,      // host -> client: the God-Entity cast a meteor, replayed visual-only on the RemoteCaster (ReliableUnordered)
     ProxyStatus = 71,  // host -> client: a status/stun applied to the client's proxy, replayed on the local player (ReliableUnordered)
@@ -137,6 +140,15 @@ public static class PacketRouter
                 break;
             case PacketType.PortalRequest:
                 Lobby.PortalSync.OnPortalRequest(reader);
+                break;
+            case PacketType.SummonSpawn:
+                Summons.SummonSync.OnSpawn(reader);
+                break;
+            case PacketType.SummonDespawn:
+                Summons.SummonSync.OnDespawn(reader);
+                break;
+            case PacketType.SummonStates:
+                Summons.SummonSync.OnStates(reader);
                 break;
             case PacketType.PartnerHealth:
                 Life.PartnerHealth.OnPacket(reader);

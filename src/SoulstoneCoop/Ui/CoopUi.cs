@@ -308,6 +308,7 @@ public static class CoopUi
                 ? $"{CoopSession.PartnerName} escolhendo upgrade..."
                 : $"{CoopSession.PartnerName} pausou o jogo";
         else if (PauseSync.RemoteChoosing) text = $"{CoopSession.PartnerName} escolhendo upgrade (sem pausa)";
+        else if (LevelUpOverlay.BannerText != null) text = LevelUpOverlay.BannerText;
         else text = CoopSession.ActiveNotice;
 
         bool show = text != null;

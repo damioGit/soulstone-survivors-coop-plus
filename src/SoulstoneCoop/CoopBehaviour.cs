@@ -53,6 +53,7 @@ public class CoopBehaviour : MonoBehaviour
             Skills.RemoteCaster.EnsureHooked();
             Life.CoopLife.EnsureHooked();
             Life.PartnerHealth.EnsureHooked();
+            Summons.SummonSync.EnsureHooked();
         }
 
         try { Steam.SteamLobby.EnsureInit(); }
@@ -137,6 +138,7 @@ public class CoopBehaviour : MonoBehaviour
             PlayerSync.Tick(Time.unscaledDeltaTime);
             GhostOverhead.Tick(Time.unscaledDeltaTime);
             Life.PartnerHealth.Tick(Time.unscaledDeltaTime);
+            Summons.SummonSync.Tick(Time.unscaledDeltaTime);
             ClientSpawnBlock.Tick(Time.unscaledDeltaTime);
             WorldTelemetry.Tick(Time.unscaledDeltaTime);
             Enemies.HostEnemySync.Tick(Time.unscaledDeltaTime);

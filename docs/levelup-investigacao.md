@@ -11,8 +11,8 @@ Notação: `Classe.Metodo (RVA)`, `Classe.Campo (offset)`. Tudo lido no dump e n
 - `GameplayUIManager.UpdateAll` (0x605D20) chama `LevelUpPanelManager.OnUpdate(wasPausedLastFrame, isPaused, endGamePanelActive)` (0x60A7B0) a cada frame, quando não há outro painel por cima (crusade, tutorial, aviso de visibilidade). `isPaused` = `PausePanelManager` +0x88, o menu do Esc.
 - `LevelUpPanelManager.OnUpdate`:
   - Com a fila cheia e o popup fechado, abre `OpenPopup` (0x60E680) sozinho se `GamePreferences.AutoLevelUpEnabled` (+0x12) estiver ligado. Com ele desligado, só abre quando o jogador aperta a ação de level-up. **Até lá os pontos se acumulam (contador `SkillPointsLabel`) e o jogo NÃO pausa.** Isso já existe no jogo puro.
-  - **`TimeUtil.LevelUpTime = (PowerUpAnimation.TargetVisibility > 0) ? 0 : 1`**, escrito a cada frame. Ou seja, fica em 0 do instante em que o popup começa a abrir até ele começar a fechar.
-  - Quando a animação do popup chega a 1 (totalmente visível), chama `InputManager.SwitchToUIMap` (0x4542F0: liga o mapa UI e desliga os mapas de gameplay +0x40 e +0x50). Abaixo de 1, volta com `SwitchToGameplayMap` (0x4541F0).
+  - **`TimeUtil.LevelUpTime = (PowerUpAnimation.CurrentTime > 0) ? 0 : 1`** (`UIDeltaTimeAnimationGroup` +0x38), escrito a cada frame. Ou seja, fica em 0 enquanto qualquer parte do popup está visível, inclusive o fade de fechar. Na primeira versão desta nota estava `TargetVisibility`; corrigido na 0.8.1.
+  - Com `PowerUpAnimation.TargetVisibility` (+0x30) em 1 (popup aberto ou abrindo), chama `InputManager.SwitchToUIMap` (0x4542F0: liga o mapa UI e desliga os mapas de gameplay +0x40 e +0x50), se o mapa UI estiver desligado. Abaixo de 1, volta com `SwitchToGameplayMap` (0x4541F0), **só se o mapa de gameplay estiver desligado**.
   - Com `endGamePanelActive`, limpa a fila, fecha tudo e põe `LevelUpTime = 1`.
   - Tempo mínimo antes de aceitar clique: `MinTimeToSelectOption` contra `TimeOptionsWereSetUp` (+0x148), que é `Time.realtimeSinceStartup`. Não depende do `timeScale`.
 - `SetupPopup(ignoreSkills, reroll, isSkip)` (0x60EDF0) sorteia as opções em `MatchPowerUpData`:
@@ -61,3 +61,14 @@ Notação: `Classe.Metodo (RVA)`, `Classe.Campo (offset)`. Tudo lido no dump e n
 - Novo estado de rede `PauseReason.Choosing = 3` no `PauseState` (pacote 6, sem pacote novo). O parceiro não congela e mostra "X escolhendo upgrade (sem pausa)".
 - Telemetria `[levelup]`: abertura e fechamento do popup com a política, a build completa, se pausou e a duração.
 - Atalho de debug F6 (+1 nível no jogador local, Shift+F6 = +5) para chegar rápido na build completa.
+
+## 6. Overlay jogável (0.8.1)
+
+Feedback da 0.8.0: sem pausa, mas com o painel em tela cheia e o personagem parado, não dá pra jogar. O que o descompilado mostra para fazer um painel compacto em que dá pra andar:
+
+- **Movimento:** `PlayerCharacter.UpdateAll` (0x7A9650) lê `InputManager.GetMovementValue` e, no modo clique-pra-andar, `MouseClickMovement.IsPressed` (`GamePreferences` +0x39). A mira lê a posição do mouse direto do dispositivo. Nada disso olha o painel de level-up nem o `HasOverlayPanel`: o personagem só para porque o `SwitchToUIMap` desliga o mapa de gameplay. Basta religar o mapa.
+- **Teclas do próprio jogo no popup** (mapa UI, `InputManager`): `SelectPowerup1..7` (+0x280..+0x2B0) marcam `LevelUpPanelItem.Selected` (+0x104), ou `LevelUpPanelReplaceableSkillItem.Selected` (+0x50) na troca de skill, e o `OnUpdate` processa no mesmo frame, respeitando o tempo mínimo (`GamePreferences` +0x40, contra `TimeOptionsWereSetUp`). Também existem `RerollKey`, `BanishKey`, `LockSkillKey`, `SkipKey` e `FilterKey`, além de `NavigationAction` e `SubmitAction` (as que batem com WASD e dash).
+- **Conflito de teclas:** dá pra comparar as teclas das ações em tempo de execução (`InputAction.controls[i].path`, um `ReadOnlyArray` que o interop expõe com `Count` e indexador) e desligar só as ações que batem (`InputAction.Disable`).
+- **HUD:** `GameplayUIManager.HasOverlayPanel` (0x605150) = fim de jogo visível, pausa (`PausePanelManager.IsPaused`), `LevelUpPanel.PowerUpAnimation.TargetVisibility > 0`, seleção do Crusade ou dica do tutorial. Os 23 chamadores são todos painéis do HUD (vida, fúria, mana, os painéis de cada personagem), que se escondem com isso.
+- **Animações do painel:** `UIDeltaTimeAnimationGroup.UpdateAnimation` (0x776A00) só chama `SetTime` nas `UIAnimation` quando o tempo muda. Com o popup aberto, nada é escrito a cada frame, então escala, posição e alpha postos pelo mod ficam.
+- **Minimizar:** `ForceClosePopUp` (0x609FF0) **apaga a fila**, então não serve. Minimizar é só visual (alpha 0, sem raycast, teclas de opção desligadas).

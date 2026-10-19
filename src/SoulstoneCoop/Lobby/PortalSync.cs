@@ -403,6 +403,7 @@ public static class PortalSync
         Enemies.ClientPuppets.OnLocalSceneGone();
         Enemies.EnemyCasts.ClearMatchCaches();
         Enemies.ObjectiveSync.ResetForNewScene();
+        Summons.SummonSync.OnLocalSceneGone();
     }
 }
 

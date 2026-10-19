@@ -67,7 +67,7 @@ The full list and design notes are in [`docs/roadmap.md`](docs/roadmap.md).
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `[Coop] LevelUpPause` | `NotWhenFullBuild` | `Always` pauses the session on every level-up; `Never` never does |
+| `[Coop] LevelUpPause` | `Overlay` | `Overlay`: compact see-through panel, you keep playing (1-4 pick, Tab hides); `NotWhenFullBuild`: pause until the build is full; `Always`: always pause; `Never`: full-screen panel without pause |
 | `[Coop] EndRunWhenHostLeaves` | `true` | End the guest's run when the host disconnects |
 | `[Coop] AllowRejoin` | `false` | Experimental: let the guest rejoin a run in progress (as a fresh character) |
 | `[Coop] SenderClock` | `false` | Experimental: smoother remote movement on jittery connections |
