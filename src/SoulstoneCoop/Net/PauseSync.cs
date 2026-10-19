@@ -63,7 +63,7 @@ public static class PauseSync
     internal static void OnLocalTimeComputed()
     {
         bool levelUpPopup = TimeUtil.LevelUpTime < 0.001f;
-        bool noPause = LevelUpPolicy.SkipPause(levelUpPopup);
+        bool noPause = LevelUpPolicy.SkipPause(levelUpPopup, out bool overlay);
         if (noPause)
         {
             // TimeUtil.SetTime's product (0x729F60) minus LevelUpTime: Esc, death guard, slow motion etc. still apply.
@@ -72,7 +72,7 @@ public static class PauseSync
         }
         LocalReason = levelUpPopup && !noPause ? PauseReason.LevelUp
                     : TimeUtil.PauseTime < 0.001f ? PauseReason.Pause
-                    : levelUpPopup ? PauseReason.Choosing
+                    : levelUpPopup && !overlay ? PauseReason.Choosing // the overlay plays on: no banner for the partner
                     : PauseReason.None;
         LevelUpPolicy.DebugHotkey();
 
