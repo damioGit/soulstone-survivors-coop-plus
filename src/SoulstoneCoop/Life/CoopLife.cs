@@ -690,7 +690,7 @@ public static class CoopLife
             {
                 _hostLostWaitingLogged = true;
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] Host lost: waiting for the local {PauseSync.LocalReason} screen to close before ending.");
-                Lobby.CoopSession.Notice(PauseSync.LocalReason == PauseReason.LevelUp
+                Lobby.CoopSession.Notice(PauseSync.LocalReason is PauseReason.LevelUp or PauseReason.Choosing
                     ? "O host desconectou. Escolha o upgrade pra encerrar a partida."
                     : "O host desconectou. Feche a pausa (ou desista) pra encerrar.", 10f);
             }
