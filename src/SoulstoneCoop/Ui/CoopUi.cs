@@ -298,6 +298,7 @@ public static class CoopUi
             text = PauseSync.RemoteReason == PauseReason.LevelUp
                 ? $"{CoopSession.PartnerName} escolhendo upgrade..."
                 : $"{CoopSession.PartnerName} pausou o jogo";
+        else if (PauseSync.RemoteChoosing) text = $"{CoopSession.PartnerName} escolhendo upgrade (sem pausa)";
         else text = CoopSession.ActiveNotice;
 
         bool show = text != null;

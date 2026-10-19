@@ -10,6 +10,8 @@ public enum PauseReason : byte
     None = 0,
     Pause = 1,
     LevelUp = 2,
+    /// <summary>Level-up popup open WITHOUT stopping the time ([Coop] LevelUpPause): shown, never freezes the partner.</summary>
+    Choosing = 3,
 }
 
 /// <summary>
@@ -17,6 +19,7 @@ public enum PauseReason : byte
 /// TimeUtil.SetTime runs every frame and sets Time.timeScale to the product of the game's pause
 /// factors; our postfix reads the LOCAL state from those factors (before the remote state is applied,
 /// so the two sides can't latch each other paused) and then forces timeScale to 0 while the remote is paused.
+/// In co-op the level-up popup may skip the pause (LevelUpPolicy, [Coop] LevelUpPause): it is then sent as Choosing.
 /// </summary>
 public static class PauseSync
 {
@@ -25,7 +28,11 @@ public static class PauseSync
     /// <summary>The partner paused (or is choosing an upgrade) inside a run next to ours. Only counts while both are in
     /// a run: a state latched from the end screen must not freeze the next run or the menu (phase 6).</summary>
     public static bool RemotePaused =>
-        RemoteReason != PauseReason.None && NetworkManager.HasPeer
+        RemoteReason != PauseReason.None && RemoteReason != PauseReason.Choosing && NetworkManager.HasPeer
+        && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.RemoteInRun;
+    /// <summary>The partner is choosing an upgrade with the game running: no freeze, just the banner.</summary>
+    public static bool RemoteChoosing =>
+        RemoteReason == PauseReason.Choosing && NetworkManager.HasPeer
         && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.RemoteInRun;
 
     /// <summary>A new run is starting: forget the partner's old state and resend ours.</summary>
@@ -33,6 +40,7 @@ public static class PauseSync
     {
         RemoteReason = PauseReason.None;
         _sentOnce = false;
+        LevelUpPolicy.ResetForRun();
     }
 
     private static bool _sentOnce;
@@ -54,9 +62,19 @@ public static class PauseSync
 
     internal static void OnLocalTimeComputed()
     {
-        LocalReason = TimeUtil.LevelUpTime < 0.001f ? PauseReason.LevelUp
+        bool levelUpPopup = TimeUtil.LevelUpTime < 0.001f;
+        bool noPause = LevelUpPolicy.SkipPause(levelUpPopup);
+        if (noPause)
+        {
+            // TimeUtil.SetTime's product (0x729F60) minus LevelUpTime: Esc, death guard, slow motion etc. still apply.
+            Time.timeScale = TimeUtil.PauseTime * TimeUtil.DeathGuardTime * TimeUtil.SlowMotionTime
+                * TimeUtil.ControllerDisconnectedTime * TimeUtil.CreditsTime * TimeUtil.PlayerDataTime;
+        }
+        LocalReason = levelUpPopup && !noPause ? PauseReason.LevelUp
                     : TimeUtil.PauseTime < 0.001f ? PauseReason.Pause
+                    : levelUpPopup ? PauseReason.Choosing
                     : PauseReason.None;
+        LevelUpPolicy.DebugHotkey();
 
         if (NetworkManager.HasPeer && (!_sentOnce || LocalReason != _lastSent))
         {
