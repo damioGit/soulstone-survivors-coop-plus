@@ -145,7 +145,7 @@ public static class PauseSync
         if (NetworkManager.Role == NetRole.Host)
         {
             // The host closed its own pause menu: whoever else was pausing is lifted too (until it pauses again).
-            if (previous == PauseReason.Pause && LocalReason != PauseReason.Pause) LiftOthers("host closed its pause menu");
+            if (previous == PauseReason.Pause && LocalReason != PauseReason.Pause) LiftOthers("host closed its pause menu", includeLevelUp: false);
             HostUnpauseHotkey();
         }
 
@@ -163,11 +163,12 @@ public static class PauseSync
         _prevF4 = f4;
     }
 
-    private static void LiftOthers(string why)
+    /// <param name="includeLevelUp">F4 lifts a pausing level-up too; closing the host's own menu only lifts Esc pauses.</param>
+    private static void LiftOthers(string why, bool includeLevelUp = true)
     {
         int mask = _overrideMask;
         foreach (var s in Players.Others)
-            if (Reasons[s] == PauseReason.Pause || Reasons[s] == PauseReason.LevelUp) mask |= 1 << s;
+            if (Reasons[s] == PauseReason.Pause || (includeLevelUp && Reasons[s] == PauseReason.LevelUp)) mask |= 1 << s;
         if (mask == _overrideMask) return;
         _overrideMask = mask;
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][pause] Host lifted the others' pause ({why}): mask={mask:X2}.");

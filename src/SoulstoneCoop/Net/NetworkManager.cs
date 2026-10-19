@@ -174,13 +174,15 @@ public static class NetworkManager
         try { t.Stop(); }
         catch (System.Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop] Transport stop failed: {ex.Message}"); }
         Transport = null;
-        Role = NetRole.None;
+        // The role stays what it was while the modules clean up: the host-side ones (proxies, their loot team swap)
+        // only act when CoopRole.IsHostSide, and a host leaving mid-run must still recycle every proxy.
         if (hadPeers.Count > 0)
         {
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop] Stopped with {hadPeers.Count} peer(s) connected - running disconnect cleanup.");
             foreach (var s in hadPeers) RaiseDisconnected(s, role);
         }
         Players.ClearAll();
+        Role = NetRole.None;
     }
 
     // ---------------- connection events ----------------

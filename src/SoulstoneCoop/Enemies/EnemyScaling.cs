@@ -79,7 +79,7 @@ public static class EnemyScaling
                 if (!a.HasRegular || regular.MaxTargetEnemiesAlive != a.WroteMax) a.BaseMax = regular.MaxTargetEnemiesAlive;
                 if (!a.HasRegular || Math.Abs(regular.TargetEnemiesAliveDifficultyFactor - a.WroteFactor) > 0.0001f) a.BaseFactor = regular.TargetEnemiesAliveDifficultyFactor;
                 a.HasRegular = true;
-                int max = Math.Min(MaxAlive, (int)Math.Round(a.BaseMax * mult));
+                int max = Math.Max(a.BaseMax, Math.Min(MaxAlive, (int)Math.Round(a.BaseMax * mult))); // never below the game's own
                 float factor = a.BaseFactor * mult;
                 if (regular.MaxTargetEnemiesAlive != max) regular.MaxTargetEnemiesAlive = max;
                 if (Math.Abs(regular.TargetEnemiesAliveDifficultyFactor - factor) > 0.0001f) regular.TargetEnemiesAliveDifficultyFactor = factor;
@@ -93,7 +93,7 @@ public static class EnemyScaling
             {
                 if (!a.HasQueue || queue.AliveUnitLimit != a.WroteLimit) a.BaseLimit = queue.AliveUnitLimit;
                 a.HasQueue = true;
-                int limit = Math.Min(MaxAlive, (int)Math.Round(a.BaseLimit * mult));
+                int limit = Math.Max(a.BaseLimit, Math.Min(MaxAlive, (int)Math.Round(a.BaseLimit * mult)));
                 if (queue.AliveUnitLimit != limit) queue.AliveUnitLimit = limit;
                 a.WroteLimit = limit;
                 parts.Add($"AliveUnitLimit {a.BaseLimit}->{limit}");
