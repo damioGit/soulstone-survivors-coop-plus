@@ -213,17 +213,22 @@ public static class EnemyCasts
         return summon;
     }
 
+    /// <summary>The scene's game manager is gone (also called from GameManagerUtil.UnsetGameManager: a portal's direct
+    /// scene change may never show the tick a frame without one).</summary>
+    internal static void ClearMatchCaches()
+    {
+        SkillsByPuppet.Clear();
+        SummonSkill.Clear();
+        LastSent.Clear();
+    }
+
     public static void Tick(float unscaledDeltaTime)
     {
         if (NetworkManager.Role == NetRole.None) return;
         GodCasts.Tick(unscaledDeltaTime); // own try/catch
         ProxyStatusForward.Tick(unscaledDeltaTime); // own try/catch
         if (!GameManagerUtil.HasGameManager && (SkillsByPuppet.Count > 0 || LastSent.Count > 0))
-        {
-            SkillsByPuppet.Clear();
-            SummonSkill.Clear();
-            LastSent.Clear();
-        }
+            ClearMatchCaches();
         _telemetryTimer += unscaledDeltaTime;
         if (_telemetryTimer < TelemetryInterval) return;
         _telemetryTimer = 0f;

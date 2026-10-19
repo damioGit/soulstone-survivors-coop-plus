@@ -92,6 +92,16 @@ public static class ObjectiveSync
 
     // ---------------- host ----------------
 
+    /// <summary>A scene change inside the run (Endless/BossRush portal, Restart; Lobby.PortalSync): the next stage
+    /// builds its own objectives, so forget the old ones (otherwise the catch-up below would fire on stale data).</summary>
+    internal static void ResetForNewScene()
+    {
+        _hasRecv = false;
+        _lastRecv = default;
+        _missingSince = -1f;
+        _hasLastSent = false;
+    }
+
     private static void HostTick(float dt)
     {
         if (!NetworkManager.HasPeer || !GameManagerUtil.HasGameManager) { _hasLastSent = false; return; }
@@ -154,6 +164,8 @@ public static class ObjectiveSync
             ProgStarting = r.GetInt(), ProgTotal = r.GetInt(),
         };
         if (!CoopRole.IsClientSide) return;
+        // Portal/Restart (Lobby.PortalSync): what the host sends from its old scene must not reach our next one.
+        if (!Lobby.CoopSession.RemoteInRun || Lobby.CoopSession.StageTransition) return;
         _recv++;
         _lastRecv = s;
         _hasRecv = true;

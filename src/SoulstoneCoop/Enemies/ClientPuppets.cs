@@ -148,6 +148,20 @@ public static class ClientPuppets
         Unresolved.Clear();
     }
 
+    /// <summary>The local scene's game manager was just destroyed (GameManagerUtil.UnsetGameManager). A direct
+    /// scene-to-scene change (Endless/BossRush portal, Restart) may never give the tick a frame without one, so
+    /// spawns arriving from now on wait for the next StartMatch here too.</summary>
+    internal static void OnLocalSceneGone() => _matchStarted = false;
+
+    /// <summary>Client: the host's old scene is gone (Lobby.PortalSync). Everything it sent from that scene is
+    /// stale. If our next match is already up, puppets from the host's new scene can be created right away.</summary>
+    internal static void DropStaleFromHostScene(bool newMatchUp)
+    {
+        DespawnAll("host left its scene");
+        Unresolved.Clear();
+        if (!newMatchUp) _matchStarted = false;
+    }
+
     /// <summary>Phase 8: the host's snapshot clock on ours ([Coop] SenderClock).</summary>
     private static readonly RemoteClock SnapshotClock = new();
 

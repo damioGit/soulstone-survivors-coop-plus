@@ -295,6 +295,16 @@ public static class LootSync
     private static bool Ready() =>
         GameManagerUtil.HasGameManager && Enemies.ClientPuppets.MatchStarted && GameState.LocalPlayerEntity != null;
 
+    /// <summary>Client: the host's old scene is gone (Lobby.PortalSync, Endless/BossRush portal or Restart): loot
+    /// still waiting from it would be replayed in the next scene.</summary>
+    internal static void DropPendingFromOldScene()
+    {
+        if (Pending.Count == 0) return;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][loot] Dropping {Pending.Count} pending loot replays from the host's old scene.");
+        _dropped += Pending.Count;
+        Pending.Clear();
+    }
+
     public static void Tick(float unscaledDeltaTime)
     {
         if (CoopRole.IsClientSide && Pending.Count > 0)

@@ -37,6 +37,9 @@ public enum PacketType : byte
     // 70-79: small pending items (docs/pendencias-notas.md)
     GodCast = 70,      // host -> client: the God-Entity cast a meteor, replayed visual-only on the RemoteCaster (ReliableUnordered)
     ProxyStatus = 71,  // host -> client: a status/stun applied to the client's proxy, replayed on the local player (ReliableUnordered)
+    // 90-99: portals (docs/portais-notas.md)
+    PortalTransition = 90, // host -> client: the host took the Endless/BossRush portal (with the map it drew) or restarted: follow it (ReliableOrdered)
+    PortalRequest = 91,    // client -> host: the client walked into the Endless/BossRush portal; the host decides (ReliableOrdered)
 }
 
 public static class PacketRouter
@@ -128,6 +131,12 @@ public static class PacketRouter
                 break;
             case PacketType.RunStartRefused:
                 Lobby.RunSync.OnRunStartRefused(reader);
+                break;
+            case PacketType.PortalTransition:
+                Lobby.PortalSync.OnPortalTransition(reader);
+                break;
+            case PacketType.PortalRequest:
+                Lobby.PortalSync.OnPortalRequest(reader);
                 break;
             case PacketType.PartnerHealth:
                 Life.PartnerHealth.OnPacket(reader);

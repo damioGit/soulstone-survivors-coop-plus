@@ -116,7 +116,7 @@ public sealed unsafe class SteamTransport : ITransport
                 w.Put(NowMs());
                 Out(_peer, w.Data, w.Length, SteamNative.SendUnreliableNoNagle, ChannelMain);
             }
-            bool loading = Lobby.CoopSession.LocalLoading || Lobby.CoopSession.RemotePlace == Lobby.LobbyPlace.Loading;
+            bool loading = Lobby.CoopSession.LocalLoading || Lobby.CoopSession.RemoteChangingScene;
             if (Time.unscaledTime - _lastHeard > (loading ? LoadingSilenceTimeout : SilenceTimeout))
             {
                 PeerGone("Conexão perdida (tempo esgotado)");

@@ -498,6 +498,18 @@ public static class CoopLife
         finally { FromNetwork = false; }
     }
 
+    /// <summary>The local match is up (StartMatch seen, player alive in the registry or downed).</summary>
+    internal static bool InMatchNow => InMatch;
+
+    /// <summary>Endless/BossRush portal about to be taken (Lobby.PortalSync), before the game's own portal code (which
+    /// stops the player): whoever is down gets up first, as for the Home portal, and nobody goes down again in the
+    /// old scene's last seconds. Reset at the next StartMatch.</summary>
+    internal static void PrepareForStageTransition()
+    {
+        ReviveLocal("portal");
+        RunEnding = true;
+    }
+
     /// <summary>Client: complete the boss objective; the game's own UpdateAll then runs its victory branch.</summary>
     private static void ForceLocalVictory()
     {
@@ -506,11 +518,23 @@ public static class CoopLife
         var obj = sgm != null ? sgm.MainObjective : null;
         if (obj == null)
         {
+            if (sgm == null && CompleteBossRoomProgress(data)) return;
             Plugin.StaticLog.LogWarning("[SoulstoneCoop][life] Victory: no MainObjective on this side.");
             return;
         }
         obj.Current = obj.Total;
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] Victory: MainObjective {obj.Current}/{obj.Total}.");
+    }
+
+    /// <summary>The BossRush map (SurvivorsBossRoomGameManager, no SurvivorsGameManager): its UpdateAll wins when
+    /// GameManagerUtil.GetMapProgress() = (Completed + Current) / Total reaches 1. See docs/portais-notas.md.</summary>
+    private static bool CompleteBossRoomProgress(GameData? data)
+    {
+        var prog = data != null ? data.Progression : null;
+        if (prog == null || prog.TotalObjectiveProgression <= 0f) return false;
+        prog.CompletedObjectiveProgression = prog.TotalObjectiveProgression;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] Victory (BossRush room): progression {prog.CompletedObjectiveProgression}/{prog.TotalObjectiveProgression}.");
+        return true;
     }
 
     private static void TryEnterPortalLocally()
@@ -527,9 +551,8 @@ public static class CoopLife
         }
         _pendingPortalTimer = 0f;
         if (obj.Completed) return;
-        var sgm = data.SurvivorsGameManager;
-        if (sgm == null) return;
-        RunMirrored(() => sgm.OnPlayerEnterPortal());
+        // SurvivorsGameManager, or the BossRush map's SurvivorsBossRoomGameManager.
+        RunMirrored(() => Lobby.PortalSync.EnterHomePortal());
     }
 
     private static void RetryPendingPortal(float dt)
@@ -664,6 +687,13 @@ public static class CoopLife
             if (data.EnterPortalObjective != null) return true;
             // RunEnd(Victory) applied, the game's victory branch (which opens the portal) still on its way.
             var obj = data.SurvivorsGameManager != null ? data.SurvivorsGameManager.MainObjective : null;
+            if (obj == null && data.SurvivorsGameManager == null)
+            {
+                // BossRush map (SurvivorsBossRoomGameManager): its victory is GetMapProgress() >= 1.
+                var prog = data.Progression;
+                return prog != null && prog.TotalObjectiveProgression > 0f
+                       && prog.CompletedObjectiveProgression + prog.CurrentObjectiveProgression >= prog.TotalObjectiveProgression;
+            }
             return obj != null && obj.Total > 0 && obj.Current >= obj.Total;
         }
         catch { return false; }
@@ -734,6 +764,7 @@ public static class CoopLife
     {
         var data = GameManagerUtil.GameData;
         var obj = data != null && data.SurvivorsGameManager != null ? data.SurvivorsGameManager.MainObjective : null;
+        if (obj == null && data != null && data.SurvivorsGameManager == null && CompleteBossRoomProgress(data)) return;
         if (obj == null) { Plugin.StaticLog.LogWarning("[SoulstoneCoop][life] F10: no MainObjective yet."); return; }
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] F10: forcing the boss objective ({obj.Current}/{obj.Total}).");
         obj.Current = obj.Total;
@@ -924,30 +955,19 @@ public static class CoopLifeHomePortalPatch
     }
 }
 
-/// <summary>Endless / BossRush portals pick a random next map on each machine: blocked in co-op for now.</summary>
-[HarmonyPatch(typeof(SurvivorsGameManager), nameof(SurvivorsGameManager.OnPlayerEnterEndlessPortal))]
-public static class CoopLifeEndlessPortalPatch
+/// <summary>Same Home portal on the BossRush map, whose scene has SurvivorsBossRoomGameManager instead.</summary>
+[HarmonyPatch(typeof(SurvivorsBossRoomGameManager), nameof(SurvivorsBossRoomGameManager.OnPlayerEnterPortal))]
+public static class CoopLifeBossRoomHomePortalPatch
 {
     [HarmonyPrefix]
-    public static bool Prefix()
+    public static void Prefix()
     {
-        if (!NetworkManager.HasPeer) return true;
-        Plugin.StaticLog.LogWarning("[SoulstoneCoop][life] Endless portal is not supported in co-op yet (blocked).");
-        return false;
+        try { if (!CoopLife.FromNetwork) CoopLife.OnLocalPortalEntered(); }
+        catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] CoopLifeBossRoomHomePortalPatch: {ex}"); }
     }
 }
 
-[HarmonyPatch(typeof(SurvivorsGameManager), nameof(SurvivorsGameManager.OnPlayerEnterBossRushPortal))]
-public static class CoopLifeBossRushPortalPatch
-{
-    [HarmonyPrefix]
-    public static bool Prefix()
-    {
-        if (!NetworkManager.HasPeer) return true;
-        Plugin.StaticLog.LogWarning("[SoulstoneCoop][life] Boss Rush portal is not supported in co-op yet (blocked).");
-        return false;
-    }
-}
+// The Endless / BossRush portals (blocked here in phase 4A) are synchronized by Lobby/PortalSync.cs.
 
 /// <summary>Surrender ends the run for both: the client asks the host, the host mirrors it.</summary>
 [HarmonyPatch(typeof(GameManagerUtil), nameof(GameManagerUtil.Surrender))]

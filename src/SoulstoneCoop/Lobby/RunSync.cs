@@ -79,20 +79,7 @@ public static class RunSync
             return;
         }
 
-        var p = new RunParams
-        {
-            Scene = scene!,
-            Mode = Global.SelectedGameMode,
-            MasteryTier = Global.MasteryDifficultyTier,
-            MasteryLevel = Global.MasteryDynamicLevel,
-        };
-        if (p.Mode == GameModes.Survivor)
-        {
-            p.HasAffixes = true;
-            var prog = TryGetProgression(p.Scene);
-            if (prog != null && !prog.AffixesDisabled && prog.SelectedAffixes != null)
-                foreach (var a in prog.SelectedAffixes) if (!string.IsNullOrEmpty(a)) p.Affixes.Add(a);
-        }
+        var p = BuildHostParams(scene!);
         _hostRun = p;
         _rejoinSent = false;
         if (!CoopSession.Connected) return;
@@ -100,20 +87,14 @@ public static class RunSync
         SendRunStart(p);
         PauseSync.ResetForRun();
         CoopSession.BeginLoading();
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Host: RunStart sent: scene={p.Scene} mode={p.Mode} mastery={p.MasteryTier}/{p.MasteryLevel} affixes=[{string.Join(",", p.Affixes)}]");
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Host: RunStart sent: {Describe(p)}");
     }
 
     private static void SendRunStart(RunParams p)
     {
         var w = new NetDataWriter();
         w.Put((byte)PacketType.RunStart);
-        w.Put(p.Scene);
-        w.Put((byte)p.Mode);
-        w.Put((int)p.MasteryTier);
-        w.Put(p.MasteryLevel);
-        w.Put(p.HasAffixes);
-        w.Put((ushort)p.Affixes.Count);
-        foreach (var a in p.Affixes) w.Put(a);
+        WriteParams(w, p);
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
     }
 
@@ -128,6 +109,23 @@ public static class RunSync
 
     internal static void OnPeerConnected() => _rejoinSent = false;
 
+    /// <summary>Host took an Endless/BossRush portal (PortalSync): a partner joining later loads the current stage's
+    /// map, with the same mode and the run's affixes.</summary>
+    internal static void OnHostStageChanged(string scene)
+    {
+        if (_hostRun == null || NetworkManager.Role != NetRole.Host) return;
+        var p = new RunParams
+        {
+            Scene = scene,
+            Mode = _hostRun.Mode,
+            MasteryTier = _hostRun.MasteryTier,
+            MasteryLevel = _hostRun.MasteryLevel,
+            HasAffixes = _hostRun.HasAffixes,
+        };
+        p.Affixes.AddRange(_hostRun.Affixes);
+        _hostRun = p;
+    }
+
     internal static void HostRejoinTick()
     {
         if (_rejoinSent || _hostRun == null || !Plugin.AllowRejoin.Value) return;
@@ -141,11 +139,38 @@ public static class RunSync
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Host: partner connected mid-run - RunStart resent (scene={_hostRun.Scene} mode={_hostRun.Mode}).");
     }
 
-    // =====================================================================================
-    // Client: follow the host
-    // =====================================================================================
+    /// <summary>The run the host is starting: Global (written by the game's Fight/Restart) and the host's affixes.</summary>
+    private static RunParams BuildHostParams(string scene)
+    {
+        var p = new RunParams
+        {
+            Scene = scene,
+            Mode = Global.SelectedGameMode,
+            MasteryTier = Global.MasteryDifficultyTier,
+            MasteryLevel = Global.MasteryDynamicLevel,
+        };
+        if (p.Mode == GameModes.Survivor)
+        {
+            p.HasAffixes = true;
+            var prog = TryGetProgression(p.Scene);
+            if (prog != null && !prog.AffixesDisabled && prog.SelectedAffixes != null)
+                foreach (var a in prog.SelectedAffixes) if (!string.IsNullOrEmpty(a)) p.Affixes.Add(a);
+        }
+        return p;
+    }
 
-    public static void OnRunStart(NetDataReader r)
+    private static void WriteParams(NetDataWriter w, RunParams p)
+    {
+        w.Put(p.Scene);
+        w.Put((byte)p.Mode);
+        w.Put((int)p.MasteryTier);
+        w.Put(p.MasteryLevel);
+        w.Put(p.HasAffixes);
+        w.Put((ushort)p.Affixes.Count);
+        foreach (var a in p.Affixes) w.Put(a);
+    }
+
+    private static RunParams ReadParams(NetDataReader r)
     {
         var p = new RunParams
         {
@@ -157,9 +182,22 @@ public static class RunSync
         };
         int n = r.GetUShort();
         for (int i = 0; i < n; i++) p.Affixes.Add(r.GetString());
+        return p;
+    }
+
+    private static string Describe(RunParams p) =>
+        $"scene={p.Scene} mode={p.Mode} mastery={p.MasteryTier}/{p.MasteryLevel} affixes=[{string.Join(",", p.Affixes)}]";
+
+    // =====================================================================================
+    // Client: follow the host
+    // =====================================================================================
+
+    public static void OnRunStart(NetDataReader r)
+    {
+        var p = ReadParams(r);
         if (NetworkManager.Role != NetRole.Client) return;
 
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Client: RunStart received: scene={p.Scene} mode={p.Mode} mastery={p.MasteryTier}/{p.MasteryLevel} affixes=[{string.Join(",", p.Affixes)}]");
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Client: RunStart received: {Describe(p)}");
         string? refuse = null;
         try { refuse = TryStartClientRun(p); }
         catch (Exception ex)
@@ -168,12 +206,16 @@ public static class RunSync
             refuse = "erro ao iniciar a partida";
             _clientRun = null;
         }
-        if (refuse == null) return;
+        if (refuse != null) Refuse($"Não deu pra entrar na partida do host: {refuse}", refuse);
+    }
 
-        CoopSession.Notice($"Não deu pra entrar na partida do host: {refuse}", 8f);
+    /// <summary>Client: tell the host why we didn't follow (shown on both screens).</summary>
+    internal static void Refuse(string localNotice, string reasonForHost)
+    {
+        CoopSession.Notice(localNotice, 8f);
         var w = new NetDataWriter();
         w.Put((byte)PacketType.RunStartRefused);
-        w.Put(refuse);
+        w.Put(reasonForHost);
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
     }
 
@@ -186,10 +228,29 @@ public static class RunSync
         if (ui == null) return "menu não encontrado";
         string active = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
         if (active != MenuScene) return $"não estou no menu ({active})";
+        string? missing = MissingScene(p);
+        if (missing != null) return missing;
+
+        PrepareClientRun(p);
+        Enemies.ClientPuppets.ResetForNewRun();
+        PauseSync.ResetForRun();
+        CoopSession.BeginLoading();
+        ui.ChangeScene(p.Scene, 0f, LoadingScreenManager.LoadingScreenMode.Full);
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Client: ChangeScene({p.Scene}) mode={p.Mode}.");
+        return null;
+    }
+
+    private static string? MissingScene(RunParams p)
+    {
         var maps = Global.MapCollection;
         if (maps != null && maps.GetMapById(p.Scene) == null && p.Mode == GameModes.Survivor) return $"não tenho o mapa {p.Scene}";
         if (!Application.CanStreamedLevelBeLoaded(p.Scene)) return $"não tenho a cena {p.Scene} (DLC?)";
+        return null;
+    }
 
+    /// <summary>Client: same Global as the host's run, and the host's affixes for when AffixGameplayData is built.</summary>
+    private static void PrepareClientRun(RunParams p)
+    {
         Global.SelectedGameMode = p.Mode;
         Global.MasteryDifficultyTier = p.MasteryTier;
         Global.MasteryDynamicLevel = p.MasteryLevel;
@@ -209,12 +270,103 @@ public static class RunSync
             if (prog == null && p.Affixes.Count > 0)
                 Plugin.StaticLog.LogWarning($"[SoulstoneCoop][run] Client has no progression for {p.Scene}: the host's affixes can't be applied.");
         }
+    }
 
+    // =====================================================================================
+    // Restart on the end screen: the host decides, the client follows (docs/portais-investigacao.md, 4)
+    // =====================================================================================
+
+    /// <summary>Prefix of EndGamePanelManager.OnRestartPressed. False = the button does nothing.</summary>
+    internal static bool AllowRestart(EndGamePanelManager panel)
+    {
+        if (!CoopSession.Connected) return true;
+        if (NetworkManager.Role != NetRole.Host)
+        {
+            CoopSession.Notice("Em co-op quem reinicia é o host (ou volte ao menu)");
+            return false;
+        }
+        if (panel.RequestedGoToMenu) return true; // the game ignores the click anyway
+        if (Global.SelectedGameMode == GameModes.Crusade)
+        {
+            CoopSession.Notice("Cruzada ainda não funciona em co-op: volte ao menu");
+            return false;
+        }
+        if (CoopSession.RemoteChangingScene)
+        {
+            CoopSession.Notice($"{CoopSession.PartnerName} ainda está carregando");
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>Postfix of OnRestartPressed, host: the game just scheduled LoadNextScene(MatchStats.MapId, 0, true).
+    /// A partner already in the menu gets the usual RunStart; one still on its end screen restarts from there.</summary>
+    internal static void AfterHostRestart(EndGamePanelManager panel, bool wasRequested)
+    {
+        if (NetworkManager.Role != NetRole.Host) return;
+        if (!CoopSession.Connected && !Plugin.AllowRejoin.Value) return;
+        if (wasRequested || !panel.RequestedGoToMenu) return; // the game didn't restart
+        string? scene = null;
+        try { scene = GameManagerUtil.MatchStats?.MapId; } catch { }
+        if (string.IsNullOrEmpty(scene))
+        {
+            Plugin.StaticLog.LogWarning("[SoulstoneCoop][run] Host restarted but the map is unknown - client not told.");
+            return;
+        }
+
+        // Alone (phase 8 AllowRejoin keeps the run for a late partner) or the partner is in the menu: usual RunStart.
+        if (!CoopSession.Connected || CoopSession.RemotePlace == LobbyPlace.Menu)
+        {
+            AfterHostFight(scene);
+            if (CoopSession.Connected) CoopSession.BeginStageTransition("restart");
+            return;
+        }
+
+        var p = BuildHostParams(scene!);
+        _hostRun = p;
+        _rejoinSent = false;
+        var w = new NetDataWriter();
+        w.Put((byte)PacketType.PortalTransition);
+        w.Put((byte)PortalKind.Restart);
+        w.Put(p.Scene);
+        WriteParams(w, p);
+        NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
+        PauseSync.ResetForRun();
+        CoopSession.BeginStageTransition("restart");
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Host: restart sent to the partner's end screen: {Describe(p)}");
+    }
+
+    /// <summary>Client: PortalTransition(Restart); the kind byte and the map are already read.</summary>
+    internal static void OnHostRestart(NetDataReader r)
+    {
+        var p = ReadParams(r);
+        if (NetworkManager.Role != NetRole.Client) return;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Client: host restarted: {Describe(p)} (local {CoopSession.LocalPlace})");
+        string? refuse;
+        try { refuse = CoopSession.LocalInRun ? TryRestartClientRun(p) : TryStartClientRun(p); }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogError($"[SoulstoneCoop][run] Client: following the host's restart: {ex}");
+            refuse = "erro ao reiniciar";
+            _clientRun = null;
+        }
+        if (refuse != null) Refuse($"Não deu pra reiniciar com o host: {refuse}", refuse);
+    }
+
+    /// <summary>Client still in the old run (end screen): what its own Restart button does, with the host's run.</summary>
+    private static string? TryRestartClientRun(RunParams p)
+    {
+        if (CoopSession.StageTransition) return "já estou trocando de cena";
+        string? missing = MissingScene(p);
+        if (missing != null) return missing;
+
+        PrepareClientRun(p);
         Enemies.ClientPuppets.ResetForNewRun();
         PauseSync.ResetForRun();
-        CoopSession.BeginLoading();
-        ui.ChangeScene(p.Scene, 0f, LoadingScreenManager.LoadingScreenMode.Full);
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Client: ChangeScene({p.Scene}) mode={p.Mode}.");
+        CoopSession.BeginStageTransition("host restarted");
+        // EndGamePanelManager.OnRestartPressed: LoadNextScene(MatchStats.MapId, 0, clearLoad: true).
+        GameManagerUtil.LoadNextScene(p.Scene, 0f, true);
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Client: LoadNextScene({p.Scene}) from the end screen.");
         return null;
     }
 
@@ -235,6 +387,9 @@ public static class RunSync
 
     internal static void OnLocalRunLeft()
     {
+        // Restart from the end screen: the next scene is already on its way and still needs _clientRun
+        // (the host's affixes); OnLocalMatchStarted clears it.
+        if (CoopSession.StageTransition) { _holding = false; return; }
         RestoreAffixFlag();
         _clientRun = null;
         _hostRun = null;
@@ -331,7 +486,8 @@ public static class RunSync
     {
         get
         {
-            bool hold = CoopSession.Connected && CoopSession.LocalInRun && CoopSession.RemotePlace == LobbyPlace.Loading
+            // Never in our own old scene during a portal/Restart: LoadNextStageAfterDelay waits on scaled time.
+            bool hold = CoopSession.LocalInRun && !CoopSession.StageTransition && CoopSession.RemoteChangingScene
                         && Time.unscaledTime - CoopSession.LocalRunStartTime < HoldTimeout;
             if (hold != _holding)
             {
@@ -402,23 +558,31 @@ public static class CrusadeFightPatch
     }
 }
 
-/// <summary>"Restart" on the end screen reloads the map locally (LoadNextScene): in co-op both go through the menu.</summary>
+/// <summary>"Restart" on the end screen reloads the map locally (LoadNextScene). In co-op only the host restarts, and
+/// the client follows (from its end screen or from the menu). No arguments: safe to patch.</summary>
 [HarmonyPatch(typeof(EndGamePanelManager), nameof(EndGamePanelManager.OnRestartPressed))]
-public static class CoopRestartBlockPatch
+public static class CoopRestartPatch
 {
     [HarmonyPrefix]
-    public static bool Prefix()
+    public static bool Prefix(EndGamePanelManager __instance, out bool __state)
     {
+        __state = true;
         try
         {
-            if (!CoopSession.Connected) return true;
-            CoopSession.Notice("Em co-op, volte ao menu pra jogar de novo");
-            return false;
+            __state = __instance.RequestedGoToMenu;
+            return RunSync.AllowRestart(__instance);
         }
         catch (Exception ex)
         {
-            Plugin.StaticLog.LogError($"[SoulstoneCoop] CoopRestartBlockPatch: {ex}");
+            Plugin.StaticLog.LogError($"[SoulstoneCoop] CoopRestartPatch.Prefix: {ex}");
             return true;
         }
+    }
+
+    [HarmonyPostfix]
+    public static void Postfix(EndGamePanelManager __instance, bool __state)
+    {
+        try { RunSync.AfterHostRestart(__instance, __state); }
+        catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] CoopRestartPatch.Postfix: {ex}"); }
     }
 }

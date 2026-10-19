@@ -300,7 +300,7 @@ public static class CoopUi
         string? text;
         // Phase 8: silence well before the transport gives up (10 s IP, 15 s Steam). Not while a side is loading
         // a run: a scene load freezes the game, and the Steam pings with it.
-        if (NetworkManager.Unstable && !CoopSession.LocalLoading && CoopSession.RemotePlace != LobbyPlace.Loading)
+        if (NetworkManager.Unstable && !CoopSession.LocalLoading && !CoopSession.RemoteChangingScene)
             text = $"Conexão instável com {CoopSession.PartnerName} ({NetworkManager.SilenceSeconds:0} s sem resposta)...";
         else if (RunSync.HoldForPartner) text = $"Aguardando {CoopSession.PartnerName} carregar...";
         else if (PauseSync.RemotePaused)
