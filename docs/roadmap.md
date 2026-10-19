@@ -26,9 +26,15 @@ Fonte única das próximas fases e pendências. Detalhes técnicos de cada fase 
 | Level-up | Com a build completa, o upgrade não congela a sessão (`[Coop] LevelUpPause`) | `6c7ce5f` |
 | Portais | Portais Endless e de desafio e o Reiniciar, com os dois indo juntos | `4aec2b3` |
 
+| **0.9.0** | Tudo abaixo junto, ainda sem teste em jogo (roteiro em `teste-0.9.0.md`) | — |
+| 5, correções | Fantasma animado de novo, com arma; lançador das réplicas colado no fantasma; dash do parceiro | `568db38`, `c8876dc` |
+| 5, item 5 | Summons, companheiros e a puma do Sentinel do parceiro como clones visuais | `568db38` |
+| Level-up | Painel compacto e semitransparente pra jogar enquanto escolhe; padrão `Overlay` | `c263e20`, `efd4d89` |
+| 9 | Até 8 jogadores: slots, transportes multi-peer, repasse pelo host, lobby de 8, regras com N, escala de inimigos opcional | merge da `fase9-oito` |
+
 ## Agora
 
-**Testar a 0.8.0 com o amigo**, pelo roteiro de `teste-0.8.0.md`. Os bugs que aparecerem entram aqui antes de qualquer fase nova.
+**Testar a 0.9.0**, pelo roteiro de `teste-0.9.0.md`: primeiro com 2 pela Steam, depois com 3+ por IP no mesmo PC (`fase9-notas.md`). Os bugs que aparecerem entram aqui antes de qualquer fase nova.
 
 ## Próximos itens
 
@@ -59,4 +65,4 @@ Fonte única das próximas fases e pendências. Detalhes técnicos de cada fase 
 - Texto flutuante do jogo (`OverheadCombatTextPanelManager.RequestCombatTextWithString`) aceita no máximo 16 caracteres; acima disso dá erro e o texto não aparece.
 - Ao subir a versão, mudanças de formato de pacote quebram a compatibilidade: o handshake recusa versões diferentes.
 - Enquanto o usuário testa uma versão fixa, `%USERPROFILE%\.soulstone-no-deploy` trava o deploy (ou use `-p:SkipDeploy=true`).
-- Pacotes de rede em uso: 5–22, 30–33, 40–45, 50, 70–71, 90–91. Faixas reservadas: 23–29 (4D), 34–39 (6), 46–49 (7), 51–59 (5), 60–69 (8), 72–79 (pendências), 80–89 (level-up), 92–99 (portais). Itens novos começam no 100.
+- Pacotes de rede: veja o enum `PacketType` em `src/SoulstoneCoop/Net/PacketRouter.cs` (a fase 9 usa 100–104). Itens novos começam no 120.

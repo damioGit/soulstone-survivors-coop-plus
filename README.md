@@ -1,10 +1,10 @@
 # Soulstone Coop
 
-Online co-op for [Soulstone Survivors](https://store.steampowered.com/app/2066020/Soulstone_Survivors/): two players in the same run, invited through Steam.
+Online co-op for [Soulstone Survivors](https://store.steampowered.com/app/2066020/Soulstone_Survivors/): up to 8 players in the same run, invited through Steam.
 
 An unofficial fan mod, not affiliated with or endorsed by the game's developers. Built on [BepInEx 6](https://github.com/BepInEx/BepInEx) (IL2CPP).
 
-> **Status: alpha.** Tested with two players over Steam up to 0.7.0. See [What works](#what-works) and [Known limitations](#known-limitations).
+> **Status: alpha.** Played by two people over Steam up to 0.8.0; 3+ players and the 0.9.0 changes are untested. See [What works](#what-works) and [Known limitations](#known-limitations).
 
 ## Install
 
@@ -33,19 +33,19 @@ Direct IP is also available (**Host by IP** / type the host's IP → **Join**, U
 |---|---|
 | Connection | Steam invite (P2P through Steam's relay, no port forwarding), invite code, direct IP; mod version check |
 | Lobby | Co-op tab in the menu; the host starts the run and the guest follows on the same map, mode, difficulty and curses |
-| Partner | Shown with their own character, skin and weapon, Steam name, health bar, ally ring and minimap marker; smooth movement and animations |
+| Players | Up to 8 (1 host + 7 guests); the host relays each player to the others |
+| Partners | Shown with their own character, skin and weapon, Steam name, health bar, ally ring and minimap marker; smooth movement, dash and animations; their pets and summons (e.g. the Sentinel's panther) are visible |
 | Enemies | The host owns the world; the guest sees the same enemies, bosses, void hunters and specials, including boss area warnings |
 | Combat | Both players damage the same enemies; enemies chase and hit whoever is closest; statuses (slow, stun) reach the guest |
 | Skills | Each player sees the other's skills (visual only; damage is synced separately) |
 | Progression | Team XP (whoever picks up an orb, both get it), loot and kill credit on the guest; each player keeps their own level and upgrades |
-| Pause | Pause and level-up screens freeze both games; with a complete build, picking an upgrade no longer pauses the session |
-| Death | Downed state, revive by standing next to your partner, defeat only when both are down |
-| End of run | Victory, Home portal, Endless and challenge portals, Restart and surrender happen for both players |
-| Disconnects | Host leaving ends the guest's run with a notice; guest leaving lets the host continue alone |
+| Pause | Anyone's pause freezes everyone and the host can unpause for all; level-ups open as a compact see-through panel you keep playing under (1-4 to pick) |
+| Death | Downed state, any ally standing next to you revives you, defeat only when everyone is down |
+| End of run | Victory, Home portal, Endless and challenge portals and Restart happen for everyone; the host surrendering ends the run for all |
+| Disconnects | Host leaving ends everyone's run with a notice; a guest leaving (or surrendering) lets the others continue |
 
 ## Known limitations
 
-- Two players only.
 - Rejoining a run in progress keeps nothing (behind `[Coop] AllowRejoin`, off by default).
 - Chests only exist for the host; the guest gets their share but can't open them.
 - Summons, always-on auras and channel aim of the partner's skills are not shown.
@@ -58,7 +58,7 @@ The full list and design notes are in [`docs/roadmap.md`](docs/roadmap.md).
 
 - Full rejoin keeping level, skills and items.
 - Chests and other interactables for the guest.
-- Partner summons and auras.
+- Partners' always-on auras.
 - Crusade mode.
 
 ## Settings
@@ -70,6 +70,10 @@ The full list and design notes are in [`docs/roadmap.md`](docs/roadmap.md).
 | `[Coop] LevelUpPause` | `Overlay` | `Overlay`: compact see-through panel, you keep playing (1-4 pick, Tab hides); `NotWhenFullBuild`: pause until the build is full; `Always`: always pause; `Never`: full-screen panel without pause |
 | `[Coop] EndRunWhenHostLeaves` | `true` | End the guest's run when the host disconnects |
 | `[Coop] AllowRejoin` | `false` | Experimental: let the guest rejoin a run in progress (as a fresh character) |
+| `[Coop] MaxPlayers` | `8` | Lobby size (2-8) |
+| `[Coop] EnemyScalePerPlayer` | `0` | Extra enemies per additional player (try `0.25`) |
+| `[Coop] ReplicaCastRadius` | `60` | Don't draw skills of partners farther than this |
+| `[Coop] LobbyType` | `FriendsOnly` | `Public` if friends of guests can't join |
 | `[Coop] SenderClock` | `false` | Experimental: smoother remote movement on jittery connections |
 | `[Debug] SimulateLatencyMs`, `SimulateJitterMs`, `SimulatePacketLossPercent` | `0` | Simulate a bad network for testing |
 
