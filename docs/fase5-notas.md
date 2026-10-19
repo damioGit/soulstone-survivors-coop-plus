@@ -93,3 +93,43 @@ Duas máquinas, conectadas pela aba Co-op ou pelo convite da Steam.
    - Log novo, 0,25 s depois das três primeiras réplicas de cada skill: `Probe '<skill>': projectiles=N areas=N first=<posição> (X m from the ghost) renderers=ligados/total layer=<nome> drawn=<a câmera desenha a layer?> casterToGhost=X m source=...`.
 
 **O que mandar do log da 0.8.1 (dos dois lados):** as linhas `model animator ...`, `Ghost locomotion drives ...`, `Anim probe ...`, `Probe '...'` e o `built as the partner: ... (main=... offhand=..., bone follower ok)`.
+
+## Item 5: summons, companheiros e a puma do Sentinel (só visuais)
+
+Pedido do usuário depois do teste: "o personagem do meu amigo é o Sentinel e não tá aparecendo a puma dele". Os summons e companheiros do parceiro viram **clones só visuais**, como o próprio fantasma, em `Summons/SummonSync.cs`.
+
+- **Nenhuma Entity é criada.** O clone é o prefab instanciado sob um holder inativo e despido (`VisualGhostFactory.StripToVisualOnly`: só Transform, Animator e renderers) antes de ser ligado. O `Entity` do prefab é destruído sem nunca passar por `Awake`.
+- **Dano não muda.** Os summons de cada lado continuam batendo no próprio mundo.
+  - No cliente, `ClientPuppetHealthClampPatch` → `ClientPuppets.RecordDamage` conta qualquer atacante que não seja inimigo (nem o lançador remoto), então o dano dos summons do cliente já vai no `ClientDamage`.
+  - Os summons do host não são marionetes (`HostEnemySync.IsTrackable` só pega o time inimigo), então não há duplicação.
+- **O que cada lado rastreia do que é seu:**
+  - **Summons (Entity):** prefix em `UnitUtil.SetupSummonStats`, ao lado do `HostSummonCapturePatch`, com o jogador local (ou um summon dele) como caster. O prefab é uma referência direta na skill (`SummonEntity*Effect.PossiblePrefabs`). Por isso a chave é a skill (`Skill-Prefabs/<chave>`, o mesmo asset nas duas máquinas) mais o nome do prefab.
+  - **Companheiros:** as instâncias do `CompanionComponent` do jogador local, com o prefab em `Companions/<nome>` (conferido pelo ponteiro).
+  - **Puma:** não é Entity, é o `NavMeshAgent` do `NaturesGuardianComponent.PantherInstance`. O prefab vem do `SkillTreeNaturesGuardianSO.PantherPrefab`, achado nos assets carregados. Ela some enquanto o Sentinel está montado.
+- **Pacotes (51–53):**
+  - `SummonSpawn` (id, tipo, tipo de animação, skill, nome, caminho em Resources, escala, posição, yaw), reenviado a cada 3 s;
+  - `SummonDespawn`;
+  - `SummonStates` (id, posição e yaw de cada um), a ~12 Hz, Sequenced.
+
+  O reenvio do spawn faz o outro lado se recuperar sozinho das próprias limpezas.
+- **Do outro lado:**
+  - interpolação com 120 ms de atraso;
+  - `applyRootMotion` desligado e `AlwaysAnimate`;
+  - locomoção só com os parâmetros que o script do próprio bicho escreve: `CharacterAnimator` → `Forward`, `Turn`, `OnGround` (e `ForwardMovement`/`SidewaysMovement` com strafing); puma → `Forward`. Quem envia diz qual é. A lista de parâmetros nunca é lida (é o que quebrou a 0.8.0).
+- **Some quando:** o summon morre ou é reciclado, o parceiro cai (volta no próximo refresh depois do revive), um dos dois sai da run, a cena troca (`PortalSync.OnLocalSceneGone`) ou o parceiro desconecta.
+- **Telemetria `[summons]` a cada 5 s:** own, sentSpawns/States/Despawns, partner known/visible, recvSpawns/States/Despawns, `prefabFailures` (com os nomes) e buildErrors.
+
+**Riscos:**
+- Prefab não encontrado: aparece em `prefabFailures` e no aviso `No prefab for the partner's ...`, e o bicho fica invisível.
+- A puma depende de o `SkillTreeNaturesGuardianSO` estar carregado na máquina de quem não joga de Sentinel.
+- `Turn` vai sempre 0.
+- A velocidade da animação é normalizada pela maior velocidade vista.
+- No máximo 32 por lado.
+- Efeitos de partícula que o prefab já liga sozinho aparecem.
+
+**Roteiro (somar ao de cima):**
+1. Cliente de **Sentinel** e host de outro personagem. Na run, quando a puma do cliente aparecer, o host vê a puma no mesmo lugar, andando junto. Quando o cliente montar, a puma some na tela do host e volta quando ele desmonta.
+2. Um personagem com invocação ou companheiro (por exemplo, o Hound Master com os cães ou uma skill de summon): o outro vê os bichos se mexendo e sumindo quando morrem.
+3. Revive: o parceiro cai e os bichos dele somem da sua tela. Depois do revive eles voltam em até 3 s.
+4. Portal ou fim de run: nada fica para trás na cena nova.
+5. Logs: `[summons] Own ...` em quem invoca; `Partner's ... shown` ou `No prefab for ...` no outro; e a linha de 5 s `[summons] ...`.

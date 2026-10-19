@@ -314,7 +314,7 @@ public static class VisualGhostFactory
     /// <summary><paramref name="keepBoneFollowersUnder"/>: the partner's model, whose ItemFollowBoneUtil stays alive. It is what
     /// makes the weapon attachments follow the hands (LateUpdateAll moves each Follower to its bone), and it only touches
     /// transforms of that same model. Elsewhere (the local-clone fallback) it goes, as before phase 5.</summary>
-    private static void StripToVisualOnly(GameObject root, Transform? keepBoneFollowersUnder = null)
+    internal static void StripToVisualOnly(GameObject root, Transform? keepBoneFollowersUnder = null)
     {
         // Ragdoll joints must go first: Unity refuses to remove a Rigidbody a Joint still depends on.
         foreach (var joint in root.GetComponentsInChildren<Joint>(true))
