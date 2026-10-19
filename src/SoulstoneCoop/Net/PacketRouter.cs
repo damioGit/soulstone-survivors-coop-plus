@@ -37,6 +37,7 @@ public enum PacketType : byte
     SummonSpawn = 51,   // either way: one of the sender's summons/companions/panther, to show as a visual-only clone (ReliableOrdered, refreshed every 3 s)
     SummonDespawn = 52, // either way: that summon is gone (ReliableOrdered)
     SummonStates = 53,  // either way: positions/yaw of the sender's live summons, ~12 Hz (Sequenced)
+    DashState = 54,     // either way: the sender's player started (1) / stopped (0) dashing, on change (ReliableOrdered)
     // 70-79: small pending items (docs/pendencias-notas.md)
     GodCast = 70,      // host -> client: the God-Entity cast a meteor, replayed visual-only on the RemoteCaster (ReliableUnordered)
     ProxyStatus = 71,  // host -> client: a status/stun applied to the client's proxy, replayed on the local player (ReliableUnordered)
@@ -140,6 +141,9 @@ public static class PacketRouter
                 break;
             case PacketType.PortalRequest:
                 Lobby.PortalSync.OnPortalRequest(reader);
+                break;
+            case PacketType.DashState:
+                PlayerSync.OnDashStateReceived(reader);
                 break;
             case PacketType.SummonSpawn:
                 Summons.SummonSync.OnSpawn(reader);

@@ -239,7 +239,7 @@ public class CoopBehaviour : MonoBehaviour
             $"[SoulstoneCoop][sync] role={NetworkManager.Role} peer={NetworkManager.HasPeer} " +
             $"ping={NetworkManager.PingMs} silence={NetworkManager.SilenceSeconds:F1}s{(NetSim.Enabled ? " SIM" : "")} " +
             $"place={Lobby.CoopSession.LocalPlace}/{Lobby.CoopSession.RemotePlace} " +
-            $"sent={PlayerSync.SentCount} recv={PlayerSync.ReceivedCount} lastRecv={PlayerSync.LastReceivedPosition} " +
+            $"sent={PlayerSync.SentCount} recv={PlayerSync.ReceivedCount} dashes={PlayerSync.DashesSent}/{PlayerSync.DashesReceived} lastRecv={PlayerSync.LastReceivedPosition} " +
             $"local={localPos} ghost={ghostPos} ghostActive={(ghost != null && ghost.activeInHierarchy)} " +
             $"runInBg={Application.runInBackground} timeScale={Time.timeScale} focused={Application.isFocused}");
     }

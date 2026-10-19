@@ -133,3 +133,14 @@ Pedido do usuário depois do teste: "o personagem do meu amigo é o Sentinel e n
 3. Revive: o parceiro cai e os bichos dele somem da sua tela. Depois do revive eles voltam em até 3 s.
 4. Portal ou fim de run: nada fica para trás na cena nova.
 5. Logs: `[summons] Own ...` em quem invoca; `Partner's ... shown` ou `No prefab for ...` no outro; e a linha de 5 s `[summons] ...`.
+
+## Dash do parceiro
+
+Antes o fantasma só recebia posição e direção, então o dash aparecia como um deslize rápido.
+
+- **Quem envia:** quando `ModifiedCharacter.IsDashing()` muda (o flag `_isDashing`, 0x12C, que o `PlayerAnimator` do jogo joga no parâmetro `Dash` a cada frame), sai o pacote `DashState = 54` (1 começou, 0 terminou, ReliableOrdered). O `PlayerState` não mudou.
+- **Quem recebe:** o fantasma liga `Dash` no Animator do modelo 100 ms depois de receber, o mesmo atraso da interpolação das posições, então a pose de dash coincide com o movimento do dash. Por segurança, desliga sozinho depois de 1,5 s se o "terminou" não chegar.
+- **Telemetria:** a linha `[sync]` ganhou `dashes=enviados/recebidos`.
+- **Fora:** o rastro de imagens do dash (`DashEffect`). Ele depende de um `ModifiedCharacter` e de um Rigidbody vivos, que o fantasma não tem.
+
+**Roteiro:** um dos dois dá dash várias vezes, em direções diferentes. Na tela do outro, o fantasma faz a animação de dash durante o deslocamento, e não só desliza, e volta a andar normal no fim. Conferir na linha `[sync]` que `dashes=` sobe dos dois lados.
