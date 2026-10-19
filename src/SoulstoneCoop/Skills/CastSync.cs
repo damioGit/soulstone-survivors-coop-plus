@@ -96,7 +96,7 @@ public static class CastSync
     // Telemetry window
     private static float _telemetryTimer;
     private static int _sent, _recv, _played, _noCaster, _noSkill, _rejected, _errors, _skippedSummon, _captureErrors;
-    private static int _channelEndsSent, _channelEndsRecv, _blockedEffects, _blockedDamage, _bytesSent;
+    private static int _channelEndsSent, _channelEndsRecv, _blockedEffects, _blockedDamage, _bytesSent, _culledFar;
 
     internal static void CountBlockedEffects() => _blockedEffects++;
     internal static void CountBlockedDamage() => _blockedDamage++;
@@ -132,12 +132,12 @@ public static class CastSync
                 $"[SoulstoneCoop][casts] {NetworkManager.Role}: sent={_sent} ({_bytesSent} B) recv={_recv} played={_played} failed={failed} " +
                 $"(noCaster={_noCaster} noSkill={_noSkill} rejected={_rejected} error={_errors}) skippedSummon={_skippedSummon} " +
                 $"captureErrors={_captureErrors} channelEnds={_channelEndsSent}/{_channelEndsRecv} openChannels={RemoteCaster.OpenChannels}/{LocalChannels.Count} " +
-                $"blockedEffects={_blockedEffects} blockedDamage={_blockedDamage} numbersHidden={numbersHidden} caster={RemoteCaster.Active} copies={RemoteCaster.CopyCount} " +
+                $"blockedEffects={_blockedEffects} blockedDamage={_blockedDamage} numbersHidden={numbersHidden} culledFar={_culledFar} caster={RemoteCaster.Active} copies={RemoteCaster.CopyCount} " +
                 $"ghostAnim={RemoteCaster.GhostAnimPlayed}/{RemoteCaster.GhostAnimPlayed + RemoteCaster.GhostAnimMissing}");
             RemoteCaster.GhostAnimPlayed = RemoteCaster.GhostAnimMissing = 0;
         }
         _sent = _recv = _played = _noCaster = _noSkill = _rejected = _errors = _skippedSummon = _captureErrors = 0;
-        _channelEndsSent = _channelEndsRecv = _blockedEffects = _blockedDamage = _bytesSent = 0;
+        _channelEndsSent = _channelEndsRecv = _blockedEffects = _blockedDamage = _bytesSent = _culledFar = 0;
     }
 
     // ---------------- sender ----------------
@@ -259,6 +259,7 @@ public static class CastSync
             case RemoteCaster.PlayResult.NoCaster: _noCaster++; break;
             case RemoteCaster.PlayResult.NoSkill: _noSkill++; break;
             case RemoteCaster.PlayResult.Rejected: _rejected++; break;
+            case RemoteCaster.PlayResult.Culled: _culledFar++; break;
             default: _errors++; break;
         }
     }

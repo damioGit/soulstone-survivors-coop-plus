@@ -543,7 +543,7 @@ public static class RemoteCaster
 
     // ---------------- playing a cast ----------------
 
-    public enum PlayResult { Played, NoCaster, NoSkill, Rejected, Error }
+    public enum PlayResult { Played, NoCaster, NoSkill, Rejected, Error, Culled }
 
     /// <param name="slot">Whose cast it is: it plays on that player's caster.</param>
     /// <param name="template">Phase "pendências": a local skill instance to copy when the key isn't a player
@@ -551,6 +551,11 @@ public static class RemoteCaster
     internal static PlayResult Play(byte slot, CastMessage m, Skill? template = null)
     {
         if (!Casters.TryGetValue(slot, out var caster) || caster.Entity == null || caster.Entity._skillCaster == null) return PlayResult.NoCaster;
+        // Phase 9: a player far from us is off screen: its replica (visual only) would just cost effects. [Coop] ReplicaCastRadius.
+        float radius = Plugin.ReplicaCastRadius?.Value ?? 0f;
+        var me = GameState.LocalPlayerEntity;
+        if (radius > 0f && me != null && RemoteProxy.TryGetPosition(slot, out var at, out _)
+            && (at - me.transform.position).sqrMagnitude > radius * radius) return PlayResult.Culled;
         var c = GetOrCreateCopy(caster, m.Key, (SkillType)m.SkillType, template);
         if (c == null) return PlayResult.NoSkill;
 

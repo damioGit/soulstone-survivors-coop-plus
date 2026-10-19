@@ -75,6 +75,7 @@ public static class PacketRouter
     {
         if (reader.AvailableBytes < 1) return;
         int start = reader.Position, length = reader.AvailableBytes;
+        NetworkManager.CountReceived(from, length);
         var type = (PacketType)reader.RawData[start];
 
         if (NetworkManager.Role == NetRole.Host)

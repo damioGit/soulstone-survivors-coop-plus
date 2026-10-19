@@ -522,6 +522,7 @@ public static class EnemySyncStartMatchPatch
             RemoteProxy.OnMatchStarted();
             Skills.RemoteCaster.OnMatchStarted();
             Life.CoopLife.OnMatchStarted();
+            EnemyScaling.OnMatchStarted();
             Lobby.CoopSession.OnLocalMatchStarted();
         }
         catch (Exception ex)

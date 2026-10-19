@@ -268,6 +268,7 @@ public static class NetworkManager
             if (status == NetStatus.Rejected) _idleStatus = NetStatus.Rejected;
         }
         LogStability();
+        LogTraffic();
     }
 
     private static readonly bool[] _wasUnstable = new bool[Players.MaxSlots];
@@ -329,6 +330,7 @@ public static class NetworkManager
 
     private static void SendOne(ITransport t, byte slot, byte[] data, int length, DeliveryMethod method)
     {
+        if (slot < Players.MaxSlots) { _upBytes[slot] += length; _upPackets[slot]++; }
         try { t.Send(slot, data, length, method); }
         catch (System.Exception ex)
         {
@@ -368,4 +370,37 @@ public static class NetworkManager
     }
 
     internal static int RelayedPackets, RelayedBytes;
+
+    // Phase 9: traffic per peer slot (payload bytes, without the transport headers), logged every 5 s.
+    private static readonly long[] _upBytes = new long[Players.MaxSlots], _downBytes = new long[Players.MaxSlots];
+    private static readonly int[] _upPackets = new int[Players.MaxSlots], _downPackets = new int[Players.MaxSlots];
+    private static float _trafficTimer;
+
+    internal static void CountReceived(byte slot, int length)
+    {
+        if (slot >= Players.MaxSlots) return;
+        _downBytes[slot] += length;
+        _downPackets[slot]++;
+    }
+
+    private static void LogTraffic()
+    {
+        _trafficTimer += UnityEngine.Time.unscaledDeltaTime;
+        if (_trafficTimer < 5f) return;
+        float secs = _trafficTimer;
+        _trafficTimer = 0f;
+        if (HasPeer)
+        {
+            var parts = new List<string>();
+            long up = 0, down = 0;
+            foreach (var s in PeerSlots)
+            {
+                parts.Add($"{s}: up {_upBytes[s] / secs / 1024f:F1} KB/s ({_upPackets[s] / secs:F0} pkt/s) down {_downBytes[s] / secs / 1024f:F1} KB/s ({_downPackets[s] / secs:F0} pkt/s)");
+                up += _upBytes[s];
+                down += _downBytes[s];
+            }
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][net] {Role} total up {up / secs / 1024f:F1} KB/s down {down / secs / 1024f:F1} KB/s | {string.Join(" | ", parts)}");
+        }
+        Array.Clear(_upBytes); Array.Clear(_downBytes); Array.Clear(_upPackets); Array.Clear(_downPackets);
+    }
 }

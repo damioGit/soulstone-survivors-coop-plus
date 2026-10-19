@@ -22,6 +22,8 @@ public class Plugin : BasePlugin
     internal static BepInEx.Configuration.ConfigEntry<bool> SenderClock = null!;
     internal static BepInEx.Configuration.ConfigEntry<int> MaxPlayers = null!;
     internal static BepInEx.Configuration.ConfigEntry<SteamLobbyType> LobbyType = null!;
+    internal static BepInEx.Configuration.ConfigEntry<float> EnemyScalePerPlayer = null!;
+    internal static BepInEx.Configuration.ConfigEntry<float> ReplicaCastRadius = null!;
 
     /// <summary>Phase 9: who may join the Steam lobby ([Coop] LobbyType).</summary>
     public enum SteamLobbyType { FriendsOnly, Public, Private }
@@ -58,6 +60,12 @@ public class Plugin : BasePlugin
         LobbyType = Config.Bind("Coop", "LobbyType", SteamLobbyType.FriendsOnly,
             "Host, Steam: who can join your lobby. FriendsOnly = friends and invitees of the players in it (anyone in the group can invite). " +
             "Public = anyone with the lobby code. Private = only who gets an invite.");
+        EnemyScalePerPlayer = Config.Bind("Coop", "EnemyScalePerPlayer", 0f, new BepInEx.Configuration.ConfigDescription(
+            "Host: more enemies alive at once for each extra player in the run (the game's limits x (1 + this x (players - 1)), up to 200). " +
+            "0 = off (the game's own numbers). Suggested: 0.25 (8 players: x2.75).", new BepInEx.Configuration.AcceptableValueRange<float>(0f, 2f)));
+        ReplicaCastRadius = Config.Bind("Coop", "ReplicaCastRadius", 60f,
+            "Spells of the other players are only replayed (visual only) when they are within this distance of you; farther ones are off screen anyway. " +
+            "Saves the effects of 7 builds on every PC. 0 = always replay.");
         _simLatency = simLatency.Value;
         _simJitter = simJitter.Value;
         _simLoss = simLoss.Value;
