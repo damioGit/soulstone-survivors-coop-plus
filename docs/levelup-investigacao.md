@@ -72,3 +72,10 @@ Feedback da 0.8.0: sem pausa, mas com o painel em tela cheia e o personagem para
 - **HUD:** `GameplayUIManager.HasOverlayPanel` (0x605150) = fim de jogo visível, pausa (`PausePanelManager.IsPaused`), `LevelUpPanel.PowerUpAnimation.TargetVisibility > 0`, seleção do Crusade ou dica do tutorial. Os 23 chamadores são todos painéis do HUD (vida, fúria, mana, os painéis de cada personagem), que se escondem com isso.
 - **Animações do painel:** `UIDeltaTimeAnimationGroup.UpdateAnimation` (0x776A00) só chama `SetTime` nas `UIAnimation` quando o tempo muda. Com o popup aberto, nada é escrito a cada frame, então escala, posição e alpha postos pelo mod ficam.
 - **Minimizar:** `ForceClosePopUp` (0x609FF0) **apaga a fila**, então não serve. Minimizar é só visual (alpha 0, sem raycast, teclas de opção desligadas).
+
+## 7. Todas as escolhas de upgrade (0.9.2, issue #1)
+
+- **Fontes de pedido** (chamadores de `PowerUpRequest..ctor` 0x611620 e de `List<PowerUpRequest>.Add`): `ExperienceComponent.LevelUp` (0x6CE090), `CollectablePowerUpRequest.DoOnReachedTarget` (0x464140, os power-ups de elite, boss e baú no chão), `GameManagerUtil.StartMatch` (0x6F47A0, a escolha inicial) e `MasteryGameManager.ResetPlayer` (0x4297A0). Todos vão pra `LevelUpPanelManager.PowerUpRequests`.
+- **Quem abre o popup** (`OpenPopup` 0x60E680): o próprio `OnUpdate`, o `OnOpenLevelUpPopUpOneHandMode` e o `StartMatch`. O `SetupPopup` e o `OnOptionSelected` só são chamados de dentro do painel. **Não existe outro popup de escolha na partida.**
+- **Outras escritas no `TimeUtil.PauseTime`** (fora pausa e starts): `TutorialHintPanelReferences.OnUpdate` (0x62E100) e `VisibilityInformationPanel.OnUpdate` (0x6A6BC0). São dicas, não escolhas, mas contam como Esc pro `PauseSync`.
+- **Controle:** `Gamepad.current.dpad.{up,down,left,right}.path` dá os caminhos que comparar com os `controls` das ações. Pro destaque, o painel tem `SetSelectedLevelUpPanelItemIndex` / `SetSelectedReplaceableItemIndex`, e a navegação do próprio jogo usa `EventSystem.SetSelectedGameObject(item.Button)`.

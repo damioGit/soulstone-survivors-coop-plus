@@ -70,6 +70,7 @@ public static class PlayerSync
         public readonly List<DashEvent> DashEvents = new();
         public bool Dashing;
         public float DashingSince;
+        public GhostDashTrail? Trail; // issue #2: the after-images DashEffect leaves on the real player
         public PlayerTransformState Latest;
         public bool LatestFresh;
     }
@@ -84,7 +85,9 @@ public static class PlayerSync
     private static readonly int Dash = Animator.StringToHash("Dash");
 
     // Dash (phase 5): the sender's ModifiedCharacter.IsDashing() (the _isDashing flag PlayerAnimator.OnUpdate writes
-    // into the "Dash" bool), sent on change as DashState (the host relays a client's to the others).
+    // into the "Dash" bool), sent on change as DashState (the host relays a client's to the others). Issue #2: no
+    // controller has a dash state, so the bool alone shows nothing; what the dash looks like is DashEffect's
+    // after-image trail, GhostDashTrail on the ghost.
     private struct DashEvent { public float At; public bool On; }
     private static bool _lastSentDash;
     private const float MaxDashSeconds = 1.5f; // safety: a lost "end" never leaves the ghost dashing
@@ -100,7 +103,11 @@ public static class PlayerSync
     {
         if (_hooked) return;
         _hooked = true;
-        Players.Left += slot => Motions.Remove(slot);
+        Players.Left += slot =>
+        {
+            if (Motions.TryGetValue(slot, out var m)) m.Trail?.Dispose();
+            Motions.Remove(slot);
+        };
     }
 
     public static void Tick(float deltaTime)
@@ -172,6 +179,8 @@ public static class PlayerSync
         m.AnimGhostPtr = IntPtr.Zero;
         m.DashEvents.Clear();
         m.Dashing = false;
+        m.Trail?.Dispose();
+        m.Trail = null;
         r.PositionsReceived = 0;
     }
 
@@ -332,6 +341,8 @@ public static class PlayerSync
                 : ghost.GetComponentsInChildren<Animator>(true); // fallback: every animator, as before phase 5
             m.HasLastGhostPos = false;
             m.AnimErrorLogged = false;
+            m.Trail?.Dispose(); // a rebuild can also bring another character (identity), hence another color
+            m.Trail = null;
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][sync] Ghost {r.Slot} locomotion drives {m.Animators.Length} animator(s): " +
                 string.Join(", ", m.Animators.Select(a => a != null ? a.gameObject.name : "null")));
         }
@@ -368,5 +379,19 @@ public static class PlayerSync
                 Plugin.StaticLog.LogWarning($"[SoulstoneCoop][sync] Ghost {r.Slot} animation on '{(a != null ? a.gameObject.name : "?")}': {ex.Message}");
             }
         }
+
+        if (!dashing && m.Trail == null) return; // nothing created until that player's first dash
+        m.Trail ??= new GhostDashTrail(r.Slot, r.Info.CharacterId);
+        m.Trail.Update(t, ModelRoot(t, r.ModelAnimator), dashing, vel.magnitude);
+    }
+
+    /// <summary>The direct child of the ghost root holding the model animator: the character model, as the game's
+    /// PlayerPrefabReferences (the source of DashEffect's renderers).</summary>
+    private static Transform? ModelRoot(Transform ghost, Animator? model)
+    {
+        if (model == null) return null;
+        var t = model.transform;
+        while (t.parent != null && t.parent.Pointer != ghost.Pointer) t = t.parent;
+        return t.parent != null ? t : null;
     }
 }

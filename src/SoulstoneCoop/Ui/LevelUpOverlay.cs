@@ -17,8 +17,8 @@ public enum LevelUpOverlayPosition
 }
 
 /// <summary>
-/// The level-up popup as a compact overlay you play under ([Coop] LevelUpPause = Overlay, or NotWhenFullBuild once the
-/// build is full; docs/levelup-notas.md). Nothing is recreated: the game's own popup (LevelUpPanelManager.PowerUpAnimation)
+/// The level-up popup as a compact overlay you play under: every upgrade choice in co-op (Net/LevelUpPolicy, issue #1;
+/// docs/levelup-notas.md). Nothing is recreated: the game's own popup (LevelUpPanelManager.PowerUpAnimation)
 /// is scaled, moved to an edge of the screen and made see-through every frame after the game's OnUpdate, its
 /// full-screen backdrop images are switched off, and the HUD stays visible (HasOverlayPanel ignores the popup).
 ///
@@ -29,10 +29,19 @@ public enum LevelUpOverlayPosition
 /// gameplay. Gameplay mouse buttons are switched off only while the pointer is over the panel, so a click picks an
 /// option instead of casting. 1-4 (and the numpad) pick an option when the game's own option keys are bound elsewhere,
 /// through LevelUpPanelItem.Selected, the same flag the game's keys set. Tab hides / shows the panel.
-/// With a gamepad as the active input the panel is only made compact: the game's UI navigation keeps the stick.
+/// Gamepad: the left stick keeps moving the character (the UI navigation sharing it is switched off); the cards are on
+/// the D-pad, which is reserved like 1-4: left / right move the game's own highlight, up picks it, down hides / shows.
 /// </summary>
 public static class LevelUpOverlay
 {
+    // i18n: every text this overlay shows (the banner lines), from Ui/LocTable.cs ("bn.levelup*").
+    private static class Texts
+    {
+        internal static string HiddenKeyboard(int queued) => Loc.T("bn.levelup", ("n", queued));
+        internal static string HiddenGamepad(int queued) => Loc.T("bn.levelup_pad", ("n", queued));
+        internal static string GamepadHint => Loc.T("bn.levelup_pad_hint");
+    }
+
     internal static ConfigEntry<float> Scale = null!;
     internal static ConfigEntry<float> Opacity = null!;
     internal static ConfigEntry<LevelUpOverlayPosition> Position = null!;
@@ -83,17 +92,28 @@ public static class LevelUpOverlay
     {
         if (!_visual || isPaused || endGame) return;
         var kb = Keyboard.current;
-        if (kb == null) return;
-        if (kb.tabKey.wasPressedThisFrame)
+        var pad = Gamepad.current;
+        bool toggle = (kb != null && kb.tabKey.wasPressedThisFrame) || (pad != null && pad.dpad.down.wasPressedThisFrame);
+        if (toggle)
         {
             _minimized = !_minimized;
-            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][levelup] Overlay {(_minimized ? "hidden" : "shown")} (Tab).");
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][levelup] Overlay {(_minimized ? "hidden" : "shown")}.");
         }
         if (_minimized) return;
-        if (kb.digit1Key.wasPressedThisFrame || kb.numpad1Key.wasPressedThisFrame) Pick(panel, 0);
-        else if (kb.digit2Key.wasPressedThisFrame || kb.numpad2Key.wasPressedThisFrame) Pick(panel, 1);
-        else if (kb.digit3Key.wasPressedThisFrame || kb.numpad3Key.wasPressedThisFrame) Pick(panel, 2);
-        else if (kb.digit4Key.wasPressedThisFrame || kb.numpad4Key.wasPressedThisFrame) Pick(panel, 3);
+        if (kb != null)
+        {
+            if (kb.digit1Key.wasPressedThisFrame || kb.numpad1Key.wasPressedThisFrame) Pick(panel, 0);
+            else if (kb.digit2Key.wasPressedThisFrame || kb.numpad2Key.wasPressedThisFrame) Pick(panel, 1);
+            else if (kb.digit3Key.wasPressedThisFrame || kb.numpad3Key.wasPressedThisFrame) Pick(panel, 2);
+            else if (kb.digit4Key.wasPressedThisFrame || kb.numpad4Key.wasPressedThisFrame) Pick(panel, 3);
+        }
+        if (pad != null)
+        {
+            // The stick moves the character; the cards are on the D-pad (left / right highlight, up picks).
+            if (pad.dpad.left.wasPressedThisFrame) MoveCursor(panel, -1);
+            else if (pad.dpad.right.wasPressedThisFrame) MoveCursor(panel, +1);
+            else if (pad.dpad.up.wasPressedThisFrame) Pick(panel, CursorIndex(panel));
+        }
     }
 
     internal static void AfterUpdate(LevelUpPanelManager panel, bool isPaused, bool endGame)
@@ -112,7 +132,7 @@ public static class LevelUpOverlay
         try { gamepad = MainUIManager.Instance != null && MainUIManager.Instance.InputManager != null
                         && MainUIManager.Instance.InputManager.ActiveInputType == ActiveInputType.Gamepad; }
         catch { }
-        bool inputWanted = want && target >= 1f && !isPaused && TimeUtil.PauseTime >= 0.001f && !gamepad;
+        bool inputWanted = want && target >= 1f && !isPaused && TimeUtil.PauseTime >= 0.001f;
         if (inputWanted)
         {
             if (!_input) _input = BeginInput();
@@ -125,7 +145,11 @@ public static class LevelUpOverlay
 
         int queued = 0;
         try { queued = panel.PowerUpRequests != null ? panel.PowerUpRequests.Count : 0; } catch { }
-        BannerText = _visual && _minimized ? Loc.T("bn.levelup", ("n", Mathf.Max(1, queued))) : null;
+        queued = Mathf.Max(1, queued);
+        BannerText = !_visual ? null
+                   : _minimized ? (gamepad ? Texts.HiddenGamepad(queued) : Texts.HiddenKeyboard(queued))
+                   : gamepad ? Texts.GamepadHint
+                   : null;
     }
 
     /// <summary>The panel is gone (scene change / destroyed): undo everything without touching it.</summary>
@@ -431,8 +455,14 @@ public static class LevelUpOverlay
             }
         }
 
-        // Keys this overlay itself uses (1-4, numpad 1-4, Tab) win over gameplay too.
-        foreach (var reserved in ReservedPaths)
+        // Keys this overlay itself uses (1-4, numpad 1-4, Tab, the gamepad's D-pad) win over gameplay and over the
+        // game's other UI actions (the game's own option keys excepted, see Pick).
+        var reservedPaths = new HashSet<string>(ReservedPaths);
+        var pad = Gamepad.current;
+        if (pad != null)
+            foreach (var b in new[] { pad.dpad.up, pad.dpad.down, pad.dpad.left, pad.dpad.right })
+                if (b != null && !string.IsNullOrEmpty(b.path)) reservedPaths.Add(b.path);
+        foreach (var reserved in reservedPaths)
             if (gameplayByPath.TryGetValue(reserved, out var list))
                 foreach (var g in list) AddOnce(OffGameplay, g);
 
@@ -453,6 +483,7 @@ public static class LevelUpOverlay
             {
                 var path = ctrls[c] != null ? ctrls[c].path : null;
                 if (string.IsNullOrEmpty(path) || path!.StartsWith("/Mouse")) continue; // pointer / click: kept
+                if (!isPriority && reservedPaths.Contains(path)) clash = true;
                 if (!gameplayByPath.TryGetValue(path, out var list)) continue;
                 if (isPriority) foreach (var g in list) AddOnce(OffGameplay, g);
                 else clash = true;
@@ -558,7 +589,7 @@ public static class LevelUpOverlay
             var im = MainUIManager.Instance != null ? MainUIManager.Instance.InputManager : null;
             var native = im == null ? null : n switch
             {
-                0 => im.SelectPowerup1, 1 => im.SelectPowerup2, 2 => im.SelectPowerup3, _ => im.SelectPowerup4,
+                0 => im.SelectPowerup1, 1 => im.SelectPowerup2, 2 => im.SelectPowerup3, 3 => im.SelectPowerup4, _ => null,
             };
             if (native != null && native.enabled && native.WasPressedThisFrame()) return; // the game picks it itself
 
@@ -581,6 +612,58 @@ public static class LevelUpOverlay
         catch (System.Exception ex)
         {
             Plugin.StaticLog.LogError($"[SoulstoneCoop][levelup] Key {n + 1}: {ex.Message}");
+        }
+    }
+
+    /// <summary>Highlighted card (or skill swap slot) for the gamepad: the game's own index, the one its stick
+    /// navigation moves.</summary>
+    private static int CursorIndex(LevelUpPanelManager panel)
+    {
+        try { return panel.SkillToEquip != null ? panel.SelectedLevelUpSkillReplaceableIndex : panel.SelectedLevelUpPanelItemIndex; }
+        catch { return 0; }
+    }
+
+    /// <summary>D-pad left / right: moves the game's highlight (index + EventSystem selection, as its stick navigation does).</summary>
+    private static void MoveCursor(LevelUpPanelManager panel, int dir)
+    {
+        try
+        {
+            bool swapping = panel.SkillToEquip != null;
+            int count = 0;
+            if (swapping)
+            {
+                var swap = panel.ReplaceableSkillItems;
+                if (swap != null) for (int i = 0; i < swap.Count; i++) if (swap[i] != null && swap[i].gameObject.activeInHierarchy) count = i + 1;
+            }
+            else
+            {
+                var items = panel.Items;
+                int options = panel.PowerUpList != null ? panel.PowerUpList.Count : 0;
+                if (items != null)
+                    for (int i = 0; i < items.Count && i < options; i++)
+                        if (items[i] != null && items[i].gameObject.activeInHierarchy) count = i + 1;
+            }
+            if (count == 0) return;
+            int idx = Mathf.Clamp(CursorIndex(panel) + dir, 0, count - 1);
+            GameObject? go;
+            if (swapping)
+            {
+                panel.SetSelectedReplaceableItemIndex(idx);
+                var b = panel.ReplaceableSkillItems[idx].Button;
+                go = b != null ? b.gameObject : null;
+            }
+            else
+            {
+                panel.SetSelectedLevelUpPanelItemIndex(idx);
+                var b = panel.Items[idx].Button;
+                go = b != null ? b.gameObject : null;
+            }
+            var es = UnityEngine.EventSystems.EventSystem.current;
+            if (es != null && go != null) es.SetSelectedGameObject(go);
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.StaticLog.LogError($"[SoulstoneCoop][levelup] D-pad: {ex.Message}");
         }
     }
 

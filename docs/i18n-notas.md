@@ -77,7 +77,7 @@ Só faz sentido se o jogo ganhar o idioma (o mod segue o idioma do jogo).
 
 ## Roteiro de teste
 
-Antes: nos dois jogos, `BepInEx/LogOutput.log` deve ter `[i18n] 132 texts OK (en 132, pt-BR 132, ...)` e nenhum `[i18n] ... problem`.
+Antes: nos dois jogos, `BepInEx/LogOutput.log` deve ter `[i18n] 133 texts OK (en 133, pt-BR 133, ...)` e nenhum `[i18n] ... problem`.
 
 Pra cada idioma (pelo menos **inglês** e **português**; se der, um de fonte diferente, como russo ou chinês), trocando o idioma nas Opções do jogo, sem reiniciar:
 
@@ -86,7 +86,7 @@ Pra cada idioma (pelo menos **inglês** e **português**; se der, um de fonte di
 3. **Status do painel:** fora do co-op; hospedando por IP; lobby da Steam aberto; conectando; conectado (cliente: "Conectado com ... / No grupo / Aguardando o host"); host com a lista de jogadores (`no menu`, `carregando`, `na partida`, `instável`).
 4. **Erros de conexão:** recusa por versão (`--coop-fake-version` no cliente), lobby cheio, host que sai. Testar também com o host num idioma e o cliente em outro: cada um vê a recusa no seu.
 5. **Faixa do topo:** pausa do parceiro, "escolhendo upgrade", "Aguardando X carregar", conexão instável (simulação de rede), avisos de Copiar código e Colar com a área vazia.
-6. **Em jogo:** caído/revive (os flutuantes `CAÍDO`, `REVIVE xx%`, `REVIVEU!`), o nome com "(caído)" sobre o fantasma, o indicador do level-up compacto ("Level up! (N) - Tab mostra"), avisos de portal (F5/F10 no host), host desconectando no meio da run.
+6. **Em jogo:** caído/revive (os flutuantes `CAÍDO`, `REVIVE xx%`, `REVIVEU!`), o nome com "(caído)" sobre o fantasma, o painel compacto do level-up (minimizado: "Level up! (N) - Tab mostra" no teclado e "... - D-pad baixo mostra" no controle; aberto com controle: a dica do D-pad), avisos de portal (F5/F10 no host), host desconectando no meio da run.
 7. **Simulação de rede:** com `SimulateLatencyMs` ligado, a linha laranja no painel.
 8. **Troca no meio:** com o painel aberto e com um aviso na tela, trocar o idioma: os textos mudam sem fechar nada.
 9. **Mistura:** host em inglês, cliente em português: o aviso "X não entrou: motivo" aparece inteiro no idioma de quem lê.
