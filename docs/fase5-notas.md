@@ -141,6 +141,6 @@ Antes o fantasma só recebia posição e direção, então o dash aparecia como 
 - **Quem envia:** quando `ModifiedCharacter.IsDashing()` muda (o flag `_isDashing`, 0x12C, que o `PlayerAnimator` do jogo joga no parâmetro `Dash` a cada frame), sai o pacote `DashState = 54` (1 começou, 0 terminou, ReliableOrdered). O `PlayerState` não mudou.
 - **Quem recebe:** o fantasma liga `Dash` no Animator do modelo 100 ms depois de receber, o mesmo atraso da interpolação das posições, então a pose de dash coincide com o movimento do dash. Por segurança, desliga sozinho depois de 1,5 s se o "terminou" não chegar.
 - **Telemetria:** a linha `[sync]` ganhou `dashes=enviados/recebidos`.
-- **Fora:** o rastro de imagens do dash (`DashEffect`). Ele depende de um `ModifiedCharacter` e de um Rigidbody vivos, que o fantasma não tem.
+- **Fora:** o rastro de imagens do dash (`DashEffect`). Ele depende de um `ModifiedCharacter` e de um Rigidbody vivos, que o fantasma não tem. **Issue #2:** agora o fantasma tem uma versão só visual dele (`GhostDashTrail`), veja `docs/issue2-dash-notas.md`. O bool `Dash` sozinho não mostra nada: nenhum controller tem estado de dash.
 
 **Roteiro:** um dos dois dá dash várias vezes, em direções diferentes. Na tela do outro, o fantasma faz a animação de dash durante o deslocamento, e não só desliza, e volta a andar normal no fim. Conferir na linha `[sync]` que `dashes=` sobe dos dois lados.
