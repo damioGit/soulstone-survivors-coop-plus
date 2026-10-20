@@ -179,7 +179,7 @@ internal sealed class GhostDashTrail
             var mesh = mf != null ? mf.sharedMesh : null;
             // A mesh without Read/Write can't be combined (Unity refuses the whole CombineMeshes).
             if (mesh == null || !mesh.isReadable) { skipped++; continue; }
-            parts.Add(Part(mesh, toLocal * mr.transform.localToWorldMatrix));
+            parts.Add(Part(mesh, toLocal * mr!.transform.localToWorldMatrix));
             meshes++;
         }
         if (!_bakeLogged)
