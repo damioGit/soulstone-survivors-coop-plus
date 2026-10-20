@@ -247,7 +247,7 @@ public class CoopBehaviour : MonoBehaviour
         Plugin.StaticLog.LogInfo(
             $"[SoulstoneCoop][sync] role={NetworkManager.Role} slot={Players.MySlot} peers={NetworkManager.PeerSlots.Count} " +
             $"ping={NetworkManager.PingMs} silence={NetworkManager.SilenceSeconds:F1}s{(NetSim.Enabled ? " SIM" : "")} " +
-            $"place={Lobby.CoopSession.LocalPlace} sent={PlayerSync.SentCount} recv={PlayerSync.ReceivedCount} dashes={PlayerSync.DashesSent}/{PlayerSync.DashesReceived} local={localPos} " +
+            $"place={Lobby.CoopSession.LocalPlace} sent={PlayerSync.SentCount} recv={PlayerSync.ReceivedCount} dashes={PlayerSync.DashesSent}/{PlayerSync.DashesReceived} trail={GhostDashTrail.ImagesShown} local={localPos} " +
             $"others=[{string.Join(" ", ghosts)}] relayed={NetworkManager.RelayedPackets} ({NetworkManager.RelayedBytes} B) " +
             $"runInBg={Application.runInBackground} timeScale={Time.timeScale} focused={Application.isFocused}");
         NetworkManager.RelayedPackets = NetworkManager.RelayedBytes = 0;
