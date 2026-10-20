@@ -10,8 +10,10 @@ public enum PauseReason : byte
 {
     None = 0,
     Pause = 1,
+    /// <summary>No longer sent (0.9.2, issue #1: level-ups never pause in co-op). Kept on the wire; never freezes.</summary>
     LevelUp = 2,
-    /// <summary>Level-up popup open WITHOUT stopping the time ([Coop] LevelUpPause): shown, never freezes the others.</summary>
+    /// <summary>Level-up popup open on the full-screen panel without stopping the time ([Debug] LevelUpFullPanel):
+    /// the others see a banner, never a freeze. The overlay sends None.</summary>
     Choosing = 3,
 }
 
@@ -20,10 +22,10 @@ public enum PauseReason : byte
 /// TimeUtil.SetTime runs every frame and sets Time.timeScale to the product of the game's pause
 /// factors; our postfix reads the LOCAL state from those factors (before the remote state is applied,
 /// so two players can't latch each other paused) and then forces timeScale to 0 while someone else is paused.
-/// In co-op the level-up popup may skip the pause (LevelUpPolicy, [Coop] LevelUpPause): it is then sent as Choosing.
+/// Level-ups never freeze anyone in co-op (LevelUpPolicy, issue #1): the popup's own factor is left out of timeScale,
+/// and the state sent is None (overlay) or Choosing (debug full panel). Only Esc pauses.
 /// Phase 9 (user's rule): Esc by anyone freezes everyone, and the host can unfreeze: when it closes its own pause
-/// menu, or presses F4, whoever was pausing stops counting (PauseOverride) until it pauses again. A level-up that
-/// pauses (LevelUpPause = Always) freezes the others only with two players; with three or more, only its own game.
+/// menu, or presses F4, whoever was pausing stops counting (PauseOverride) until it pauses again.
 /// The host forwards every client's PauseState to the others (PacketRouter).
 /// </summary>
 public static class PauseSync
@@ -38,14 +40,13 @@ public static class PauseSync
     /// <summary>That player's last reported pause state.</summary>
     public static PauseReason ReasonOf(byte slot) => slot < Players.MaxSlots ? Reasons[slot] : PauseReason.None;
 
-    /// <summary>That player's state freezes us: a pause (or, with two players, a pausing level-up) inside a run next
-    /// to ours, not lifted by the host. A state latched from the end screen must not freeze the next run (phase 6).</summary>
+    /// <summary>That player's state freezes us: an Esc pause inside a run next to ours, not lifted by the host. A state
+    /// latched from the end screen must not freeze the next run (phase 6).</summary>
     public static bool Freezes(byte slot)
     {
         if (slot >= Players.MaxSlots || (_overrideMask & (1 << slot)) != 0) return false;
-        var r = Reasons[slot];
-        bool freezes = r == PauseReason.Pause || (r == PauseReason.LevelUp && Players.Count <= 2);
-        return freezes && NetworkManager.HasPeer && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.InRun(slot);
+        return Reasons[slot] == PauseReason.Pause
+            && NetworkManager.HasPeer && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.InRun(slot);
     }
 
     /// <summary>Someone else's pause freezes us right now.</summary>
@@ -58,12 +59,12 @@ public static class PauseSync
         }
     }
 
-    /// <summary>Someone else is choosing an upgrade with the game running (or pausing only its own game): no freeze, just the banner.</summary>
+    /// <summary>Someone else is choosing an upgrade on the full-screen panel (debug) with the game running: no freeze, just the banner.</summary>
     public static bool IsChoosing(byte slot)
     {
         if (slot >= Players.MaxSlots || !NetworkManager.HasPeer || !Lobby.CoopSession.LocalInRun || !Lobby.CoopSession.InRun(slot)) return false;
         var r = Reasons[slot];
-        return r == PauseReason.Choosing || (r == PauseReason.LevelUp && !Freezes(slot));
+        return r == PauseReason.Choosing || r == PauseReason.LevelUp;
     }
 
     /// <summary>That player is in its pause menu but the host lifted the freeze.</summary>
@@ -125,9 +126,10 @@ public static class PauseSync
                 * TimeUtil.ControllerDisconnectedTime * TimeUtil.CreditsTime * TimeUtil.PlayerDataTime;
         }
         var previous = LocalReason;
-        LocalReason = levelUpPopup && !noPause ? PauseReason.LevelUp
-                    : TimeUtil.PauseTime < 0.001f ? PauseReason.Pause
-                    : levelUpPopup && !overlay ? PauseReason.Choosing // the overlay plays on: no banner for the others
+        // A level-up is never a pause for the others (issue #1). Without co-op (nobody else in the run) the popup
+        // still pauses our own game, and that's nobody else's business either.
+        LocalReason = TimeUtil.PauseTime < 0.001f ? PauseReason.Pause
+                    : levelUpPopup && noPause && !overlay ? PauseReason.Choosing // debug full panel: banner only
                     : PauseReason.None;
         LevelUpPolicy.DebugHotkey();
 
