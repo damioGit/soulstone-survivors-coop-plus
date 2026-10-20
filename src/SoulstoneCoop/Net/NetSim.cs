@@ -17,8 +17,12 @@ public static class NetSim
 
     public static bool Enabled => LatencyMs > 0 || JitterMs > 0 || LossPercent > 0;
 
-    /// <summary>Short Portuguese description for the panel and the logs.</summary>
-    public static string Describe() => $"+{LatencyMs} ms ±{JitterMs} ms, {LossPercent}% de perda";
+    /// <summary>Short description: English for the logs, the player's language for the panel.</summary>
+    public static string Describe(bool local = false)
+    {
+        var args = new (string, object?)[] { ("lat", LatencyMs), ("jit", JitterMs), ("loss", LossPercent) };
+        return local ? Ui.Loc.T("netsim.desc", args) : Ui.Loc.En("netsim.desc", args);
+    }
 
     internal static void Configure(int latencyMs, int jitterMs, int lossPercent)
     {

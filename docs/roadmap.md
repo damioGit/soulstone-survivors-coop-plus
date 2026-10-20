@@ -31,6 +31,7 @@ Fonte única das próximas fases e pendências. Detalhes técnicos de cada fase 
 | 5, item 5 | Summons, companheiros e a puma do Sentinel do parceiro como clones visuais | `568db38` |
 | Level-up | Painel compacto e semitransparente pra jogar enquanto escolhe; padrão `Overlay` | `c263e20`, `efd4d89` |
 | 9 | Até 8 jogadores: slots, transportes multi-peer, repasse pelo host, lobby de 8, regras com N, escala de inimigos opcional | merge da `fase9-oito` |
+| i18n | Textos do mod no idioma do jogo de cada jogador (en e pt-BR à mão; es, fr, de, ru, zh, ja automáticos, a revisar) | branch `i18n-textos` (`i18n-notas.md`) |
 
 ## Agora
 
@@ -65,4 +66,5 @@ Fonte única das próximas fases e pendências. Detalhes técnicos de cada fase 
 - Texto flutuante do jogo (`OverheadCombatTextPanelManager.RequestCombatTextWithString`) aceita no máximo 16 caracteres; acima disso dá erro e o texto não aparece.
 - Ao subir a versão, mudanças de formato de pacote quebram a compatibilidade: o handshake recusa versões diferentes.
 - Enquanto o usuário testa uma versão fixa, `%USERPROFILE%\.soulstone-no-deploy` trava o deploy (ou use `-p:SkipDeploy=true`).
+- Texto visível ao jogador sai da tabela `Ui/LocTable.cs` (`Loc.T` / `Loc.Msg`), nunca literal no código; pela rede vai a `Loc.Msg` (chave + parâmetros), nunca o texto traduzido (`i18n-notas.md`).
 - Pacotes de rede: veja o enum `PacketType` em `src/SoulstoneCoop/Net/PacketRouter.cs` (a fase 9 usa 100–104). Itens novos começam no 120.

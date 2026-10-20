@@ -125,7 +125,7 @@ public static class LevelUpOverlay
 
         int queued = 0;
         try { queued = panel.PowerUpRequests != null ? panel.PowerUpRequests.Count : 0; } catch { }
-        BannerText = _visual && _minimized ? $"Level up! ({Mathf.Max(1, queued)}) - Tab mostra" : null;
+        BannerText = _visual && _minimized ? Loc.T("bn.levelup", ("n", Mathf.Max(1, queued))) : null;
     }
 
     /// <summary>The panel is gone (scene change / destroyed): undo everything without touching it.</summary>

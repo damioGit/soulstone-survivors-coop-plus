@@ -35,7 +35,11 @@ public sealed class RemotePlayer
     public bool InRun => Place == LobbyPlace.InRun;
     public bool ChangingScene => Place == LobbyPlace.Loading || Place == LobbyPlace.Transition;
 
-    public string Name => Info.Known && Info.Name.Length > 0 ? Info.Name : IsHost ? "Host" : $"Jogador {Slot + 1}";
+    public string Name => Info.Known && Info.Name.Length > 0 ? Info.Name : FallbackName(Slot);
+
+    /// <summary>"Host" / "Player 3" (local language) until that player's Hello brings its Steam name.</summary>
+    public static string FallbackName(byte slot) =>
+        slot == Net.Players.HostSlot ? Ui.Loc.T("name.host") : Ui.Loc.T("name.player", ("n", slot + 1));
 
     /// <summary>Where this player is: its ghost, once a position of this run placed it.</summary>
     public bool TryGetPosition(out Vector3 pos, out Quaternion rot)

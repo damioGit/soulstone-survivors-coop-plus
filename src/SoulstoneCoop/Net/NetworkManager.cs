@@ -47,8 +47,23 @@ public static class NetworkManager
 
     public static NetStatus Status => Transport?.Status ?? _idleStatus;
 
-    /// <summary>Last connection problem, in Portuguese, for the panel (null = none).</summary>
+    /// <summary>Last connection problem for the panel (null = none): a Ui.Loc.Msg (shown with Ui.Loc.Show), or the
+    /// plain text an older host sent.</summary>
     public static string? LastError => Transport != null ? Transport.LastError : _idleError;
+
+    // Handshake refusals, sent to the client as Ui.Loc.Msg (both transports). The wire format is unchanged (one
+    // string); an older client shows the English text inside the message.
+    internal static string VersionRefusal(string clientVersion) =>
+        Ui.Loc.Msg("net.version", ("host", Plugin.HandshakeVersion), ("you", VersionOrOld(clientVersion)));
+
+    internal static string FullRefusal() =>
+        MaxPlayers <= 2 ? Ui.Loc.Msg("net.has_partner") : Ui.Loc.Msg("net.full", ("max", MaxPlayers));
+
+    /// <summary>The host's own panel, after refusing a client of another version.</summary>
+    internal static string RefusedClientError(string clientVersion) =>
+        Ui.Loc.Msg("net.refused_client", ("v", VersionOrOld(clientVersion)), ("mine", Plugin.HandshakeVersion));
+
+    private static string VersionOrOld(string version) => version.Length > 0 ? version : Ui.Loc.Msg("net.old");
 
     /// <summary>IP the client is trying to reach (for the panel).</summary>
     public static string? TargetAddress { get; private set; }
