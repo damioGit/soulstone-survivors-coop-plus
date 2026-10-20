@@ -44,22 +44,20 @@ public static class RunSync
         var role = NetworkManager.Role;
         if (role == NetRole.Client)
         {
-            CoopSession.Notice(CoopSession.Connected
-                ? "Aguardando o host começar a partida"
-                : "Conectando ao host... (desconecte pra jogar sozinho)");
+            CoopSession.Notice(Ui.Loc.Msg(CoopSession.Connected ? "st.wait_host" : "nt.connecting_host"));
             return false;
         }
         if (role == NetRole.Host && CoopSession.Connected)
         {
             if (mode == GameModes.Crusade)
             {
-                CoopSession.Notice("Cruzada ainda não funciona em co-op");
+                CoopSession.Notice(Ui.Loc.Msg("nt.crusade"));
                 return false;
             }
             var away = CoopSession.NamesWhere(r => r.Place != LobbyPlace.Menu);
             if (away.Length > 0)
             {
-                CoopSession.Notice($"{away} ainda não voltou ao menu");
+                CoopSession.Notice(Ui.Loc.Msg("nt.not_back", ("names", away)));
                 return false;
             }
         }
@@ -145,7 +143,7 @@ public static class RunSync
             w.Put((byte)PacketType.RunStart);
             WriteParams(w, _hostRun);
             NetworkManager.SendTo(r.Slot, w, DeliveryMethod.ReliableOrdered); // only the newcomer: the others are in the run
-            CoopSession.Notice($"{r.Name} chegou: entrando na sua partida", 6f);
+            CoopSession.Notice(Ui.Loc.Msg("nt.arrived", ("name", r.Name)), 6f);
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][run] Host: slot {r.Slot} connected mid-run - RunStart resent (scene={_hostRun.Scene} mode={_hostRun.Mode}).");
         }
     }
@@ -214,13 +212,14 @@ public static class RunSync
         catch (Exception ex)
         {
             Plugin.StaticLog.LogError($"[SoulstoneCoop][run] Client: starting the host's run: {ex}");
-            refuse = "erro ao iniciar a partida";
+            refuse = Ui.Loc.Msg("why.start_error");
             _clientRun = null;
         }
-        if (refuse != null) Refuse($"Não deu pra entrar na partida do host: {refuse}", refuse);
+        if (refuse != null) Refuse(Ui.Loc.Msg("nt.cant_join_run", ("reason", refuse)), refuse);
     }
 
-    /// <summary>Client: tell the host why we didn't follow (shown on both screens).</summary>
+    /// <summary>Client: tell the host why we didn't follow (shown on both screens). Both are Ui.Loc.Msg: the reason
+    /// travels as a key + parameters and the host shows it in its own language.</summary>
     internal static void Refuse(string localNotice, string reasonForHost)
     {
         CoopSession.Notice(localNotice, 8f);
@@ -230,15 +229,15 @@ public static class RunSync
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
     }
 
-    /// <returns>Null when the scene change started; otherwise why not (Portuguese, shown on both screens).</returns>
+    /// <returns>Null when the scene change started; otherwise why not (a Ui.Loc.Msg, shown on both screens).</returns>
     private static string? TryStartClientRun(RunParams p)
     {
-        if (CoopSession.LocalInRun) return "ainda estou numa partida";
-        if (CoopSession.LocalLoading) return "já estou carregando uma partida";
+        if (CoopSession.LocalInRun) return Ui.Loc.Msg("why.in_run");
+        if (CoopSession.LocalLoading) return Ui.Loc.Msg("why.loading");
         var ui = MainUIManager.Instance;
-        if (ui == null) return "menu não encontrado";
+        if (ui == null) return Ui.Loc.Msg("why.no_menu");
         string active = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
-        if (active != MenuScene) return $"não estou no menu ({active})";
+        if (active != MenuScene) return Ui.Loc.Msg("why.not_in_menu", ("scene", active));
         string? missing = MissingScene(p);
         if (missing != null) return missing;
 
@@ -254,8 +253,8 @@ public static class RunSync
     private static string? MissingScene(RunParams p)
     {
         var maps = Global.MapCollection;
-        if (maps != null && maps.GetMapById(p.Scene) == null && p.Mode == GameModes.Survivor) return $"não tenho o mapa {p.Scene}";
-        if (!Application.CanStreamedLevelBeLoaded(p.Scene)) return $"não tenho a cena {p.Scene} (DLC?)";
+        if (maps != null && maps.GetMapById(p.Scene) == null && p.Mode == GameModes.Survivor) return Ui.Loc.Msg("why.no_map", ("map", p.Scene));
+        if (!Application.CanStreamedLevelBeLoaded(p.Scene)) return Ui.Loc.Msg("why.no_scene", ("map", p.Scene));
         return null;
     }
 
@@ -293,18 +292,18 @@ public static class RunSync
         if (!CoopSession.Connected) return true;
         if (NetworkManager.Role != NetRole.Host)
         {
-            CoopSession.Notice("Em co-op quem reinicia é o host (ou volte ao menu)");
+            CoopSession.Notice(Ui.Loc.Msg("nt.restart_host_only"));
             return false;
         }
         if (panel.RequestedGoToMenu) return true; // the game ignores the click anyway
         if (Global.SelectedGameMode == GameModes.Crusade)
         {
-            CoopSession.Notice("Cruzada ainda não funciona em co-op: volte ao menu");
+            CoopSession.Notice(Ui.Loc.Msg("nt.crusade_menu"));
             return false;
         }
         if (CoopSession.AnyRemoteChangingScene)
         {
-            CoopSession.Notice($"{CoopSession.NamesWhere(r => r.ChangingScene)} ainda está carregando");
+            CoopSession.Notice(Ui.Loc.Msg("nt.still_loading", ("names", CoopSession.NamesWhere(r => r.ChangingScene))));
             return false;
         }
         return true;
@@ -358,16 +357,16 @@ public static class RunSync
         catch (Exception ex)
         {
             Plugin.StaticLog.LogError($"[SoulstoneCoop][run] Client: following the host's restart: {ex}");
-            refuse = "erro ao reiniciar";
+            refuse = Ui.Loc.Msg("why.restart_error");
             _clientRun = null;
         }
-        if (refuse != null) Refuse($"Não deu pra reiniciar com o host: {refuse}", refuse);
+        if (refuse != null) Refuse(Ui.Loc.Msg("nt.cant_restart", ("reason", refuse)), refuse);
     }
 
     /// <summary>Client still in the old run (end screen): what its own Restart button does, with the host's run.</summary>
     private static string? TryRestartClientRun(RunParams p)
     {
-        if (CoopSession.StageTransition) return "já estou trocando de cena";
+        if (CoopSession.StageTransition) return Ui.Loc.Msg("why.changing_scene");
         string? missing = MissingScene(p);
         if (missing != null) return missing;
 
@@ -385,8 +384,9 @@ public static class RunSync
     {
         string reason = r.GetString();
         if (NetworkManager.Role != NetRole.Host) return;
-        Plugin.StaticLog.LogWarning($"[SoulstoneCoop][run] Host: slot {PacketRouter.From} refused the run: {reason}");
-        CoopSession.Notice($"{CoopSession.NameOf(PacketRouter.From)} não entrou: {reason}", 8f);
+        Plugin.StaticLog.LogWarning($"[SoulstoneCoop][run] Host: slot {PacketRouter.From} refused the run: {Ui.Loc.Plain(reason)}");
+        // The reason is a Ui.Loc.Msg from the client: shown in the host's language.
+        CoopSession.Notice(Ui.Loc.Msg("nt.refused_run", ("name", CoopSession.NameOf(PacketRouter.From)), ("reason", reason)), 8f);
     }
 
     internal static void OnLocalMatchStarted()

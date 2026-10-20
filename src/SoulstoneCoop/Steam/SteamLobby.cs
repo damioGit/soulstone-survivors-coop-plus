@@ -162,14 +162,14 @@ internal static unsafe class SteamLobby
 
     private static string RelayName(int s) => s switch
     {
-        100 => "pronto",
-        3 => "conectando",
-        2 => "aguardando",
-        1 => "não iniciado",
-        -10 => "tentando de novo",
-        -100 => "falhou antes",
-        -101 => "falhou",
-        -102 => "não pode tentar",
+        100 => "ready",
+        3 => "connecting",
+        2 => "waiting",
+        1 => "not started",
+        -10 => "retrying",
+        -100 => "failed before",
+        -101 => "failed",
+        -102 => "cannot try",
         _ => "?",
     };
 
@@ -179,7 +179,7 @@ internal static unsafe class SteamLobby
     /// the lobby can invite its own friends too (FriendsOnly lobbies take friends and invitees of the members).</summary>
     public static void HostAndInvite()
     {
-        if (!_ready) { LastError = "Steam indisponível"; return; }
+        if (!_ready) { LastError = Ui.Loc.Msg("steam.unavailable"); return; }
         LastError = null;
         if (State == LobbyState.Hosting || State == LobbyState.Joined) { OpenInviteOverlay(); return; }
         if (State == LobbyState.Creating) return;
@@ -187,7 +187,7 @@ internal static unsafe class SteamLobby
         LeaveSilently();
         NetworkManager.Stop(); // leaving IP co-op, if any
         ulong call = SteamNative.SteamAPI_ISteamMatchmaking_CreateLobby(_mm, LobbyTypeValue(), NetworkManager.MaxPlayers);
-        if (call == 0) { LastError = "A Steam não criou o lobby"; return; }
+        if (call == 0) { LastError = Ui.Loc.Msg("steam.create_failed"); return; }
         State = LobbyState.Creating;
         _openOverlayWhenReady = true;
         SteamCallbacks.Expect(call, SteamNative.LobbyCreated, OnLobbyCreated);
@@ -201,7 +201,7 @@ internal static unsafe class SteamLobby
         if (ioFailure || result != 1 || lobby == 0)
         {
             State = LobbyState.None;
-            LastError = $"A Steam não criou o lobby (erro {result})";
+            LastError = Ui.Loc.Msg("steam.create_failed_code", ("code", result));
             Plugin.StaticLog.LogWarning($"[SoulstoneCoop][steam] CreateLobby failed: result={result} ioFailure={ioFailure}.");
             return;
         }
@@ -237,7 +237,7 @@ internal static unsafe class SteamLobby
         // anyway (harmless without an overlay) and point to the code as the way that always works.
         bool overlay = OverlayEnabled;
         SteamNative.SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialog(_friends, LobbyId);
-        LastError = overlay ? null : "Se o overlay da Steam não abriu, use Copiar código";
+        LastError = overlay ? null : Ui.Loc.Msg("steam.overlay");
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][steam] Invite overlay requested (IsOverlayEnabled={overlay}).");
     }
 
@@ -252,13 +252,13 @@ internal static unsafe class SteamLobby
 
     public static void Join(ulong lobby)
     {
-        if (!_ready) { LastError = "Steam indisponível"; return; }
+        if (!_ready) { LastError = Ui.Loc.Msg("steam.unavailable"); return; }
         if (lobby == 0) return;
         if (InLobby && LobbyId == lobby) return;
         if (Lobby.CoopSession.LocalInRun || Lobby.CoopSession.LocalLoading)
         {
             _pendingJoin = lobby;
-            Lobby.CoopSession.Notice("Convite guardado: volte ao menu pra entrar", 6f);
+            Lobby.CoopSession.Notice(Ui.Loc.Msg("steam.invite_saved"), 6f);
             return;
         }
 
@@ -266,12 +266,12 @@ internal static unsafe class SteamLobby
         LeaveSilently();
         NetworkManager.Stop();
         ulong call = SteamNative.SteamAPI_ISteamMatchmaking_JoinLobby(_mm, lobby);
-        if (call == 0) { LastError = "A Steam não deixou entrar no lobby"; return; }
+        if (call == 0) { LastError = Ui.Loc.Msg("steam.join_denied"); return; }
         _joining = lobby;
         State = LobbyState.Joining;
         SteamCallbacks.Expect(call, SteamNative.LobbyEnter, (p, failed) =>
         {
-            if (failed) { FailJoin("A Steam não respondeu ao entrar no lobby"); return; }
+            if (failed) { FailJoin(Ui.Loc.Msg("steam.join_noreply")); return; }
             OnLobbyEnter(p, fromCallResult: true);
         });
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][steam] Joining lobby {lobby}...");
@@ -291,19 +291,23 @@ internal static unsafe class SteamLobby
         {
             FailJoin(response switch
             {
-                2 => "Esse lobby não existe mais",
-                3 => "Sem permissão pra entrar (o host pode estar numa partida)",
-                4 => "O lobby está cheio",
-                _ => $"Não deu pra entrar no lobby (código {response})",
+                2 => Ui.Loc.Msg("steam.lobby_gone"),
+                3 => Ui.Loc.Msg("steam.no_permission"),
+                4 => Ui.Loc.Msg("steam.lobby_full"),
+                _ => Ui.Loc.Msg("steam.join_failed", ("code", response)),
             }, lobby);
             return;
         }
 
         string? version = GetData(lobby, KeyVersion);
         ulong owner = SteamNative.SteamAPI_ISteamMatchmaking_GetLobbyOwner(_mm, lobby);
-        if (string.IsNullOrEmpty(version)) { FailJoin("Esse lobby não é do Soulstone Coop", lobby); return; }
-        if (version != Plugin.HandshakeVersion) { FailJoin($"Versão diferente: host {version}, você {Plugin.HandshakeVersion}", lobby); return; }
-        if (owner == 0 || owner == SelfId) { FailJoin("Esse lobby é seu (a mesma conta Steam nos dois jogos)", lobby); return; }
+        if (string.IsNullOrEmpty(version)) { FailJoin(Ui.Loc.Msg("steam.not_coop"), lobby); return; }
+        if (version != Plugin.HandshakeVersion)
+        {
+            FailJoin(Ui.Loc.Msg("net.version", ("host", version), ("you", Plugin.HandshakeVersion)), lobby);
+            return;
+        }
+        if (owner == 0 || owner == SelfId) { FailJoin(Ui.Loc.Msg("steam.own_lobby"), lobby); return; }
 
         LobbyId = lobby;
         HostId = owner;
@@ -314,7 +318,7 @@ internal static unsafe class SteamLobby
 
     private static void FailJoin(string error, ulong lobby = 0)
     {
-        Plugin.StaticLog.LogWarning($"[SoulstoneCoop][steam] Join failed: {error}");
+        Plugin.StaticLog.LogWarning($"[SoulstoneCoop][steam] Join failed: {Ui.Loc.Plain(error)}");
         if (lobby != 0) SteamNative.SteamAPI_ISteamMatchmaking_LeaveLobby(_mm, lobby);
         State = LobbyState.None;
         LobbyId = 0;

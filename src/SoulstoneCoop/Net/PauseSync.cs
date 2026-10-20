@@ -174,7 +174,7 @@ public static class PauseSync
         if (mask == _overrideMask) return;
         _overrideMask = mask;
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][pause] Host lifted the others' pause ({why}): mask={mask:X2}.");
-        Lobby.CoopSession.Notice("Você despausou o jogo", 3f);
+        Lobby.CoopSession.Notice(Ui.Loc.Msg("nt.you_unpaused"), 3f);
         SendOverride();
     }
 
@@ -203,7 +203,7 @@ public static class PauseSync
         if (NetworkManager.Role != NetRole.Client) return;
         if (mask != _overrideMask) Plugin.StaticLog.LogInfo($"[SoulstoneCoop][pause] Host lifted pauses: mask={mask:X2}.");
         if ((mask & ~_overrideMask & (1 << Players.MySlot)) != 0)
-            Lobby.CoopSession.Notice("O host despausou: os outros continuam jogando", 5f);
+            Lobby.CoopSession.Notice(Ui.Loc.Msg("nt.host_unpaused"), 5f);
         _overrideMask = mask;
     }
 

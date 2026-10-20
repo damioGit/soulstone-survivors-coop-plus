@@ -137,6 +137,8 @@ public class CoopBehaviour : MonoBehaviour
             try { Lobby.CoopSession.Tick(Time.unscaledDeltaTime); }
             catch (System.Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] CoopSession.Tick: {ex}"); }
             UpdateGhostLifecycle();
+            try { Ui.Loc.Tick(); }
+            catch (System.Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] Loc.Tick: {ex}"); }
             Ui.CoopUi.Tick();
             PlayerSync.Tick(Time.unscaledDeltaTime);
             GhostOverhead.Tick(Time.unscaledDeltaTime);

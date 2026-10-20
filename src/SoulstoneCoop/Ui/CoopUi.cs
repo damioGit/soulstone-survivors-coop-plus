@@ -24,7 +24,7 @@ public static class CoopUi
 {
     private const string MenuScene = "Menu-Survivors";
     private const string DefaultAddress = "127.0.0.1";
-    private const string TabLabel = "Co-op";
+    private static string TabLabel => Loc.T("ui.tab");
 
     private static readonly Color PanelTint = new(1f, 1f, 1f, 1f);
     private static readonly Color PanelFallbackColor = new(0.06f, 0.05f, 0.08f, 0.94f);
@@ -36,6 +36,10 @@ public static class CoopUi
     // overlay canvas
     private static GameObject? _root;
     private static TMP_FontAsset? _font;
+    private static FontType _fontType = FontType.Regular; // the FightButton label's, for the per-language font
+    // Texts set once at build time, redone on a language change (Loc.Version).
+    private static readonly List<(TextMeshProUGUI Text, string Key)> _labels = new();
+    private static int _locVersion = -1, _fontVersion = -1;
     /// <summary>The game's menu font once the UI found it (phase 5: the ghost's name tag uses it too).</summary>
     internal static TMP_FontAsset? GameFont => _font;
     private static Sprite? _frameSprite, _titleSprite, _tabSprite, _tabSelectedSprite;
@@ -89,6 +93,7 @@ public static class CoopUi
                 if (_root == null) return;
             }
 
+            if (_locVersion != Loc.Version) ApplyLanguage();
             if (_inMenu) UpdateMenuTab();
             else _panelOpen = false;
 
@@ -241,57 +246,55 @@ public static class CoopUi
         if (role == NetRole.None)
         {
             string? error = NetworkManager.LastError ?? Steam.SteamLobby.LastError;
-            if (lobbyState == Steam.SteamLobby.LobbyState.Creating) text = "Criando o lobby na Steam...";
-            else if (lobbyState == Steam.SteamLobby.LobbyState.Joining) text = "Entrando no lobby da Steam...";
-            else if (error != null) text = $"<color=#ff8080>{error}</color>";
-            else text = Steam.SteamLobby.Available ? "Fora do co-op." : "Fora do co-op. Steam indisponível: só por IP.";
+            if (lobbyState == Steam.SteamLobby.LobbyState.Creating) text = Loc.T("st.creating_lobby");
+            else if (lobbyState == Steam.SteamLobby.LobbyState.Joining) text = Loc.T("st.joining_lobby");
+            else if (error != null) text = $"<color=#ff8080>{Loc.Show(error)}</color>";
+            else text = Loc.T(Steam.SteamLobby.Available ? "st.idle" : "st.idle_no_steam");
         }
         else if (status == NetStatus.Hosting)
             text = steam
-                ? $"Lobby aberto na Steam (1/{NetworkManager.MaxPlayers}). Convide amigos (ou mande o código)."
-                : $"Hospedando na porta {NetworkManager.Port} (1/{NetworkManager.MaxPlayers}). Aguardando jogadores...";
+                ? Loc.T("st.lobby_open", ("max", NetworkManager.MaxPlayers))
+                : Loc.T("st.hosting_port", ("port", NetworkManager.Port), ("max", NetworkManager.MaxPlayers));
         else if (status == NetStatus.Connecting)
             text = steam
-                ? $"Conectando com {Steam.SteamLobby.FriendName(Steam.SteamLobby.HostId)} pela Steam..."
-                : $"Conectando a {NetworkManager.TargetAddress}:{NetworkManager.Port}...";
+                ? Loc.T("st.connecting_steam", ("name", Steam.SteamLobby.FriendName(Steam.SteamLobby.HostId)))
+                : Loc.T("st.connecting_ip", ("addr", $"{NetworkManager.TargetAddress}:{NetworkManager.Port}"));
         else if (status == NetStatus.Connected)
         {
             if (role == NetRole.Client)
             {
                 var h = CoopSession.Host;
                 int ping = NetworkManager.PingMs;
-                text = $"Conectado com <color=#f2cc73>{Who(h)}</color> ({NetworkManager.Kind}{(ping >= 0 ? $", {ping} ms" : "")}).";
+                text = Loc.T("st.connected", ("name", $"<color=#f2cc73>{Who(h)}</color>"),
+                    ("link", $"{NetworkManager.Kind}{(ping >= 0 ? $", {ping} ms" : "")}"));
                 if (NetworkManager.Unstable)
-                    text += $" <color=#ff8080>Conexão instável ({NetworkManager.SilenceSeconds:0} s sem resposta)</color>";
+                    text += $" <color=#ff8080>{Loc.T("st.unstable", ("s", NetworkManager.SilenceSeconds.ToString("0")))}</color>";
                 var others = new List<string>();
                 foreach (var r in CoopSession.Remotes) if (!r.IsHost) others.Add(Who(r));
-                if (others.Count > 0) text += $"\nNo grupo ({Players.Count}/{Players.SessionMax}): {string.Join(", ", others)}";
-                text += h == null || h.Place == LobbyPlace.Menu
-                    ? "\nAguardando o host começar a partida."
-                    : "\nO host está numa partida; espere ele voltar ao menu.";
+                if (others.Count > 0)
+                    text += "\n" + Loc.T("st.group", ("n", Players.Count), ("max", Players.SessionMax), ("names", string.Join(", ", others)));
+                text += "\n" + Loc.T(h == null || h.Place == LobbyPlace.Menu ? "st.wait_host" : "st.host_in_run");
             }
             else
             {
-                text = $"Hospedando ({NetworkManager.Kind}): {Players.Count}/{NetworkManager.MaxPlayers} jogadores";
+                text = Loc.T("st.hosting", ("kind", NetworkManager.Kind), ("n", Players.Count), ("max", NetworkManager.MaxPlayers));
                 bool allInMenu = true;
                 foreach (var r in CoopSession.Remotes)
                 {
                     int ping = NetworkManager.PingOf(r.Slot);
-                    string unstable = NetworkManager.IsUnstable(r.Slot) ? " <color=#ff8080>instável</color>" : "";
+                    string unstable = NetworkManager.IsUnstable(r.Slot) ? $" <color=#ff8080>{Loc.T("st.unstable_tag")}</color>" : "";
                     text += $"\n<color=#f2cc73>{Who(r)}</color>  {(ping >= 0 ? $"{ping} ms" : "-")}  {PlaceLabel(r.Place)}{unstable}";
                     allInMenu &= r.Place == LobbyPlace.Menu;
                 }
-                text += allInMenu
-                    ? "\nComece a partida normalmente: todos entram juntos."
-                    : "\nEspere todos voltarem ao menu pra começar.";
+                text += "\n" + Loc.T(allInMenu ? "st.all_in_menu" : "st.wait_all_menu");
             }
         }
         else text = "...";
         if (role == NetRole.Host && NetworkManager.LastError != null && status == NetStatus.Hosting)
-            text += $"\n<color=#ff8080>{NetworkManager.LastError}</color>";
+            text += $"\n<color=#ff8080>{Loc.Show(NetworkManager.LastError)}</color>";
         if (role == NetRole.Host && steam && Steam.SteamLobby.LastError != null)
-            text += $"\n<color=#ff8080>{Steam.SteamLobby.LastError}</color>";
-        if (NetSim.Enabled) text += $"\n<color=#ffb060>Simulação de rede ligada: {NetSim.Describe()}</color>";
+            text += $"\n<color=#ff8080>{Loc.Show(Steam.SteamLobby.LastError)}</color>";
+        if (NetSim.Enabled) text += $"\n<color=#ffb060>{Loc.T("st.netsim", ("desc", NetSim.Describe(local: true)))}</color>";
 
         if (text != _lastStatus)
         {
@@ -307,7 +310,7 @@ public static class CoopUi
         bool full = Players.Count >= Players.SessionMax;
         SetInteractable(_inviteButton!, Steam.SteamLobby.Available && (idle || (steamMember && !full)));
         SetInteractable(_copyCodeButton!, steamMember && Steam.SteamLobby.LobbyId != 0);
-        string inviteLabel = steamMember ? $"Convidar amigo ({Players.Count}/{Players.SessionMax})" : "Convidar amigo";
+        string inviteLabel = steamMember ? Loc.T("ui.invite_count", ("n", Players.Count), ("max", Players.SessionMax)) : Loc.T("ui.invite");
         if (_inviteLabel != null && _inviteLabel.text != inviteLabel) _inviteLabel.text = inviteLabel;
         SetInteractable(_hostButton!, idle);
         SetInteractable(_joinButton!, idle);
@@ -318,16 +321,16 @@ public static class CoopUi
 
     private static string Who(RemotePlayer? r)
     {
-        if (r == null || !r.Info.Known) return r?.Name ?? "parceiro";
-        return r.Info.CharacterName.Length > 0 ? $"{r.Info.Name} ({r.Info.CharacterName})" : r.Info.Name;
+        if (r == null || !r.Info.Known) return r?.Name ?? Loc.T("name.partner_lc");
+        return r.Info.CharacterName.Length > 0 ? $"{r.Name} ({r.Info.CharacterName})" : r.Name;
     }
 
     private static string PlaceLabel(LobbyPlace p) => p switch
     {
-        LobbyPlace.Menu => "no menu",
-        LobbyPlace.Loading => "carregando",
-        LobbyPlace.InRun => "na partida",
-        LobbyPlace.Transition => "trocando de fase",
+        LobbyPlace.Menu => Loc.T("place.menu"),
+        LobbyPlace.Loading => Loc.T("place.loading"),
+        LobbyPlace.InRun => Loc.T("place.in_run"),
+        LobbyPlace.Transition => Loc.T("place.transition"),
         _ => "?",
     };
 
@@ -342,21 +345,17 @@ public static class CoopUi
             names = NetworkManager.Role == NetRole.Host
                 ? CoopSession.NamesWhere(r => NetworkManager.IsUnstable(r.Slot))
                 : CoopSession.NameOf(Players.HostSlot);
-            text = $"Conexão instável com {names} ({NetworkManager.SilenceSeconds:0} s sem resposta)...";
+            text = Loc.T("bn.unstable", ("names", names), ("s", NetworkManager.SilenceSeconds.ToString("0")));
         }
-        else if (RunSync.HoldForPartner) text = $"Aguardando {CoopSession.NamesWhere(r => r.ChangingScene)} carregar...";
+        else if (RunSync.HoldForPartner) text = Loc.T("bn.loading", ("names", CoopSession.NamesWhere(r => r.ChangingScene)));
         else if ((names = CoopSession.NamesWhere(r => PauseSync.Freezes(r.Slot) && PauseSync.ReasonOf(r.Slot) == PauseReason.Pause)).Length > 0)
-            text = NetworkManager.Role == NetRole.Host
-                ? $"{names} pausou o jogo (Esc duas vezes ou F4 despausa)"
-                : $"{names} pausou o jogo";
-        else if ((names = CoopSession.NamesWhere(r => PauseSync.Freezes(r.Slot))).Length > 0)
-            text = $"{names} escolhendo upgrade...";
+            text = Loc.T(NetworkManager.Role == NetRole.Host ? "bn.paused_host" : "bn.paused", ("names", names));
         else if ((names = CoopSession.NamesWhere(r => PauseSync.IsChoosing(r.Slot))).Length > 0)
-            text = $"{names} escolhendo upgrade (sem pausa)";
+            text = Loc.T("bn.choosing", ("names", names));
         else if (LevelUpOverlay.BannerText != null) text = LevelUpOverlay.BannerText;
         else if (CoopSession.ActiveNotice != null) text = CoopSession.ActiveNotice;
         else if ((names = CoopSession.NamesWhere(r => PauseSync.IsPausedAlone(r.Slot))).Length > 0)
-            text = $"{names} no menu de pausa (o jogo segue)";
+            text = Loc.T("bn.pause_menu", ("names", names));
         else text = null;
 
         bool show = text != null;
@@ -420,7 +419,7 @@ public static class CoopUi
         if (lobby == 0) return;
         bool ok = WindowsClipboard.TrySetText(lobby.ToString());
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Copy code pressed: {lobby} (clipboard {(ok ? "ok" : "failed")}).");
-        CoopSession.Notice(ok ? "Código do lobby copiado: mande pro amigo colar em Entrar" : "Não deu pra copiar o código", 5f);
+        CoopSession.Notice(Loc.Msg(ok ? "nt.code_copied" : "nt.copy_failed"), 5f);
     }
 
     private static void OnPaste()
@@ -431,7 +430,7 @@ public static class CoopUi
         int cut = text.IndexOfAny(new[] { '\r', '\n', ' ', '\t' });
         if (cut > 0) text = text.Substring(0, cut);
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Paste pressed: '{text}' (clipboard {(clip == null ? "unavailable" : $"{clip.Length} chars")}).");
-        if (text.Length == 0) { CoopSession.Notice("A área de transferência está vazia"); return; }
+        if (text.Length == 0) { CoopSession.Notice(Loc.Msg("nt.clipboard_empty")); return; }
         if (text.Length > 64) text = text.Substring(0, 64);
         _ipField!.text = text;
     }
@@ -475,8 +474,11 @@ public static class CoopUi
         root.AddComponent<GraphicRaycaster>();
         var rootRt = root.GetComponent<RectTransform>();
 
+        _labels.Clear();
+        _fontVersion = Loc.Version;
+
         // Fallback opener, top right (only if the tab can't be added).
-        var open = MakeButton(rootRt, "CoopButton", TabLabel, OnToggle, 34f);
+        var open = Track(MakeButton(rootRt, "CoopButton", TabLabel, OnToggle, 34f), "ui.tab");
         Place(open.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(-24f, -24f), new Vector2(220f, 70f));
         _fallbackButton = open.gameObject;
         _fallbackButton.SetActive(false);
@@ -493,6 +495,8 @@ public static class CoopUi
         PlaceTopCenter(titleHolder, 0f, -38f, 380f, 84f);
         if (_titleSprite != null) titleHolder.gameObject.AddComponent<Image>().sprite = _titleSprite;
         var title = MakeText(titleHolder, "Title", TabLabel, 46f, TextAlignmentOptions.Center);
+        AutoSize(title, 46f);
+        _labels.Add((title, "ui.tab"));
         Stretch(title.rectTransform, 0f);
 
         var version = MakeText(panel, "Version", $"mod {Plugin.HandshakeVersion}", 20f, TextAlignmentOptions.Right);
@@ -503,14 +507,14 @@ public static class CoopUi
         PlaceTopLeft(close.GetComponent<RectTransform>(), 650f, 46f, 50f, 50f);
 
         // Phase 7: Steam invite first (the real way to play), IP below it (local tests, LAN, VPN).
-        _inviteButton = MakeButton(panel, "Invite", "Convidar amigo", OnInvite, 30f);
+        _inviteButton = MakeButton(panel, "Invite", Loc.T("ui.invite"), OnInvite, 30f); // label set by RefreshPanel
         _inviteLabel = _inviteButton.GetComponentInChildren<TextMeshProUGUI>(true);
         PlaceTopLeft(_inviteButton.GetComponent<RectTransform>(), 60f, 70f, 390f, 70f);
 
-        _copyCodeButton = MakeButton(panel, "CopyCode", "Copiar código", OnCopyCode, 28f);
+        _copyCodeButton = Track(MakeButton(panel, "CopyCode", Loc.T("ui.copy_code"), OnCopyCode, 28f), "ui.copy_code");
         PlaceTopLeft(_copyCodeButton.GetComponent<RectTransform>(), 460f, 70f, 200f, 70f);
 
-        _hostButton = MakeButton(panel, "Host", "Hospedar por IP", OnHost, 30f);
+        _hostButton = Track(MakeButton(panel, "Host", Loc.T("ui.host_ip"), OnHost, 30f), "ui.host_ip");
         PlaceTopLeft(_hostButton.GetComponent<RectTransform>(), 60f, 152f, 600f, 62f);
 
         string lastAddress = DefaultAddress;
@@ -518,17 +522,18 @@ public static class CoopUi
         _ipField = MakeInputField(panel, "Address", lastAddress);
         PlaceTopLeft(_ipField.GetComponent<RectTransform>(), 60f, 230f, 290f, 62f);
 
-        _pasteButton = MakeButton(panel, "Paste", "Colar", OnPaste, 30f);
+        _pasteButton = Track(MakeButton(panel, "Paste", Loc.T("ui.paste"), OnPaste, 30f), "ui.paste");
         PlaceTopLeft(_pasteButton.GetComponent<RectTransform>(), 360f, 226f, 120f, 70f);
 
-        _joinButton = MakeButton(panel, "Join", "Entrar", OnJoin, 34f);
+        _joinButton = Track(MakeButton(panel, "Join", Loc.T("ui.join"), OnJoin, 34f), "ui.join");
         PlaceTopLeft(_joinButton.GetComponent<RectTransform>(), 490f, 226f, 170f, 70f);
 
-        _leaveButton = MakeButton(panel, "Leave", "Desconectar", OnLeave, 30f);
+        _leaveButton = Track(MakeButton(panel, "Leave", Loc.T("ui.disconnect"), OnLeave, 30f), "ui.disconnect");
         PlaceTopLeft(_leaveButton.GetComponent<RectTransform>(), 60f, 312f, 600f, 62f);
 
         _status = MakeText(panel, "Status", "", 22f, TextAlignmentOptions.Top);
         _status.enableWordWrapping = true;
+        AutoSize(_status, 22f);
         PlaceTopLeft(_status.rectTransform, 60f, 388f, 600f, 236f);
 
         // Banner (menu and runs).
@@ -539,12 +544,55 @@ public static class CoopUi
         bimg.raycastTarget = false;
         _bannerText = MakeText(_bannerRt, "Text", "", 34f, TextAlignmentOptions.Center);
         _bannerText.raycastTarget = false;
+        AutoSize(_bannerText, 34f);
         Stretch(_bannerText.rectTransform, 12f);
         _bannerRt.gameObject.SetActive(false);
 
         _panel.SetActive(false);
         _root = root;
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Co-op UI built (font {_font.name}, frame={_frameSprite?.name ?? "-"}, title={_titleSprite?.name ?? "-"}, tab={_tabSprite?.name ?? "-"}).");
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Co-op UI built (font {_font.name} [{_fontType}], language {Loc.Codes[(int)Loc.Current]}, frame={_frameSprite?.name ?? "-"}, title={_titleSprite?.name ?? "-"}, tab={_tabSprite?.name ?? "-"}).");
+        Loc.CheckGlyphs(_font, "co-op UI");
+    }
+
+    private static Button Track(Button b, string key)
+    {
+        var t = b.GetComponentInChildren<TextMeshProUGUI>(true);
+        if (t != null) _labels.Add((t, key));
+        return b;
+    }
+
+    private static void AutoSize(TextMeshProUGUI t, float size)
+    {
+        // Translations are longer or shorter than the Portuguese the layout was made for.
+        t.enableAutoSizing = true;
+        t.fontSizeMax = size;
+        t.fontSizeMin = Mathf.Round(size * 0.55f);
+    }
+
+    /// <summary>The language (or the game's font for it) changed: texts set at build time, the font of every text
+    /// of ours (the game swaps fonts per language: Cyrillic, CJK) and the tab clone's own font.</summary>
+    private static void ApplyLanguage()
+    {
+        _locVersion = Loc.Version;
+        if (_root == null) return;
+        if (_fontVersion != Loc.Version)
+        {
+            _fontVersion = Loc.Version;
+            var font = Loc.GameFont(_fontType);
+            if (font != null && (_font == null || font.Pointer != _font.Pointer))
+            {
+                _font = font;
+                foreach (var t in _root.GetComponentsInChildren<TextMeshProUGUI>(true)) t.font = font;
+                if (_ipField != null) _ipField.fontAsset = font;
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Font for {Loc.Codes[(int)Loc.Current]}: {font.name}.");
+            }
+            if (_tab != null)
+                foreach (var lr in _tab.GetComponentsInChildren<LabelReferences>(true))
+                    try { lr.UpdateFont(); } catch { /* the game's own label: leave it */ }
+            Loc.CheckGlyphs(_font, "co-op UI");
+        }
+        foreach (var (t, key) in _labels) if (t != null) t.text = Loc.T(key);
+        _lastStatus = "";
     }
 
     /// <summary>The game's main font (the one on the menu tabs) and the sprites of its Confirmation-Panel and tabs.</summary>
@@ -560,6 +608,9 @@ public static class CoopUi
                 _tabSelectedSprite = panel.ButtonSelectedSprite;
                 var label = panel.FightButton != null ? panel.FightButton.GetComponentInChildren<TextMeshProUGUI>(true) : null;
                 if (label != null && label.font != null) _font = label.font;
+                // The game picks that label's font per language by its LabelReferences.Type (LocalizationManager).
+                var refs = panel.FightButton != null ? panel.FightButton.GetComponentInChildren<LabelReferences>(true) : null;
+                if (refs != null) _fontType = refs.Type;
             }
             var conf = UnityEngine.Object.FindObjectOfType<ConfirmationPanel>(true);
             if (conf != null)
@@ -634,6 +685,7 @@ public static class CoopUi
         b.navigation = new Navigation { mode = Navigation.Mode.None };
         AddClick(b, onClick, name);
         var t = MakeText(rt, "Label", label, size, TextAlignmentOptions.Center);
+        AutoSize(t, size);
         t.raycastTarget = false;
         Stretch(t.rectTransform, 4f);
         return b;
@@ -663,7 +715,8 @@ public static class CoopUi
         Stretch(area, 12f);
         area.gameObject.AddComponent<RectMask2D>();
 
-        var placeholder = MakeText(area, "Placeholder", "IP ou código", 30f, TextAlignmentOptions.Left);
+        var placeholder = MakeText(area, "Placeholder", Loc.T("ui.ip_hint"), 30f, TextAlignmentOptions.Left);
+        _labels.Add((placeholder, "ui.ip_hint"));
         placeholder.color = new Color(1f, 1f, 1f, 0.35f);
         placeholder.fontStyle = FontStyles.Italic;
         Stretch(placeholder.rectTransform, 0f);

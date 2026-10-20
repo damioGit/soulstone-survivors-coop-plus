@@ -70,7 +70,7 @@ public sealed class LiteNetTransport : ITransport
         var t = new LiteNetTransport(cb, isHost: true);
         if (!t._manager.Start(Port))
         {
-            error = $"Não deu pra abrir a porta {Port} (outra instância já hospedando?)";
+            error = Ui.Loc.Msg("net.port_busy", ("port", Port));
             Plugin.StaticLog.LogWarning($"[SoulstoneCoop] Could not listen on port {Port}.");
             return null;
         }
@@ -85,7 +85,7 @@ public sealed class LiteNetTransport : ITransport
                 // Two requests accepted in the same frame for the last seat: the second one goes.
                 Plugin.StaticLog.LogWarning($"[SoulstoneCoop] {peer.Address} connected with the session already full - dropped.");
                 var w = new NetDataWriter();
-                w.Put($"O host está cheio ({NetworkManager.MaxPlayers}/{NetworkManager.MaxPlayers})");
+                w.Put(Ui.Loc.Msg("net.full", ("max", NetworkManager.MaxPlayers)));
                 peer.Disconnect(w);
                 return;
             }
@@ -124,12 +124,11 @@ public sealed class LiteNetTransport : ITransport
         }
         catch { }
 
+        // Refusals are Ui.Loc.Msg: the client shows them in its language (an older mod shows the English inside).
         string? refuse = null;
-        if (key != ConnectionKey) refuse = "Chave de conexão desconhecida";
-        else if (version != Plugin.HandshakeVersion)
-            refuse = $"Versão diferente: host {Plugin.HandshakeVersion}, você {(version.Length > 0 ? version : "antiga")}";
-        else if (!_slots.HasRoom)
-            refuse = NetworkManager.MaxPlayers <= 2 ? "O host já tem um parceiro" : $"O host está cheio ({NetworkManager.MaxPlayers}/{NetworkManager.MaxPlayers})";
+        if (key != ConnectionKey) refuse = Ui.Loc.Msg("net.bad_key");
+        else if (version != Plugin.HandshakeVersion) refuse = NetworkManager.VersionRefusal(version);
+        else if (!_slots.HasRoom) refuse = NetworkManager.FullRefusal();
 
         if (refuse == null)
         {
@@ -137,9 +136,8 @@ public sealed class LiteNetTransport : ITransport
             return;
         }
 
-        Plugin.StaticLog.LogWarning($"[SoulstoneCoop] Refused {request.RemoteEndPoint}: {refuse} (client version '{version}').");
-        if (key == ConnectionKey && version != Plugin.HandshakeVersion)
-            LastError = $"Recusei um cliente com a versão {(version.Length > 0 ? version : "antiga")} (a minha é {Plugin.HandshakeVersion})";
+        Plugin.StaticLog.LogWarning($"[SoulstoneCoop] Refused {request.RemoteEndPoint}: {Ui.Loc.Plain(refuse)} (client version '{version}').");
+        if (key == ConnectionKey && version != Plugin.HandshakeVersion) LastError = NetworkManager.RefusedClientError(version);
         var w = new NetDataWriter();
         w.Put(refuse);
         request.Reject(w);
@@ -165,10 +163,11 @@ public sealed class LiteNetTransport : ITransport
             bool hadPeer = t._bySlot.ContainsKey(Players.HostSlot);
             if (info.Reason == DisconnectReason.ConnectionRejected || (hadPeer && info.Reason == DisconnectReason.RemoteConnectionClose && info.AdditionalData != null && info.AdditionalData.AvailableBytes > 0))
             {
-                string reason = "Conexão recusada pelo host";
+                // A Ui.Loc.Msg from a host with this mod version, plain text from an older one: shown as it comes.
+                string reason = Ui.Loc.Msg("net.refused");
                 try { if (info.AdditionalData != null && info.AdditionalData.TryGetString(out var s) && s.Length > 0) reason = s; }
                 catch { }
-                Plugin.StaticLog.LogWarning($"[SoulstoneCoop] Host refused the connection: {reason}");
+                Plugin.StaticLog.LogWarning($"[SoulstoneCoop] Host refused the connection: {Ui.Loc.Plain(reason)}");
                 t.LastError = reason;
                 t.ForgetHost();
                 t.Status = NetStatus.Rejected;
@@ -186,7 +185,7 @@ public sealed class LiteNetTransport : ITransport
             }
 
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop] Disconnected from host: {info.Reason}");
-            t.LastError = info.Reason == DisconnectReason.RemoteConnectionClose ? "O host desconectou" : $"Conexão perdida ({info.Reason})";
+            t.LastError = info.Reason == DisconnectReason.RemoteConnectionClose ? Ui.Loc.Msg("net.host_left") : Ui.Loc.Msg("net.lost", ("why", info.Reason));
             t.ForgetHost();
             t.Status = NetStatus.Idle;
             t.WantsStop = true; // back to idle: the role must not stay Client (it blocks solo spawns)

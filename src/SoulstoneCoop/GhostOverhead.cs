@@ -69,6 +69,7 @@ public static class GhostOverhead
     private static bool _hooked;
     private static bool _iconFailed;
     private static float _telemetryTimer;
+    private static int _locVersion = -1;
 
     /// <summary>Called by VisualGhostFactory for each new ghost, with the height of its model.</summary>
     public static void Attach(byte slot, GameObject ghost, float height)
@@ -106,6 +107,7 @@ public static class GhostOverhead
     public static void Tick(float unscaledDeltaTime)
     {
         EnsureHooked();
+        if (_locVersion != Ui.Loc.Version) ApplyLanguage();
         foreach (var r in CoopSession.Remotes)
         {
             var ghost = r.Ghost;
@@ -159,7 +161,7 @@ public static class GhostOverhead
         bool down = Life.CoopLife.IsRemoteDown(v.Slot) || health.Down || health.Dead;
         string name = CoopSession.NameOf(v.Slot);
         if (name.Length > MaxChars) name = name.Substring(0, MaxChars - 3) + "...";
-        if (down) name += " (caído)";
+        if (down) name = Ui.Loc.T("gh.down", ("name", name));
         if (v.Name != null && name != v.ShownName)
         {
             v.ShownName = name;
@@ -178,6 +180,27 @@ public static class GhostOverhead
             if (v.FillImage != null) v.FillImage.color = _allySprite != null ? Color.white : color;
         }
         SetVisible(v, true);
+    }
+
+    /// <summary>The game's language (or its font) changed: the name tags are rebuilt with the co-op UI's font,
+    /// which follows the language (Ui.CoopUi.GameFont).</summary>
+    private static void ApplyLanguage()
+    {
+        _locVersion = Ui.Loc.Version;
+        if (_root == null) return;
+        var font = FindFont();
+        if (font == null || (_font != null && font.Pointer == _font.Pointer)) return;
+        _font = font;
+        foreach (var v in Views.Values)
+        {
+            if (v.Panel != null) UnityEngine.Object.Destroy(v.Panel.gameObject);
+            v.Panel = null;
+            v.Name = null;
+            v.ShownName = "";
+            BuildPanel(v);
+        }
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][hpbar] Name tags rebuilt with font {font.name}.");
+        Ui.Loc.CheckGlyphs(font, "name tag");
     }
 
     private static void SetVisible(View v, bool on)

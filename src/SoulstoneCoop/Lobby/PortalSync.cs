@@ -94,7 +94,7 @@ public static class PortalSync
             if (string.IsNullOrEmpty(map))
             {
                 Plugin.StaticLog.LogWarning($"[SoulstoneCoop][portal] Host took the {kind} portal but the next map is unknown - partner not told.");
-                CoopSession.Notice($"Portal {Label(kind)}: não deu pra levar {CoopSession.OthersLabel}", 6f);
+                CoopSession.Notice(Ui.Loc.Msg("nt.portal_cant_take", ("portal", Label(kind)), ("others", CoopSession.OthersLabel)), 6f);
             }
             else
             {
@@ -103,7 +103,7 @@ public static class PortalSync
                 w.Put((byte)kind);
                 w.Put(map!);
                 NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
-                CoopSession.Notice($"Portal {Label(kind)}: indo com {CoopSession.OthersLabel} pra {map}", 5f);
+                CoopSession.Notice(Ui.Loc.Msg("nt.portal_going", ("portal", Label(kind)), ("others", CoopSession.OthersLabel), ("map", map)), 5f);
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][portal] Host took the {kind} portal: next map {map}, partner told.");
             }
         }
@@ -168,7 +168,8 @@ public static class PortalSync
         catch { return null; }
     }
 
-    private static string Label(PortalKind kind) => kind == PortalKind.BossRush ? "desafio" : "infinito";
+    /// <summary>"Challenge portal" / "Endless portal", as a message (rendered in the language of whoever reads it).</summary>
+    private static string Label(PortalKind kind) => Ui.Loc.Msg(kind == PortalKind.BossRush ? "portal.challenge" : "portal.endless");
 
     // =====================================================================================
     // Client: asking the host / following it
@@ -183,7 +184,7 @@ public static class PortalSync
         w.Put((byte)PacketType.PortalRequest);
         w.Put((byte)kind);
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
-        CoopSession.Notice($"Portal {Label(kind)}: chamando o host...", 3f);
+        CoopSession.Notice(Ui.Loc.Msg("nt.portal_calling", ("portal", Label(kind))), 3f);
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][portal] Client walked into the {kind} portal: asking the host.");
     }
 
@@ -215,8 +216,8 @@ public static class PortalSync
         string? missing = MissingMap(map);
         if (missing != null)
         {
-            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][portal] Client can't follow to {map}: {missing}. Taking the Home portal.");
-            RunSync.Refuse($"Não dá pra seguir o host: {missing}. Voltando pra casa", missing);
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][portal] Client can't follow to {map}: {Ui.Loc.Plain(missing)}. Taking the Home portal.");
+            RunSync.Refuse(Ui.Loc.Msg("nt.cant_follow_home", ("reason", missing)), missing);
             CoopSession.CancelStageTransition("can't follow");
             try { Life.CoopLife.FromNetwork = true; EnterHomePortal(); }
             finally { Life.CoopLife.FromNetwork = false; }
@@ -239,16 +240,16 @@ public static class PortalSync
         }
         // The game just drew its own Endless map: LoadNextScene cancels that load and schedules the host's.
         GameManagerUtil.LoadNextScene(map, NextStageDelay, false);
-        CoopSession.Notice($"Seguindo o host pelo portal {Label(kind)}", 5f);
+        CoopSession.Notice(Ui.Loc.Msg("nt.portal_follow", ("portal", Label(kind))), 5f);
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][portal] Client followed the host's {kind} portal: LoadNextScene({map}).");
     }
 
     private static string? MissingMap(string map)
     {
-        if (string.IsNullOrEmpty(map)) return "mapa desconhecido";
+        if (string.IsNullOrEmpty(map)) return Ui.Loc.Msg("why.unknown_map");
         var maps = Global.MapCollection;
-        if (maps != null && maps.GetMapById(map) == null) return $"não tenho o mapa {map}";
-        if (!Application.CanStreamedLevelBeLoaded(map)) return $"não tenho a cena {map} (DLC?)";
+        if (maps != null && maps.GetMapById(map) == null) return Ui.Loc.Msg("why.no_map", ("map", map));
+        if (!Application.CanStreamedLevelBeLoaded(map)) return Ui.Loc.Msg("why.no_scene", ("map", map));
         return null;
     }
 
@@ -305,7 +306,7 @@ public static class PortalSync
             if (!isRequest)
             {
                 CoopSession.CancelStageTransition("portal already taken here");
-                RunSync.Refuse("O host foi por outro portal", "já entrei em outro portal");
+                RunSync.Refuse(Ui.Loc.Msg("nt.host_other_portal"), Ui.Loc.Msg("why.other_portal"));
             }
             return;
         }
@@ -340,7 +341,7 @@ public static class PortalSync
         if (!_pendingIsRequest)
         {
             CoopSession.CancelStageTransition(why);
-            CoopSession.Notice("Não deu pra seguir o host pelo portal", 6f);
+            CoopSession.Notice(Ui.Loc.Msg("nt.portal_follow_failed"), 6f);
         }
         _pendingMap = null;
     }
@@ -366,7 +367,7 @@ public static class PortalSync
         }
         if (data.EnterPortalObjective == null)
         {
-            CoopSession.Notice("F5: os portais ainda não abriram (F10 primeiro)", 4f);
+            CoopSession.Notice(Ui.Loc.Msg("nt.portal_debug"), 4f);
             return;
         }
         HostEnter(kind, "F5");

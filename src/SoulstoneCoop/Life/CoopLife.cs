@@ -823,9 +823,9 @@ public static class CoopLife
         _hostLostWaitingLogged = false;
         bool won = VictoryReached();
         Plugin.StaticLog.LogWarning($"[SoulstoneCoop][life] Host lost mid-run (victory reached={won}, auto end={Plugin.EndRunWhenHostLeaves.Value}).");
-        if (won) Lobby.CoopSession.Notice("O host desconectou. Entre no portal pra terminar a partida.", 10f);
-        else if (Plugin.EndRunWhenHostLeaves.Value) Lobby.CoopSession.Notice("O host desconectou. Encerrando a partida...", 10f);
-        else Lobby.CoopSession.Notice("O host desconectou. Desista pelo menu de pausa pra voltar.", 10f);
+        if (won) Lobby.CoopSession.Notice(Ui.Loc.Msg("nt.host_left_portal"), 10f);
+        else if (Plugin.EndRunWhenHostLeaves.Value) Lobby.CoopSession.Notice(Ui.Loc.Msg("nt.host_left_ending"), 10f);
+        else Lobby.CoopSession.Notice(Ui.Loc.Msg("nt.host_left_surrender"), 10f);
         if (won || !Plugin.EndRunWhenHostLeaves.Value) _hostLost = false; // nothing to do automatically
     }
 
@@ -862,7 +862,7 @@ public static class CoopLife
         if (VictoryReached())
         {
             _hostLost = false;
-            Lobby.CoopSession.Notice("O host desconectou. Entre no portal pra terminar a partida.", 10f);
+            Lobby.CoopSession.Notice(Ui.Loc.Msg("nt.host_left_portal"), 10f);
             return;
         }
         _hostLostTimer += dt;
@@ -873,9 +873,8 @@ public static class CoopLife
             {
                 _hostLostWaitingLogged = true;
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] Host lost: waiting for the local {PauseSync.LocalReason} screen to close before ending.");
-                Lobby.CoopSession.Notice(PauseSync.LocalReason is PauseReason.LevelUp or PauseReason.Choosing
-                    ? "O host desconectou. Escolha o upgrade pra encerrar a partida."
-                    : "O host desconectou. Feche a pausa (ou desista) pra encerrar.", 10f);
+                Lobby.CoopSession.Notice(Ui.Loc.Msg(PauseSync.LocalReason is PauseReason.LevelUp or PauseReason.Choosing
+                    ? "nt.host_left_pick" : "nt.host_left_pause"), 10f);
             }
             return;
         }
@@ -968,25 +967,28 @@ public static class CoopLife
         // Short on purpose: the GPU combat text has a fixed per-text buffer (MaxCharacterCountPerText).
         if (LocalDowned && local != null)
         {
-            if (marker) FloatText(CombatTextType.StatusEffect, local.transform, "CAIDO");
+            if (marker) FloatText(CombatTextType.StatusEffect, local.transform, "float.down");
             float mine = ProgressOf(Players.MySlot);
-            if (progressText && mine > 0.01f) FloatText(CombatTextType.Healing, local.transform, $"REVIVE {Mathf.RoundToInt(mine * 100f)}%");
+            if (progressText && mine > 0.01f) FloatText(CombatTextType.Healing, local.transform, "float.revive", Mathf.RoundToInt(mine * 100f));
         }
         foreach (var r in Lobby.CoopSession.Remotes)
         {
             if (r.Ghost == null || !IsRemoteDown(r.Slot)) continue;
-            if (marker) FloatText(CombatTextType.StatusEffect, r.Ghost.transform, "CAIDO");
+            if (marker) FloatText(CombatTextType.StatusEffect, r.Ghost.transform, "float.down");
             float p = ProgressOf(r.Slot);
-            if (progressText && p > 0.01f) FloatText(CombatTextType.Healing, r.Ghost.transform, $"REVIVE {Mathf.RoundToInt(p * 100f)}%");
+            if (progressText && p > 0.01f) FloatText(CombatTextType.Healing, r.Ghost.transform, "float.revive", Mathf.RoundToInt(p * 100f));
         }
     }
 
-    private static void FloatText(CombatTextType type, Transform t, string text)
+    /// <summary>A floating text from Ui.Loc ("float.*" keys, {pct} = <paramref name="pct"/>): in the local language
+    /// when it fits the buffer and the combat text's font has the glyphs, else without accents, else English.</summary>
+    private static void FloatText(CombatTextType type, Transform t, string key, int pct = 0)
     {
         try
         {
             int max = MaxCombatTextChars();
             if (max <= 0 || max > MaxCombatTextFallback) max = MaxCombatTextFallback;
+            string text = Ui.Loc.Float(key, max, ("pct", pct));
             if (text.Length > max) text = text.Substring(0, max);
             OverheadCombatTextPanelManager.RequestCombatTextWithString(type, t, text, false);
             _texts++;
@@ -1037,7 +1039,7 @@ public static class CoopLife
         var local = GameState.LocalPlayerEntity;
         if (local == null) return;
         PlayReviveVfx(local.transform, onLocalPlayer: true);
-        FloatText(CombatTextType.Healing, local.transform, "REVIVEU!");
+        FloatText(CombatTextType.Healing, local.transform, "float.revived");
     }
 
     private static void OnAllyRevivedEffect(Lobby.RemotePlayer r)
@@ -1045,7 +1047,7 @@ public static class CoopLife
         var ghost = r.Ghost;
         if (ghost == null) return;
         PlayReviveVfx(ghost.transform, onLocalPlayer: false);
-        FloatText(CombatTextType.Healing, ghost.transform, "REVIVEU!");
+        FloatText(CombatTextType.Healing, ghost.transform, "float.revived");
     }
 }
 

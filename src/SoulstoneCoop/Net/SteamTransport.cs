@@ -110,7 +110,7 @@ public sealed unsafe class SteamTransport : ITransport
             _helloTimer += dt;
             if (_connectElapsed >= ConnectTimeout)
             {
-                Fail(NetStatus.Idle, "O host não respondeu pela Steam");
+                Fail(NetStatus.Idle, Ui.Loc.Msg("net.no_reply_steam"));
                 return;
             }
             if (_helloTimer >= HelloInterval) { _helloTimer = 0f; SendHello(); }
@@ -144,13 +144,13 @@ public sealed unsafe class SteamTransport : ITransport
                 if (state == SteamNative.ConnClosedByPeer || state == SteamNative.ConnProblemDetectedLocally)
                 {
                     _gone.Add(p);
-                    LastGoneReason = state == SteamNative.ConnClosedByPeer ? "O parceiro fechou a conexão" : "Conexão perdida (problema na rede)";
+                    LastGoneReason = Ui.Loc.Msg(state == SteamNative.ConnClosedByPeer ? "net.peer_closed" : "net.lost_network");
                 }
             }
         }
         foreach (var p in _gone)
         {
-            PeerGone(p, LastGoneReason ?? "Conexão perdida (tempo esgotado)");
+            PeerGone(p, LastGoneReason ?? Ui.Loc.Msg("net.lost_timeout"));
             LastGoneReason = null;
             if (WantsStop) return;
         }
@@ -250,8 +250,9 @@ public sealed unsafe class SteamTransport : ITransport
             }
             case T.Reject when !_isHost && from == _hostId:
             {
-                string reason = SafeString(r) ?? "Conexão recusada pelo host";
-                Plugin.StaticLog.LogWarning($"[SoulstoneCoop][steam] Host refused: {reason}");
+                // A Ui.Loc.Msg from a host with this mod version, plain text from an older one: shown as it comes.
+                string reason = SafeString(r) ?? Ui.Loc.Msg("net.refused");
+                Plugin.StaticLog.LogWarning($"[SoulstoneCoop][steam] Host refused: {Ui.Loc.Plain(reason)}");
                 if (p != null) { RemovePeer(p); _cb.Disconnected(Players.HostSlot); }
                 Fail(NetStatus.Rejected, reason);
                 break;
@@ -260,7 +261,7 @@ public sealed unsafe class SteamTransport : ITransport
             {
                 string reason = SafeString(r) ?? "";
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][steam] Peer {from} (slot {p.Slot}) left: '{reason}'.");
-                PeerGone(p, _isHost ? "O parceiro saiu" : "O host desconectou");
+                PeerGone(p, Ui.Loc.Msg(_isHost ? "net.partner_left" : "net.host_left"));
                 break;
             }
             case T.Ping when p != null:
@@ -308,26 +309,24 @@ public sealed unsafe class SteamTransport : ITransport
 
         if (_byId.TryGetValue(from, out var known)) { SendAccept(from, known.Slot); return; } // our Accept was lost; Hello is resent every second
 
+        // Refusals are Ui.Loc.Msg: the client shows them in its language (an older mod shows the English inside).
         string? refuse = null;
-        if (key != ConnectionKey) refuse = "Chave de conexão desconhecida";
-        else if (version != Plugin.HandshakeVersion)
-            refuse = $"Versão diferente: host {Plugin.HandshakeVersion}, você {(version.Length > 0 ? version : "antiga")}";
-        else if (proto != SteamLobby.Proto) refuse = "Protocolo de rede diferente";
-        else if (!SteamLobby.IsMember(from)) refuse = "Entre pelo convite ou pelo código do lobby";
+        if (key != ConnectionKey) refuse = Ui.Loc.Msg("net.bad_key");
+        else if (version != Plugin.HandshakeVersion) refuse = NetworkManager.VersionRefusal(version);
+        else if (proto != SteamLobby.Proto) refuse = Ui.Loc.Msg("net.proto");
+        else if (!SteamLobby.IsMember(from)) refuse = Ui.Loc.Msg("net.not_member");
 
         byte slot = Players.NoSlot;
         if (refuse == null)
         {
             slot = _slots.Take();
-            if (slot == Players.NoSlot)
-                refuse = NetworkManager.MaxPlayers <= 2 ? "O host já tem um parceiro" : $"O host está cheio ({NetworkManager.MaxPlayers}/{NetworkManager.MaxPlayers})";
+            if (slot == Players.NoSlot) refuse = NetworkManager.FullRefusal();
         }
 
         if (refuse != null)
         {
-            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][steam] Refused {from} ({SteamLobby.FriendName(from)}): {refuse} (version '{version}').");
-            if (key == ConnectionKey && version != Plugin.HandshakeVersion)
-                LastError = $"Recusei um cliente com a versão {(version.Length > 0 ? version : "antiga")} (a minha é {Plugin.HandshakeVersion})";
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][steam] Refused {from} ({SteamLobby.FriendName(from)}): {Ui.Loc.Plain(refuse)} (version '{version}').");
+            if (key == ConnectionKey && version != Plugin.HandshakeVersion) LastError = NetworkManager.RefusedClientError(version);
             var w = new NetDataWriter();
             w.Put((byte)T.Reject);
             w.Put(refuse);
@@ -372,14 +371,14 @@ public sealed unsafe class SteamTransport : ITransport
     /// <summary>SteamLobby: a member left the lobby (or we were removed).</summary>
     internal void OnMemberLeft(ulong id)
     {
-        if (_byId.TryGetValue(id, out var p)) PeerGone(p, _isHost ? "O parceiro saiu do lobby" : "O host saiu");
-        else if (!_isHost && id == _hostId) Fail(NetStatus.Idle, "O host saiu do lobby");
+        if (_byId.TryGetValue(id, out var p)) PeerGone(p, Ui.Loc.Msg(_isHost ? "net.partner_left_lobby" : "net.host_quit"));
+        else if (!_isHost && id == _hostId) Fail(NetStatus.Idle, Ui.Loc.Msg("net.host_left_lobby"));
     }
 
     private void PeerGone(Peer p, string reason)
     {
         if (!_byId.ContainsKey(p.Id)) return;
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][steam] Peer {p.Id} (slot {p.Slot}) gone: {reason}.");
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][steam] Peer {p.Id} (slot {p.Slot}) gone: {Ui.Loc.Plain(reason)}.");
         RemovePeer(p);
         if (_isHost)
         {
@@ -514,8 +513,8 @@ public sealed unsafe class SteamTransport : ITransport
         Plugin.StaticLog.LogWarning($"[SoulstoneCoop][steam] Session with {who} failed.");
         var t = _current;
         if (t == null) return;
-        if (t._byId.TryGetValue(who, out var peer)) t.PeerGone(peer, "Conexão perdida (sessão Steam caiu)");
-        else if (!t._isHost && who == t._hostId) t.Fail(NetStatus.Idle, "Não deu pra falar com o host pela Steam");
+        if (t._byId.TryGetValue(who, out var peer)) t.PeerGone(peer, Ui.Loc.Msg("net.lost_steam_session"));
+        else if (!t._isHost && who == t._hostId) t.Fail(NetStatus.Idle, Ui.Loc.Msg("net.steam_unreachable"));
     }
 
     // ---------------- loopback self-test ----------------

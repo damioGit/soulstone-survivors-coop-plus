@@ -127,9 +127,10 @@ public static class CoopSession
     public static bool ChangingScene(byte slot) => Connected && Get(slot)?.ChangingScene == true;
 
     /// <summary>Name of that player for the banner and notices.</summary>
-    public static string NameOf(byte slot) => Get(slot)?.Name ?? (slot == Players.HostSlot ? "Host" : $"Jogador {slot + 1}");
+    public static string NameOf(byte slot) => Get(slot)?.Name ?? RemotePlayer.FallbackName(slot);
 
-    /// <summary>"A", "A e B", "A, B e mais 2": the names of the other players that match, for a one-line banner.</summary>
+    /// <summary>"A", "A and B", "A, B and 2 more": the names of the other players that match, for a one-line banner
+    /// (in the local language).</summary>
     public static string NamesWhere(Func<RemotePlayer, bool> pick, int show = 2)
     {
         var names = new List<string>();
@@ -141,12 +142,13 @@ public static class CoopSession
     {
         if (names.Count == 0) return "";
         if (names.Count == 1) return names[0];
-        if (names.Count <= show) return string.Join(", ", names.Take(names.Count - 1)) + " e " + names[names.Count - 1];
-        return string.Join(", ", names.Take(show)) + $" e mais {names.Count - show}";
+        if (names.Count <= show)
+            return Ui.Loc.T("list.and", ("a", string.Join(", ", names.Take(names.Count - 1))), ("b", names[names.Count - 1]));
+        return Ui.Loc.T("list.more", ("a", string.Join(", ", names.Take(show))), ("n", names.Count - show));
     }
 
-    /// <summary>The others, as one name: the only partner's, or "o grupo".</summary>
-    public static string OthersLabel => RemoteList.Count == 1 ? RemoteList[0].Name : RemoteList.Count == 0 ? "Parceiro" : "o grupo";
+    /// <summary>The others, as one name: the only partner's, or "the group" (as a message: Ui.Loc.Msg).</summary>
+    public static string OthersLabel => RemoteList.Count == 1 ? RemoteList[0].Name : Ui.Loc.Msg(RemoteList.Count == 0 ? "name.partner" : "name.group");
 
     internal const string MenuScene = "Menu-Survivors";
     private const float LoadingTimeout = 90f;
@@ -205,10 +207,10 @@ public static class CoopSession
         {
             // Phase 8: the host keeps playing (a client's run ends with the host: CoopLife).
             bool alone = Players.OtherCount == 0;
-            Notice(LocalInRun && r.Place != LobbyPlace.Menu && alone ? $"{who} desconectou. Você continua sozinho." : $"{who} desconectou", 6f);
+            Notice(Ui.Loc.Msg(LocalInRun && r.Place != LobbyPlace.Menu && alone ? "nt.left_alone" : "nt.left", ("name", who)), 6f);
         }
-        else if (slot == Players.HostSlot) Notice($"{who} desconectou", 6f);
-        else if (NetworkManager.HasPeer) Notice($"{who} saiu", 5f); // with the host gone, everybody "leaves": no notice each
+        else if (slot == Players.HostSlot) Notice(Ui.Loc.Msg("nt.left", ("name", who)), 6f);
+        else if (NetworkManager.HasPeer) Notice(Ui.Loc.Msg("nt.quit", ("name", who)), 5f); // with the host gone, everybody "leaves": no notice each
     }
 
     /// <summary>Host: a client just connected. It gets the Hello and LobbyState of every other client, as if they had
@@ -232,14 +234,16 @@ public static class CoopSession
         }
     }
 
+    /// <summary>A banner notice for a few seconds. <paramref name="text"/> is a Ui.Loc.Msg: it is shown in the
+    /// current language (and follows a change) and logged in English.</summary>
     public static void Notice(string text, float seconds = 4f)
     {
         _notice = text;
         _noticeUntil = Time.unscaledTime + seconds;
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Notice: {text}");
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Notice: {Ui.Loc.Plain(text)}");
     }
 
-    internal static string? ActiveNotice => _notice != null && Time.unscaledTime < _noticeUntil ? _notice : null;
+    internal static string? ActiveNotice => _notice != null && Time.unscaledTime < _noticeUntil ? Ui.Loc.Show(_notice) : null;
 
     // ---------------- local lifecycle ----------------
 
@@ -370,7 +374,8 @@ public static class CoopSession
     internal static bool RefreshLocalInfo()
     {
         var info = new PlayerInfo { Known = true, ModVersion = Plugin.HandshakeVersion };
-        info.Name = Plugin.NameArg ?? SteamName.TryGet() ?? (NetworkManager.Role == NetRole.Host ? "Host" : "Cliente");
+        // No name (no Steam, no --coop-name): sent empty, each receiver shows "Host"/"Player n" in its own language.
+        info.Name = Plugin.NameArg ?? SteamName.TryGet() ?? "";
         try
         {
             var prof = Global.PlayerProfile;
@@ -422,8 +427,8 @@ public static class CoopSession
         p.Info = info;
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Hello from slot {p.Slot}: {info.Name} {info.CharacterName} weapon={info.WeaponId} skin={info.SkinId}/{info.WeaponSkinId} mod={info.ModVersion}");
         if (!first) return;
-        string who = info.CharacterName.Length > 0 ? $"{info.Name} ({info.CharacterName})" : info.Name;
-        Notice(NetworkManager.Role == NetRole.Client && !p.IsHost ? $"{who} entrou no grupo" : $"Conectado com {who}", 5f);
+        string who = info.CharacterName.Length > 0 ? $"{p.Name} ({info.CharacterName})" : p.Name;
+        Notice(Ui.Loc.Msg(NetworkManager.Role == NetRole.Client && !p.IsHost ? "nt.joined_group" : "nt.connected", ("name", who)), 5f);
     }
 
     public static void OnLobbyState(NetDataReader r)

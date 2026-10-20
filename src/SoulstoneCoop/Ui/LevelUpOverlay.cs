@@ -34,12 +34,12 @@ public enum LevelUpOverlayPosition
 /// </summary>
 public static class LevelUpOverlay
 {
-    // i18n: every text this overlay shows (the banner lines). Keep new ones here, for the language table.
+    // i18n: every text this overlay shows (the banner lines), from Ui/LocTable.cs ("bn.levelup*").
     private static class Texts
     {
-        internal static string HiddenKeyboard(int queued) => $"Level up! ({queued}) - Tab mostra";
-        internal static string HiddenGamepad(int queued) => $"Level up! ({queued}) - D-pad baixo mostra";
-        internal const string GamepadHint = "D-pad: esquerda/direita escolhe, cima confirma, baixo esconde";
+        internal static string HiddenKeyboard(int queued) => Loc.T("bn.levelup", ("n", queued));
+        internal static string HiddenGamepad(int queued) => Loc.T("bn.levelup_pad", ("n", queued));
+        internal static string GamepadHint => Loc.T("bn.levelup_pad_hint");
     }
 
     internal static ConfigEntry<float> Scale = null!;
