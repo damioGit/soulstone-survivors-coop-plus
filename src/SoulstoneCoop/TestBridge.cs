@@ -36,6 +36,8 @@ public static class TestBridge
                 foreach (var f in Directory.GetFiles(_dir)) File.Delete(f);
                 File.WriteAllText(Path.Combine(_dir, "ready.txt"), "starting");
                 Commands["affixes"] = RunSync.TestSetOwnAffixes;
+                Commands["healorb"] = Life.HealOrbs.TestFire;
+                Commands["hurt"] = Hurt;
                 StateProviders["affix"] = () => RunSync.LastRunAffixes.Replace(' ', ',');
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] bridge '{Plugin.TestArg}' in {_dir}");
             }
@@ -144,6 +146,17 @@ public static class TestBridge
             catch (Exception ex) { sb.Append(' ').Append(kv.Key).Append("=err:").Append(ex.Message); }
         }
         return sb.ToString();
+    }
+
+    /// <summary>"cmd hurt N": take N off the local player's health directly (no hit, no death below 1).</summary>
+    private static string Hurt(string[] args)
+    {
+        var local = GameState.LocalPlayerEntity;
+        var hc = local != null ? local.GetComponent<HealthComponent>() : null;
+        if (hc == null) return "no local health";
+        float n = args.Length > 0 && float.TryParse(args[0], out var v) ? v : 30f;
+        hc.CurrentHealth = Mathf.Max(1f, hc.CurrentHealth - n);
+        return $"hp={hc.CurrentHealth:0}";
     }
 
     /// <summary>Extra state fields registered by feature modules.</summary>

@@ -50,6 +50,8 @@ public enum PacketType : byte
     Welcome = 102,     // host -> new client, first packet: yourSlot u8 | maxPlayers u8 | n u8 | n * slot u8 (the other clients)
     PlayerLeft = 103,  // host -> clients: slot u8 left the session (ReliableOrdered, before the slot is handed out again)
     PauseOverride = 104, // host -> clients: mask u8 of the players whose pause the host lifted (Esc closed on the host, or F4) (ReliableOrdered)
+    // 120+: fixes after 0.9.2
+    HealOrb = 120,     // host -> clients: the game fired heal orbs at every player (origin v3, amount f32): fire one at the local player (ReliableUnordered)
 }
 
 public static class PacketRouter
@@ -172,6 +174,9 @@ public static class PacketRouter
                 break;
             case PacketType.GodCast:
                 Enemies.GodCasts.OnGodCast(reader);
+                break;
+            case PacketType.HealOrb:
+                Life.HealOrbs.OnHealOrb(reader);
                 break;
             case PacketType.ProxyStatus:
                 Enemies.ProxyStatusForward.OnProxyStatus(reader);
