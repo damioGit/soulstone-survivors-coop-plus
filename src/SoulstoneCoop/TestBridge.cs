@@ -59,6 +59,25 @@ public static class TestBridge
                 Commands["statuesync"] = Enemies.StatueSync.TestInfo;
                 Commands["tasks"] = Tasks;
                 Commands["inv"] = Inventory;
+                Commands["hpbonus"] = Enemies.EnemyHealthBonus.TestInfo;
+                Commands["hit"] = a =>
+                {
+                    var local = GameState.LocalPlayerEntity;
+                    if (local == null) return "no player";
+                    float dmg = a.Length > 0 && float.TryParse(a[0], out var v) ? v : 1000f;
+                    Entity? best = null; float bd = float.MaxValue;
+                    foreach (var e in UnityEngine.Object.FindObjectsOfType<Entity>())
+                    {
+                        if (e == null || e._health == null || e._team == null || (e._team.Team & Team.Monsters) == 0 || e._health.HasBeenKilled) continue;
+                        if (e._health.CurrentHealth < dmg * 2f || e._health.CurrentHealth > 1e6f) continue;
+                        float d = (e.transform.position - local.transform.position).sqrMagnitude;
+                        if (d < bd) { bd = d; best = e; }
+                    }
+                    if (best == null) return "no enemy with enough health";
+                    float before = best._health.CurrentHealth;
+                    UnitUtil.ChangeEntityHealth(local, best, -dmg, false, out float eff, out _, out _);
+                    return $"{best.gameObject.name}: hit {dmg:0}, health {before:0} -> {best._health.CurrentHealth:0} (lost {before - best._health.CurrentHealth:0})";
+                };
                 Commands["itemdiag"] = Loot.ItemDiag.Info;
                 Commands["ore"] = a =>
                 {
