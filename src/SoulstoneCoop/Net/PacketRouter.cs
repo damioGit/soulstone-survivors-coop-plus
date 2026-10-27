@@ -52,6 +52,8 @@ public enum PacketType : byte
     PauseOverride = 104, // host -> clients: mask u8 of the players whose pause the host lifted (Esc closed on the host, or F4) (ReliableOrdered)
     // 120+: fixes after 0.9.2
     HealOrb = 120,     // host -> clients: the game fired heal orbs at every player (origin v3, amount f32): fire one at the local player (ReliableUnordered)
+    ChestSpawn = 121,  // host -> clients: a reward chest (id u16, prefab name, pos v3, yaw f32), re-sent every 4 s (ReliableOrdered)
+    ChestState = 122,  // host -> clients: chest id u16 | interaction % u8 | opened bool (ReliableOrdered, after its spawn)
 }
 
 public static class PacketRouter
@@ -177,6 +179,12 @@ public static class PacketRouter
                 break;
             case PacketType.HealOrb:
                 Life.HealOrbs.OnHealOrb(reader);
+                break;
+            case PacketType.ChestSpawn:
+                Loot.ChestSync.OnChestSpawn(reader);
+                break;
+            case PacketType.ChestState:
+                Loot.ChestSync.OnChestState(reader);
                 break;
             case PacketType.ProxyStatus:
                 Enemies.ProxyStatusForward.OnProxyStatus(reader);

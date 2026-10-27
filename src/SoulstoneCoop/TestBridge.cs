@@ -38,6 +38,9 @@ public static class TestBridge
                 Commands["affixes"] = RunSync.TestSetOwnAffixes;
                 Commands["healorb"] = Life.HealOrbs.TestFire;
                 Commands["hurt"] = Hurt;
+                Commands["chest"] = Loot.ChestSync.TestSpawn;
+                Commands["chests"] = Loot.ChestSync.TestInfo;
+                Commands["tp"] = Teleport;
                 StateProviders["affix"] = () => RunSync.LastRunAffixes.Replace(' ', ',');
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] bridge '{Plugin.TestArg}' in {_dir}");
             }
@@ -157,6 +160,19 @@ public static class TestBridge
         float n = args.Length > 0 && float.TryParse(args[0], out var v) ? v : 30f;
         hc.CurrentHealth = Mathf.Max(1f, hc.CurrentHealth - n);
         return $"hp={hc.CurrentHealth:0}";
+    }
+
+    /// <summary>"cmd tp X Z": move the local player there (transform and rigidbody).</summary>
+    private static string Teleport(string[] args)
+    {
+        var local = GameState.LocalPlayerEntity;
+        if (local == null || args.Length < 2) return "usage: tp X Z (in a run)";
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        var pos = new Vector3(float.Parse(args[0], ci), local.transform.position.y, float.Parse(args[1], ci));
+        local.transform.position = pos;
+        var rb = local.GetComponent<Rigidbody>();
+        if (rb != null) rb.position = pos;
+        return "at " + local.transform.position.ToString("0.0");
     }
 
     /// <summary>Extra state fields registered by feature modules.</summary>
