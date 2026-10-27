@@ -59,6 +59,9 @@ public static class GhostOverhead
         public int IconId = -1;
         public IntPtr IconGhostPtr;
         public float IconRunStart;
+        // #14: the icon wears the player's slot color; the pooled icon is put back to white when it's released.
+        public List<Image>? TintedImages;
+        public float TintTimer;
     }
 
     private static GameObject? _root;
@@ -373,6 +376,7 @@ public static class GhostOverhead
     private static void RemoveIcon(View v)
     {
         if (v.IconId < 0) return;
+        UntintIcon(v);
         bool sameRun = Mathf.Approximately(v.IconRunStart, CoopSession.LocalRunStartTime);
         // Another map clears the list itself (SetupMinimap); removing there would only log a game error.
         try { if (sameRun && GameManagerUtil.HasGameManager) MinimapManager.RequestRemoveIcon(v.IconId); }
@@ -386,10 +390,51 @@ public static class GhostOverhead
         if (_iconFailed) return;
         bool sameRun = Mathf.Approximately(v.IconRunStart, CoopSession.LocalRunStartTime);
         if (v.IconId >= 0 && (ghost == null || ghost.Pointer != v.IconGhostPtr || !sameRun)) RemoveIcon(v);
-        if (v.IconId >= 0 || ghost == null || !CoopSession.LocalInRun || !GameManagerUtil.HasGameManager) return;
+        if (v.IconId >= 0) { TintIcon(v); return; }
+        if (ghost == null || !CoopSession.LocalInRun || !GameManagerUtil.HasGameManager) return;
         v.IconId = MinimapManager.RequestIcon(MinimapIconType.Player, ghost.transform, ghost.transform.position);
         v.IconGhostPtr = ghost.Pointer;
         v.IconRunStart = CoopSession.LocalRunStartTime;
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][hpbar] Minimap icon {v.IconId} (Player) requested for ghost {v.Slot}.");
     }
+
+    /// <summary>#14: the partner's icon was the local player's own, so on the minimap you couldn't tell who is who.
+    /// Once the game has given the request a pooled icon (State Active), its images take the slot color.</summary>
+    private static void TintIcon(View v)
+    {
+        if (v.TintedImages != null) return;
+        v.TintTimer -= Time.unscaledDeltaTime;
+        if (v.TintTimer > 0f) return;
+        v.TintTimer = 0.5f;
+        var items = MinimapManager._items;
+        if (items == null) return;
+        var arr = items._elements;
+        int n = Mathf.Min(items.Count, arr != null ? arr.Length : 0);
+        for (int i = 0; i < n; i++)
+        {
+            var item = arr![i];
+            if (item == null || item.ItemId != v.IconId || item.State != MinimapItemState.Active || item.References == null) continue;
+            var color = ColorFor(v.Slot);
+            v.TintedImages = new List<Image>();
+            foreach (var img in item.References.GetComponentsInChildren<Image>(true))
+            {
+                img.color = color;
+                v.TintedImages.Add(img);
+            }
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][hpbar] Minimap icon {v.IconId} of slot {v.Slot} tinted ({v.TintedImages.Count} images).");
+            return;
+        }
+    }
+
+    private static void UntintIcon(View v)
+    {
+        if (v.TintedImages != null)
+            foreach (var img in v.TintedImages) if (img != null) img.color = Color.white;
+        v.TintedImages = null;
+        v.TintTimer = 0f;
+    }
+
+    /// <summary>Test bridge, "cmd minimap": the partners' icons and whether they are tinted.</summary>
+    internal static string TestInfo(string[] args) =>
+        string.Join(" ", Views.Values.Select(v => $"slot{v.Slot}:icon={v.IconId}:tinted={(v.TintedImages != null ? v.TintedImages.Count : -1)}"));
 }

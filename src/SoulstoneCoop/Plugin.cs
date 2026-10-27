@@ -24,6 +24,7 @@ public class Plugin : BasePlugin
     internal static BepInEx.Configuration.ConfigEntry<SteamLobbyType> LobbyType = null!;
     internal static BepInEx.Configuration.ConfigEntry<float> EnemyScalePerPlayer = null!;
     internal static BepInEx.Configuration.ConfigEntry<float> ReplicaCastRadius = null!;
+    internal static BepInEx.Configuration.ConfigEntry<bool> DashDodge = null!;
 
     /// <summary>Phase 9: who may join the Steam lobby ([Coop] LobbyType).</summary>
     public enum SteamLobbyType { FriendsOnly, Public, Private }
@@ -67,6 +68,8 @@ public class Plugin : BasePlugin
         ReplicaCastRadius = Config.Bind("Coop", "ReplicaCastRadius", 60f,
             "Spells of the other players are only replayed (visual only) when they are within this distance of you; farther ones are off screen anyway. " +
             "Saves the effects of 7 builds on every PC. 0 = always replay.");
+        DashDodge = Config.Bind("Coop", "DashDodge", true,
+            "Guests: a hit the host computes while you are dashing (or right after, within your ping) is dodged, like the dash dodge when playing alone.");
         _simLatency = simLatency.Value;
         _simJitter = simJitter.Value;
         _simLoss = simLoss.Value;

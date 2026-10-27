@@ -9,7 +9,7 @@ namespace SoulstoneCoop.Ui;
 
 /// <summary>The languages the game ships (resources.assets "Localization-Config": en, pt-BR, ja, zh, ru, de, fr, es).
 /// The order is the column order of <see cref="Loc"/>'s table.</summary>
-public enum Lang { En, PtBr, Es, Fr, De, Ru, Zh, Ja }
+public enum Lang { En, PtBr, Es, Fr, De, Ru, Zh, Ja, Pl }
 
 /// <summary>
 /// Text the mod shows to the player, in the language of the game of THAT player (docs/i18n-notas.md).
@@ -27,7 +27,7 @@ public enum Lang { En, PtBr, Es, Fr, De, Ru, Zh, Ja }
 /// </summary>
 public static partial class Loc
 {
-    public static readonly string[] Codes = { "en", "pt-BR", "es", "fr", "de", "ru", "zh", "ja" };
+    public static readonly string[] Codes = { "en", "pt-BR", "es", "fr", "de", "ru", "zh", "ja", "pl" };
 
     public static Lang Current { get; private set; } = Lang.En;
     /// <summary>Bumped on every language change: UIs compare it to rebuild text and fonts.</summary>
@@ -47,7 +47,7 @@ public static partial class Loc
     public static void Init(ConfigFile config)
     {
         _override = config.Bind("Coop", "Language", "Auto",
-            "Language of the mod's texts: Auto = the game's language (Options menu), else en, pt-BR, es, fr, de, ru, zh or ja.");
+            "Language of the mod's texts: Auto = the game's language (Options menu), else en, pt-BR, es, fr, de, ru, zh, ja or pl.");
         try { Validate(); }
         catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][i18n] Table check failed: {ex.Message}"); }
         // The language itself is read from the first Tick on (the game isn't up during Load).
@@ -126,6 +126,7 @@ public static partial class Loc
         else if (c.StartsWith("ru")) lang = Lang.Ru;
         else if (c.StartsWith("zh")) lang = Lang.Zh;
         else if (c.StartsWith("ja")) lang = Lang.Ja;
+        else if (c.StartsWith("pl")) lang = Lang.Pl;
         else if (!c.StartsWith("en")) return false;
         return true;
     }
@@ -175,6 +176,7 @@ public static partial class Loc
             "russian" or "ukrainian" => Lang.Ru,
             "schinese" or "tchinese" => Lang.Zh,
             "japanese" => Lang.Ja,
+            "polish" => Lang.Pl,
             _ => (Lang)(-1),
         };
         return (int)lang >= 0;

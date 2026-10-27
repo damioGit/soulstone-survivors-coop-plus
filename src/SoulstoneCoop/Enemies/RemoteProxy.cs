@@ -652,7 +652,7 @@ public static class ClientIncomingDamage
 {
     internal static bool ApplyingNetworkDamage;
     private static float _telemetryTimer;
-    private static int _hits, _applied, _immune, _ignored;
+    private static int _hits, _applied, _immune, _ignored, _dodged;
     private static double _damage, _effective;
 
     public static void OnDamageToClient(NetDataReader reader)
@@ -668,6 +668,14 @@ public static class ClientIncomingDamage
         if (local == null || health == null || health.HasBeenKilled || !ClientPuppets.MatchStarted || healthChange >= 0f || float.IsNaN(healthChange))
         {
             _ignored++;
+            return;
+        }
+
+        // #6: the host computes hits on our stand-in, which never dashes. A hit that lands while we dash, or within
+        // our ping after the dash (the host saw us a little late), is dodged like the game's own dash dodge.
+        if (Plugin.DashDodge.Value && IsDodging(local))
+        {
+            _dodged++;
             return;
         }
 
@@ -687,6 +695,37 @@ public static class ClientIncomingDamage
         {
             ApplyingNetworkDamage = false;
         }
+    }
+
+    private static bool IsDodging(Entity local)
+    {
+        var ch = local._character;
+        if (ch != null && ch.IsDashing()) return true;
+        float grace = Mathf.Clamp((NetworkManager.PingMs > 0 ? NetworkManager.PingMs : 0) / 1000f + 0.05f, 0.05f, 0.3f);
+        return Time.unscaledTime - Net.PlayerSync.LastLocalDashEnd < grace;
+    }
+
+    /// <summary>Test bridge, "cmd dashtest": one host hit right after a dash (dodged), then one long after (taken).</summary>
+    internal static string TestDashDodge(string[] args)
+    {
+        var local = GameState.LocalPlayerEntity;
+        var h = local != null ? local._health : null;
+        if (h == null) return "no local health";
+        string Hit()
+        {
+            var w = new NetDataWriter();
+            w.Put(-10f);
+            w.Put((ushort)0);
+            OnDamageToClient(new NetDataReader(w.CopyData()));
+            return h.CurrentHealth.ToString("0.0");
+        }
+        string before = h.CurrentHealth.ToString("0.0");
+        int dodgedBefore = _dodged;
+        Net.PlayerSync.LastLocalDashEnd = Time.unscaledTime;
+        string afterDash = Hit();
+        Net.PlayerSync.LastLocalDashEnd = -100f;
+        string afterNoDash = Hit();
+        return $"hp {before} -> just after a dash {afterDash} -> no dash {afterNoDash}; dodged +{_dodged - dodgedBefore}";
     }
 
     private static float _stateTimer;
@@ -732,9 +771,9 @@ public static class ClientIncomingDamage
             var h = GameState.LocalPlayerEntity?._health;
             Plugin.StaticLog.LogInfo(
                 $"[SoulstoneCoop][damage] Client: incoming hits={_hits} damage={_damage:F0} applied={_applied} effective={_effective:F0} " +
-                $"immune={_immune} ignored={_ignored} localHP={(h != null ? h.CurrentHealth : -1):F0} dead={(h != null && h.HasBeenKilled)}");
+                $"immune={_immune} ignored={_ignored} dodged={_dodged} localHP={(h != null ? h.CurrentHealth : -1):F0} dead={(h != null && h.HasBeenKilled)}");
         }
-        _hits = _applied = _immune = _ignored = 0;
+        _hits = _applied = _immune = _ignored = _dodged = 0;
         _damage = _effective = 0;
     }
 }

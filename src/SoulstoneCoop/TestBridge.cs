@@ -41,6 +41,9 @@ public static class TestBridge
                 Commands["chest"] = Loot.ChestSync.TestSpawn;
                 Commands["chests"] = Loot.ChestSync.TestInfo;
                 Commands["tp"] = Teleport;
+                Commands["dashtest"] = Enemies.ClientIncomingDamage.TestDashDodge;
+                Commands["minimap"] = GhostOverhead.TestInfo;
+                Commands["hint"] = PauseSync.TestHint;
                 StateProviders["affix"] = () => RunSync.LastRunAffixes.Replace(' ', ',');
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] bridge '{Plugin.TestArg}' in {_dir}");
             }

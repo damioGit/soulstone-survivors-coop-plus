@@ -115,6 +115,52 @@ public static class PauseSync
         };
     }
 
+    private static GameplayUIManager? _ui;
+    private static float _infoPanelUntil;
+
+    private static bool EscPauseOpen()
+    {
+        var pause = _ui != null ? _ui.PausePanel : null;
+        return pause != null && pause.IsPaused;
+    }
+    private static int _infoPanelErrors;
+
+    /// <summary>A tutorial hint or the visibility notice is up, and the pause menu is not (Esc stays a real pause).</summary>
+    private static bool InfoPanelOpen()
+    {
+        try
+        {
+            if (_ui == null) _ui = UnityEngine.Object.FindObjectOfType<GameplayUIManager>();
+            if (_ui == null) return false;
+            var pause = _ui.PausePanel;
+            if (pause != null && pause.IsPaused) return false;
+            var hint = _ui.TutorialHintPanel;
+            if (hint != null && hint.IsOpen) return true;
+            var vis = _ui.VisibilityInformationHintPanel;
+            return vis != null && vis.AnimationGroup != null && vis.AnimationGroup.TargetVisibility > 0f;
+        }
+        catch (Exception ex)
+        {
+            if (++_infoPanelErrors <= 3) Plugin.StaticLog.LogWarning($"[SoulstoneCoop][pause] Info panel check: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Test bridge, "cmd hint on|off": set the tutorial hint panel's open flag (as its own OnUpdate would).</summary>
+    internal static string TestHint(string[] args)
+    {
+        if (_ui == null) _ui = UnityEngine.Object.FindObjectOfType<GameplayUIManager>();
+        var hint = _ui != null ? _ui.TutorialHintPanel : null;
+        if (hint == null)
+        {
+            if (_ui == null) return "no gameplay UI";
+            _ui.StartCoroutine(_ui.TutorialHintSetupRoutine()); // the game loads it only while tutorials are pending
+            return "loading the tutorial hint panel, ask again";
+        }
+        hint.IsOpen = args.Length == 0 || args[0] != "off";
+        return $"hint open={hint.IsOpen} pauseTime={TimeUtil.PauseTime} local={LocalReason}";
+    }
+
     internal static void OnLocalTimeComputed()
     {
         bool levelUpPopup = TimeUtil.LevelUpTime < 0.001f;
@@ -125,10 +171,22 @@ public static class PauseSync
             Time.timeScale = TimeUtil.PauseTime * TimeUtil.DeathGuardTime * TimeUtil.SlowMotionTime
                 * TimeUtil.ControllerDisconnectedTime * TimeUtil.CreditsTime * TimeUtil.PlayerDataTime;
         }
+        // #21: the tutorial hints and the visibility notice also write TimeUtil.PauseTime, so they counted as Esc and
+        // froze every player. In co-op they are read like the level-up overlay: nobody freezes, the game goes on.
+        // The panels keep the pause factor a few frames while they fade out: the 0.5 s after one closes count too.
+        bool infoPanel = false;
+        if (TimeUtil.PauseTime < 0.001f && NetworkManager.HasPeer && Lobby.CoopSession.LocalInRun)
+        {
+            if (InfoPanelOpen()) { infoPanel = true; _infoPanelUntil = Time.unscaledTime + 0.5f; }
+            else infoPanel = Time.unscaledTime < _infoPanelUntil && !EscPauseOpen();
+        }
+        if (infoPanel)
+            Time.timeScale = (noPause ? 1f : TimeUtil.LevelUpTime) * TimeUtil.DeathGuardTime * TimeUtil.SlowMotionTime
+                * TimeUtil.ControllerDisconnectedTime * TimeUtil.CreditsTime * TimeUtil.PlayerDataTime;
         var previous = LocalReason;
         // A level-up is never a pause for the others (issue #1). Without co-op (nobody else in the run) the popup
         // still pauses our own game, and that's nobody else's business either.
-        LocalReason = TimeUtil.PauseTime < 0.001f ? PauseReason.Pause
+        LocalReason = TimeUtil.PauseTime < 0.001f && !infoPanel ? PauseReason.Pause
                     : levelUpPopup && noPause && !overlay ? PauseReason.Choosing // debug full panel: banner only
                     : PauseReason.None;
         LevelUpPolicy.DebugHotkey();

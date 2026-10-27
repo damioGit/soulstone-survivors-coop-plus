@@ -92,6 +92,8 @@ public static class PlayerSync
     private static bool _lastSentDash;
     private const float MaxDashSeconds = 1.5f; // safety: a lost "end" never leaves the ghost dashing
     public static int DashesSent, DashesReceived;
+    /// <summary>#6: when our own dash last ended (unscaled time), for the guest's dash dodge.</summary>
+    internal static float LastLocalDashEnd = -100f;
 
     private static Motion MotionOf(byte slot)
     {
@@ -192,6 +194,7 @@ public static class PlayerSync
         bool dashing = ch != null && ch.IsDashing();
         if (dashing == _lastSentDash) return;
         _lastSentDash = dashing;
+        if (!dashing) LastLocalDashEnd = Time.unscaledTime;
         var w = new NetDataWriter();
         w.Put((byte)PacketType.DashState);
         w.Put(dashing);
