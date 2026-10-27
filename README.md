@@ -71,6 +71,7 @@ The full list and design notes are in [`docs/roadmap.md`](docs/roadmap.md).
 | `[Coop] EnemyScalePerPlayer` | `0` | Extra enemies per additional player (try `0.25`) |
 | `[Coop] ReplicaCastRadius` | `60` | Don't draw skills of partners farther than this |
 | `[Coop] DashDodge` | `true` | Guests dodge a host-computed hit while dashing (or within their ping after) |
+| `[Coop] EnemyHealthBonus` | `50` | Enemy health +% per extra player (2 players: +50 %); 0 = off |
 | `[Coop] PauseOnLevelUp` | `true` | Upgrade choices pause everyone until all have picked (30 s cap); `false` = small panel, no pause |
 | `[Coop] LobbyType` | `FriendsOnly` | `Public` if friends of guests can't join |
 | `[Coop] SenderClock` | `false` | Experimental: smoother remote movement on jittery connections |

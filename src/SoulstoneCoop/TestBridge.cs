@@ -17,6 +17,7 @@ public static class TestBridge
     private static string? _dir;
     private static float _poll;
     private static int _fightStep;
+    private static GameModes _fightMode = GameModes.Survivor;
     private static float _fightTimer;
 
     /// <summary>Extra commands registered by feature modules: name -> handler(args) returning the reply.</summary>
@@ -143,6 +144,7 @@ public static class TestBridge
             case "state": return State();
             case "play": return PressPlay();
             case "fight":
+                _fightMode = parts.Length > 1 && parts[1] == "mastery" ? GameModes.Mastery : GameModes.Survivor;
                 _fightStep = 1;
                 _fightTimer = 0f;
                 return "fight started";
@@ -184,6 +186,7 @@ public static class TestBridge
         {
             var map = UnityEngine.Object.FindObjectOfType<MapSelectionScreenPanel>();
             if (map == null) { Plugin.StaticLog.LogWarning("[SoulstoneCoop][test] fight: no MapSelectionScreenPanel"); _fightStep = 0; return; }
+            if (map.CurrentSelectedGameMode != _fightMode) { map.SelectGameMode(_fightMode); _fightTimer = 2f; Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] fight: mode -> {_fightMode}"); return; }
             map.OnFightPressed();
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] fight: map screen Fight pressed (mode {map.CurrentSelectedGameMode}).");
             _fightStep = 0;
