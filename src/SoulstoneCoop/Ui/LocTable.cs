@@ -24,6 +24,10 @@ public static partial class Loc
         ["ui.join"] = R("Join", "Entrar", "Unirse", "Rejoindre", "Beitreten", "Войти", "加入", "参加"),
         ["ui.disconnect"] = R("Disconnect", "Desconectar", "Desconectar", "Se déconnecter", "Trennen", "Отключиться", "断开连接", "切断"),
         ["ui.ip_hint"] = R("IP or code", "IP ou código", "IP o código", "IP ou code", "IP oder Code", "IP или код", "IP 或代码", "IPまたはコード"),
+        // panel section headers
+        ["ui.sec_steam"] = R("Steam", "Steam", "Steam", "Steam", "Steam", "Steam", "Steam", "Steam"),
+        ["ui.sec_direct"] = R("Direct (IP or code)", "Direto (IP ou código)", "Directo (IP o código)", "Direct (IP ou code)", "Direkt (IP oder Code)", "Напрямую (IP или код)", "直连（IP 或代码）", "直接接続（IPまたはコード）"),
+        ["ui.sec_group"] = R("Group", "Grupo", "Grupo", "Groupe", "Gruppe", "Группа", "队伍", "グループ"),
 
         // panel status
         ["st.creating_lobby"] = R("Creating the Steam lobby...", "Criando o lobby na Steam...", "Creando la sala en Steam...", "Création du salon Steam...", "Steam-Lobby wird erstellt...", "Создание лобби в Steam...", "正在创建 Steam 大厅...", "Steamロビーを作成中..."),

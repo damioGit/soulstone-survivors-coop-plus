@@ -26,12 +26,18 @@ public static class CoopUi
     private const string DefaultAddress = "127.0.0.1";
     private static string TabLabel => Loc.T("ui.tab");
 
-    private static readonly Color PanelTint = new(1f, 1f, 1f, 1f);
     private static readonly Color PanelFallbackColor = new(0.06f, 0.05f, 0.08f, 0.94f);
     private static readonly Color ButtonFallbackColor = new(0.30f, 0.12f, 0.12f, 1f);
     private static readonly Color DisabledTint = new(0.45f, 0.45f, 0.45f, 0.8f);
+    private static readonly Color DisabledTextColor = new(1f, 1f, 1f, 0.45f);
     private static readonly Color AccentColor = new(0.95f, 0.80f, 0.45f, 1f);
     private static readonly Color BannerColor = new(0f, 0f, 0f, 0.7f);
+
+    // Panel layout, in the game's 1920x1080 reference: the mirror of the hub's character panel (Fight-Panel-Survivors/
+    // Character-Holder, 500 wide, title frame centered on its top edge) on the left side of the screen.
+    private const float PanelWidth = 500f, PanelLeft = 36f, PanelTop = 228f, PanelPad = 28f;
+    private const float RowHeight = 58f, RowGap = 12f;
+    private const float ButtonFont = 30f;
 
     // overlay canvas
     private static GameObject? _root;
@@ -42,9 +48,14 @@ public static class CoopUi
     private static int _locVersion = -1, _fontVersion = -1;
     /// <summary>The game's menu font once the UI found it (phase 5: the ghost's name tag uses it too).</summary>
     internal static TMP_FontAsset? GameFont => _font;
-    private static Sprite? _frameSprite, _titleSprite, _tabSprite, _tabSelectedSprite;
+    private static Sprite? _tabSprite, _tabSelectedSprite;
+    // The game's own art, found by name (see the sprite list in FindGameLook); sliced copies are made at build time.
+    private static Sprite? _frameSprite, _titleSprite, _glowSprite, _sectionSprite, _closeSprite;
+    private static Sprite? _buttonSprite, _buttonHotSprite, _inputSprite;
     private static GameObject? _fallbackButton;
     private static GameObject? _panel;
+    // Rows shown or hidden by state (RefreshPanel); the panel's layout group closes the gaps.
+    private static GameObject? _steamHeader, _steamRow, _directHeader, _directRow, _directButtons, _groupHeader, _leaveRow;
     private static TextMeshProUGUI? _status;
     private static TMP_InputField? _ipField;
     private static Button? _hostButton, _joinButton, _leaveButton, _pasteButton;
@@ -99,14 +110,17 @@ public static class CoopUi
 
             bool tabOk = _tab != null;
             _fallbackButton!.SetActive(_inMenu && !tabOk && _tabFailures >= 3);
-            _panel!.SetActive(_inMenu && _panelOpen);
-            if (_inMenu && _panelOpen) RefreshPanel();
+            // Built once the hub is up (the tab exists), when the game's menu sprites are loaded.
+            if (_panel == null && _inMenu && (tabOk || _panelOpen)) BuildPanel();
+            if (_panel != null) _panel.SetActive(_inMenu && _panelOpen);
+            if (_inMenu && _panelOpen && _panel != null) RefreshPanel();
             if (!_loggedFocus && _ipField != null && _ipField.isFocused)
             {
                 _loggedFocus = true;
                 Plugin.StaticLog.LogInfo("[SoulstoneCoop][ui] IP field got keyboard focus.");
             }
             RefreshBanner();
+            UiProbe.Tick(_inMenu, _root != null);
         }
         catch (Exception ex)
         {
@@ -185,6 +199,22 @@ public static class CoopUi
         if ((rt.anchoredPosition - want).sqrMagnitude > 0.01f) rt.anchoredPosition = want;
     }
 
+    /// <summary>The top bar is sized for the game's 8 tabs and ours, a 9th, ran under the options gear on the right.
+    /// Shrink the holder so the 9 tabs take the room the 8 did, and shift it left by half a tab to stay centered.</summary>
+    private static void FitTabBar(RectTransform? srcTab)
+    {
+        // GetComponent, not "as": an IL2CPP Transform proxy doesn't cast to RectTransform.
+        var holder = srcTab != null && srcTab.parent != null ? srcTab.parent.GetComponent<RectTransform>() : null;
+        if (holder == null || holder.localScale.x < 0.99f) return; // already done for this holder
+        float step = srcTab!.rect.width - 5f; // the holder's spacing: 200 wide tabs, 195 apart
+        float width = holder.rect.width;
+        if (width < 1f) return;
+        float scale = Mathf.Min(1f, width / (width + step + 40f));
+        holder.localScale = new Vector3(scale, scale, 1f);
+        holder.anchoredPosition += new Vector2(-step * 0.5f * scale, 0f);
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Top bar scaled to {scale:0.000} for the Co-op tab.");
+    }
+
     private static bool TryCreateMenuTab()
     {
         try
@@ -224,6 +254,7 @@ public static class CoopUi
             _tabSource = src;
             _tab = clone;
             clone.SetActive(src.activeSelf);
+            FitTabBar(src.GetComponent<RectTransform>());
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Co-op tab added to the main menu ({clone.transform.parent.name}).");
             return true;
         }
@@ -296,27 +327,77 @@ public static class CoopUi
             text += $"\n<color=#ff8080>{Loc.Show(Steam.SteamLobby.LastError)}</color>";
         if (NetSim.Enabled) text += $"\n<color=#ffb060>{Loc.T("st.netsim", ("desc", NetSim.Describe(local: true)))}</color>";
 
+        bool busy = lobbyState == Steam.SteamLobby.LobbyState.Creating || lobbyState == Steam.SteamLobby.LobbyState.Joining;
+        bool idle = role == NetRole.None && !busy;
+        bool steamHosting = role == NetRole.Host && steam;
+        // Phase 9: anyone in the Steam lobby can invite its own friends, while there's a free seat.
+        bool steamMember = steamHosting || (role == NetRole.Client && steam && Steam.SteamLobby.State == Steam.SteamLobby.LobbyState.Joined);
+        bool steamAvailable = Steam.SteamLobby.Available;
+        bool hasCode = Steam.SteamLobby.LobbyId != 0;
+        int count = Players.Count, max = Players.SessionMax;
+        if (TestState != null) FakeState(TestState, ref text, ref idle, ref steamMember, ref steamAvailable, ref hasCode, ref count, ref max);
+
         if (text != _lastStatus)
         {
             _lastStatus = text;
             _status!.text = text;
         }
 
-        bool busy = lobbyState == Steam.SteamLobby.LobbyState.Creating || lobbyState == Steam.SteamLobby.LobbyState.Joining;
-        bool idle = role == NetRole.None && !busy;
-        bool steamHosting = role == NetRole.Host && steam;
-        // Phase 9: anyone in the Steam lobby can invite its own friends, while there's a free seat.
-        bool steamMember = steamHosting || (role == NetRole.Client && steam && Steam.SteamLobby.State == Steam.SteamLobby.LobbyState.Joined);
-        bool full = Players.Count >= Players.SessionMax;
-        SetInteractable(_inviteButton!, Steam.SteamLobby.Available && (idle || (steamMember && !full)));
-        SetInteractable(_copyCodeButton!, steamMember && Steam.SteamLobby.LobbyId != 0);
-        string inviteLabel = steamMember ? Loc.T("ui.invite_count", ("n", Players.Count), ("max", Players.SessionMax)) : Loc.T("ui.invite");
+        // Out of a session: the ways to start one. In a session: who's in it, the invite while there's room, leaving.
+        bool full = count >= max;
+        bool showInvite = steamAvailable && (idle || steamMember);
+        SetActive(_steamHeader, showInvite);
+        SetActive(_steamRow, showInvite);
+        SetActive(_copyCodeButton!.gameObject, steamMember && hasCode);
+        SetInteractable(_inviteButton!, idle || !full);
+        string inviteLabel = steamMember ? Loc.T("ui.invite_count", ("n", count), ("max", max)) : Loc.T("ui.invite");
         if (_inviteLabel != null && _inviteLabel.text != inviteLabel) _inviteLabel.text = inviteLabel;
-        SetInteractable(_hostButton!, idle);
-        SetInteractable(_joinButton!, idle);
-        SetInteractable(_pasteButton!, idle);
-        SetInteractable(_leaveButton!, !idle);
+        SetInteractable(_copyCodeButton, true);
+        SetActive(_directHeader, idle);
+        SetActive(_directRow, idle);
+        SetActive(_directButtons, idle);
+        SetActive(_groupHeader, !idle);
+        SetActive(_leaveRow, !idle);
         _ipField!.interactable = idle;
+    }
+
+    private static void SetActive(GameObject? go, bool on)
+    {
+        if (go != null && go.activeSelf != on) go.SetActive(on);
+    }
+
+    /// <summary>UiProbe screenshots: each state of the panel without a real session.</summary>
+    private static void FakeState(string state, ref string text, ref bool idle, ref bool steamMember, ref bool steamAvailable,
+        ref bool hasCode, ref int count, ref int max)
+    {
+        steamAvailable = true;
+        max = 8;
+        string row(string name, string character, int ping, LobbyPlace place) =>
+            $"\n<color=#f2cc73>{name} ({character})</color>  {ping} ms  {PlaceLabel(place)}";
+        switch (state)
+        {
+            case "hosting":
+                idle = false; steamMember = true; hasCode = true; count = 3;
+                text = Loc.T("st.hosting", ("kind", "Steam"), ("n", 3), ("max", 8))
+                    + row("Kasia", "Pyromancer", 38, LobbyPlace.Menu) + row("Tomek_PL", "Sentinel", 112, LobbyPlace.Loading)
+                    + "\n" + Loc.T("st.wait_all_menu");
+                break;
+            case "connected":
+                idle = false; steamMember = true; hasCode = true; count = 2;
+                text = Loc.T("st.connected", ("name", "<color=#f2cc73>Damian (Barbarian)</color>"), ("link", "Steam, 41 ms"))
+                    + "\n" + Loc.T("st.wait_host");
+                break;
+            case "full":
+                idle = false; steamMember = true; hasCode = true; count = 8;
+                text = Loc.T("st.hosting", ("kind", "Steam"), ("n", 8), ("max", 8)) + "\n" + Loc.T("st.all_in_menu");
+                break;
+            case "error":
+                text = $"<color=#ff8080>{Loc.T("st.idle")} Connection timed out.</color>";
+                break;
+            default: // idle
+                text = Loc.T("st.idle");
+                break;
+        }
     }
 
     private static string Who(RemotePlayer? r)
@@ -363,9 +444,10 @@ public static class CoopUi
         if (go.activeSelf != show) go.SetActive(show);
         if (!show) return;
         if (_bannerText!.text != text) _bannerText.text = text;
-        // Under the panel when it's open, else near the top of the screen.
-        float y = _inMenu && _panelOpen ? -820f : -140f;
+        // In the menu just above the Fight button, between our panel and the character panel; in runs near the top.
+        float y = _inMenu ? -860f : -140f, w = _inMenu ? 820f : 1000f;
         if (Mathf.Abs(_bannerRt.anchoredPosition.y - y) > 0.5f) _bannerRt.anchoredPosition = new Vector2(0f, y);
+        if (Mathf.Abs(_bannerRt.sizeDelta.x - w) > 0.5f) _bannerRt.sizeDelta = new Vector2(w, _bannerRt.sizeDelta.y);
     }
 
     private static void SetInteractable(Button b, bool on)
@@ -373,7 +455,9 @@ public static class CoopUi
         if (b.interactable == on) return;
         b.interactable = on;
         var img = b.targetGraphic;
-        if (img != null) img.color = on ? (_tabSprite != null ? Color.white : ButtonFallbackColor) : DisabledTint;
+        if (img != null) img.color = on ? (_buttonSprite != null ? Color.white : ButtonFallbackColor) : DisabledTint;
+        var label = b.GetComponentInChildren<TextMeshProUGUI>(true);
+        if (label != null) label.color = on ? Color.white : DisabledTextColor;
     }
 
     // ---------------- actions ----------------
@@ -451,6 +535,24 @@ public static class CoopUi
 
     private static void OnClose() => _panelOpen = false;
 
+    /// <summary>UiProbe: fake panel state for screenshots ("idle", "hosting", "connected"), null = real state.</summary>
+    internal static string? TestState;
+    internal static string TestFieldText => _ipField != null ? _ipField.text : "";
+    internal static bool TestTabVisible => _tab != null && _tab.activeInHierarchy && (_tabGroup == null || _tabGroup.alpha > 0.99f);
+    /// <summary>UiProbe: the pointer over the invite button (its gold hover sprite) and a notice in the banner.</summary>
+    internal static void TestHoverAndNotice()
+    {
+        if (_inviteButton != null)
+            ExecuteEvents.Execute(_inviteButton.gameObject, new PointerEventData(EventSystem.current), ExecuteEvents.pointerEnterHandler);
+        CoopSession.Notice(Loc.Msg("nt.code_copied"), 10f);
+    }
+
+    internal static void TestOpen(bool open)
+    {
+        _panelOpen = open;
+        if (open && _menuPanel != null) _menuStateWhenOpened = _menuPanel.CurrentState;
+    }
+
     // ---------------- build ----------------
 
     private static void Build()
@@ -470,7 +572,7 @@ public static class CoopUi
         var scaler = root.AddComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
         scaler.referenceResolution = new Vector2(1920f, 1080f);
-        scaler.matchWidthOrHeight = 0.5f;
+        scaler.matchWidthOrHeight = 1f; // like the menu's canvases: the panel lines up with the hub on any aspect
         root.AddComponent<GraphicRaycaster>();
         var rootRt = root.GetComponent<RectTransform>();
 
@@ -479,79 +581,237 @@ public static class CoopUi
 
         // Fallback opener, top right (only if the tab can't be added).
         var open = Track(MakeButton(rootRt, "CoopButton", TabLabel, OnToggle, 34f), "ui.tab");
-        Place(open.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(-24f, -24f), new Vector2(220f, 70f));
+        Place(open.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(-24f, -24f), new Vector2(260f, RowHeight));
         _fallbackButton = open.gameObject;
         _fallbackButton.SetActive(false);
 
-        // Panel, centered under the top menu.
+        BuildBanner(rootRt);
+        _root = root;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Co-op UI built (font {_font.name} [{_fontType}], language {Loc.Codes[(int)Loc.Current]}).");
+        Loc.CheckGlyphs(_font, "co-op UI");
+    }
+
+    /// <summary>Notices in the menu and in runs, on the game's title frame (the bar behind "Twoje runy"/character name).</summary>
+    private static void BuildBanner(RectTransform rootRt)
+    {
+        _bannerRt = MakeRect(rootRt, "CoopBanner");
+        Place(_bannerRt, new Vector2(0.5f, 1f), new Vector2(0f, -140f), new Vector2(1000f, 72f));
+        var bimg = _bannerRt.gameObject.AddComponent<Image>();
+        bimg.raycastTarget = false;
+        if (!Dress(bimg, _titleSprite, 72f)) bimg.color = BannerColor;
+        _bannerText = MakeText(_bannerRt, "Text", "", 32f, TextAlignmentOptions.Center);
+        _bannerText.raycastTarget = false;
+        AutoSize(_bannerText, 32f);
+        Stretch(_bannerText.rectTransform, 0f);
+        _bannerText.rectTransform.offsetMin = new Vector2(90f, 6f);
+        _bannerText.rectTransform.offsetMax = new Vector2(-90f, -6f);
+        _bannerRt.gameObject.SetActive(false);
+    }
+
+    /// <summary>The panel, dressed like the hub's character panel: dark frame with the yellow glow at the top, title
+    /// frame on its top edge, sections under the gold line of the skill lists, the game's buttons (gold when hovered)
+    /// and the rune preset name field. A vertical layout sizes it to the rows shown in each state.</summary>
+    private static void BuildPanel()
+    {
+        FindGameLook(); // the hub is up now: its sprites are loaded
+        var rootRt = _root!.GetComponent<RectTransform>();
+        if (_titleSprite != null && _bannerRt != null) Dress(_bannerRt.GetComponent<Image>(), _titleSprite, 72f);
+
         var panel = MakeRect(rootRt, "CoopPanel");
-        Place(panel, new Vector2(0.5f, 1f), new Vector2(0f, -150f), new Vector2(720f, 640f)); // phase 9: room for the player list
+        panel.anchorMin = panel.anchorMax = new Vector2(0f, 1f);
+        panel.pivot = new Vector2(0f, 1f);
+        panel.anchoredPosition = new Vector2(PanelLeft, -PanelTop);
+        panel.sizeDelta = new Vector2(PanelWidth, 400f);
         var bg = panel.gameObject.AddComponent<Image>();
-        if (_frameSprite != null) { bg.sprite = _frameSprite; bg.color = PanelTint; }
-        else bg.color = PanelFallbackColor;
+        if (!Dress(bg, _frameSprite, 0f)) bg.color = PanelFallbackColor;
+        var layout = panel.gameObject.AddComponent<VerticalLayoutGroup>();
+        layout.padding = new RectOffset { left = (int)PanelPad, right = (int)PanelPad, top = 54, bottom = 18 };
+        layout.spacing = RowGap;
+        layout.childAlignment = TextAnchor.UpperCenter;
+        layout.childControlWidth = true;
+        layout.childControlHeight = true;
+        layout.childForceExpandWidth = true;
+        layout.childForceExpandHeight = false;
+        var fitter = panel.gameObject.AddComponent<ContentSizeFitter>();
+        fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
         _panel = panel.gameObject;
 
-        var titleHolder = MakeRect(panel, "TitleHolder");
-        PlaceTopCenter(titleHolder, 0f, -38f, 380f, 84f);
-        if (_titleSprite != null) titleHolder.gameObject.AddComponent<Image>().sprite = _titleSprite;
-        var title = MakeText(titleHolder, "Title", TabLabel, 46f, TextAlignmentOptions.Center);
-        AutoSize(title, 46f);
-        _labels.Add((title, "ui.tab"));
+        if (_glowSprite != null)
+        {
+            var glow = MakeRect(panel, "Glow");
+            Ignore(glow);
+            PlaceTopCenter(glow, 0f, 150f, PanelWidth - 8f, 300f);
+            var gimg = glow.gameObject.AddComponent<Image>();
+            gimg.sprite = _glowSprite;
+            gimg.raycastTarget = false;
+        }
+
+        var titleHolder = MakeRect(panel, "Title");
+        Ignore(titleHolder);
+        PlaceTopCenter(titleHolder, 0f, 0f, 367f, 65f);
+        var timg = titleHolder.gameObject.AddComponent<Image>();
+        if (_titleSprite != null) timg.sprite = _titleSprite;
+        else timg.color = Color.clear;
+        timg.raycastTarget = false;
+        var title = MakeText(titleHolder, "Label", TabLabel, 36f, TextAlignmentOptions.Center);
+        AutoSize(title, 36f);
         Stretch(title.rectTransform, 0f);
+        title.rectTransform.offsetMin = new Vector2(70f, 4f);
+        title.rectTransform.offsetMax = new Vector2(-70f, -2f);
+        _labels.Add((title, "ui.tab"));
 
-        var version = MakeText(panel, "Version", $"mod {Plugin.HandshakeVersion}", 20f, TextAlignmentOptions.Right);
-        version.color = new Color(1f, 1f, 1f, 0.45f);
-        PlaceTopLeft(version.rectTransform, 470f, 18f, 220f, 30f);
+        var close = MakeCloseButton(panel);
+        Ignore(close.GetComponent<RectTransform>());
+        Place(close.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(14f, 14f), new Vector2(46f, 46f));
 
-        var close = MakeTextButton(panel, "Close", "X", OnClose, 34f);
-        PlaceTopLeft(close.GetComponent<RectTransform>(), 650f, 46f, 50f, 50f);
-
-        // Phase 7: Steam invite first (the real way to play), IP below it (local tests, LAN, VPN).
-        _inviteButton = MakeButton(panel, "Invite", Loc.T("ui.invite"), OnInvite, 30f); // label set by RefreshPanel
+        // Steam: the real way to play.
+        _steamHeader = MakeSection(panel, "ui.sec_steam");
+        var steamRow = MakeRow(panel, "SteamRow");
+        _steamRow = steamRow.gameObject;
+        _inviteButton = MakeButton(steamRow, "Invite", Loc.T("ui.invite"), OnInvite, ButtonFont); // label set by RefreshPanel
         _inviteLabel = _inviteButton.GetComponentInChildren<TextMeshProUGUI>(true);
-        PlaceTopLeft(_inviteButton.GetComponent<RectTransform>(), 60f, 70f, 390f, 70f);
+        _copyCodeButton = Track(MakeButton(steamRow, "CopyCode", Loc.T("ui.copy_code"), OnCopyCode, ButtonFont), "ui.copy_code");
 
-        _copyCodeButton = Track(MakeButton(panel, "CopyCode", Loc.T("ui.copy_code"), OnCopyCode, 28f), "ui.copy_code");
-        PlaceTopLeft(_copyCodeButton.GetComponent<RectTransform>(), 460f, 70f, 200f, 70f);
-
-        _hostButton = Track(MakeButton(panel, "Host", Loc.T("ui.host_ip"), OnHost, 30f), "ui.host_ip");
-        PlaceTopLeft(_hostButton.GetComponent<RectTransform>(), 60f, 152f, 600f, 62f);
-
+        // Direct: IP or a Steam lobby code (local tests, LAN, VPN).
+        _directHeader = MakeSection(panel, "ui.sec_direct");
+        var directRow = MakeRow(panel, "AddressRow");
+        _directRow = directRow.gameObject;
         string lastAddress = DefaultAddress;
         try { if (!string.IsNullOrWhiteSpace(Plugin.LastAddress.Value)) lastAddress = Plugin.LastAddress.Value.Trim(); } catch { }
-        _ipField = MakeInputField(panel, "Address", lastAddress);
-        PlaceTopLeft(_ipField.GetComponent<RectTransform>(), 60f, 230f, 290f, 62f);
+        _ipField = MakeInputField(directRow, "Address", lastAddress);
+        Flex(_ipField.gameObject, 1f);
+        _pasteButton = Track(MakeButton(directRow, "Paste", Loc.T("ui.paste"), OnPaste, 26f), "ui.paste");
+        Flex(_pasteButton.gameObject, 0f, 140f);
+        var directButtons = MakeRow(panel, "DirectButtons");
+        _directButtons = directButtons.gameObject;
+        _joinButton = Track(MakeButton(directButtons, "Join", Loc.T("ui.join"), OnJoin, ButtonFont), "ui.join");
+        _hostButton = Track(MakeButton(directButtons, "Host", Loc.T("ui.host_ip"), OnHost, ButtonFont), "ui.host_ip");
 
-        _pasteButton = Track(MakeButton(panel, "Paste", Loc.T("ui.paste"), OnPaste, 30f), "ui.paste");
-        PlaceTopLeft(_pasteButton.GetComponent<RectTransform>(), 360f, 226f, 120f, 70f);
-
-        _joinButton = Track(MakeButton(panel, "Join", Loc.T("ui.join"), OnJoin, 34f), "ui.join");
-        PlaceTopLeft(_joinButton.GetComponent<RectTransform>(), 490f, 226f, 170f, 70f);
-
-        _leaveButton = Track(MakeButton(panel, "Leave", Loc.T("ui.disconnect"), OnLeave, 30f), "ui.disconnect");
-        PlaceTopLeft(_leaveButton.GetComponent<RectTransform>(), 60f, 312f, 600f, 62f);
-
-        _status = MakeText(panel, "Status", "", 22f, TextAlignmentOptions.Top);
+        // Status (and the group, in a session).
+        _groupHeader = MakeSection(panel, "ui.sec_group");
+        var statusBox = MakeRect(panel, "StatusBox");
+        var sbg = statusBox.gameObject.AddComponent<Image>();
+        if (!Dress(sbg, _frameSprite, 0f)) sbg.color = new Color(0f, 0f, 0f, 0.4f);
+        sbg.color = new Color(1f, 1f, 1f, 0.55f);
+        sbg.raycastTarget = false;
+        var sl = statusBox.gameObject.AddComponent<VerticalLayoutGroup>();
+        sl.padding = new RectOffset { left = 18, right = 18, top = 12, bottom = 12 };
+        sl.childControlWidth = true;
+        sl.childControlHeight = true;
+        sl.childForceExpandWidth = true;
+        statusBox.gameObject.AddComponent<LayoutElement>().minHeight = 56f;
+        _status = MakeText(statusBox, "Status", "", 26f, TextAlignmentOptions.Center);
         _status.enableWordWrapping = true;
-        AutoSize(_status, 22f);
-        PlaceTopLeft(_status.rectTransform, 60f, 388f, 600f, 236f);
+        _status.lineSpacing = 8f;
+        _status.color = new Color(0.92f, 0.92f, 0.92f, 1f);
 
-        // Banner (menu and runs).
-        _bannerRt = MakeRect(rootRt, "CoopBanner");
-        Place(_bannerRt, new Vector2(0.5f, 1f), new Vector2(0f, -140f), new Vector2(1000f, 70f));
-        var bimg = _bannerRt.gameObject.AddComponent<Image>();
-        bimg.color = BannerColor;
-        bimg.raycastTarget = false;
-        _bannerText = MakeText(_bannerRt, "Text", "", 34f, TextAlignmentOptions.Center);
-        _bannerText.raycastTarget = false;
-        AutoSize(_bannerText, 34f);
-        Stretch(_bannerText.rectTransform, 12f);
-        _bannerRt.gameObject.SetActive(false);
+        var leaveRow = MakeRow(panel, "LeaveRow");
+        _leaveRow = leaveRow.gameObject;
+        _leaveButton = Track(MakeButton(leaveRow, "Leave", Loc.T("ui.disconnect"), OnLeave, ButtonFont), "ui.disconnect");
+
+        var version = MakeText(panel, "Version", $"mod {Plugin.HandshakeVersion}", 18f, TextAlignmentOptions.Right);
+        version.color = new Color(1f, 1f, 1f, 0.35f);
+        version.gameObject.AddComponent<LayoutElement>().preferredHeight = 20f;
 
         _panel.SetActive(false);
-        _root = root;
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Co-op UI built (font {_font.name} [{_fontType}], language {Loc.Codes[(int)Loc.Current]}, frame={_frameSprite?.name ?? "-"}, title={_titleSprite?.name ?? "-"}, tab={_tabSprite?.name ?? "-"}).");
-        Loc.CheckGlyphs(_font, "co-op UI");
+        _lastStatus = "";
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Co-op panel built (frame={_frameSprite?.name ?? "-"}, title={_titleSprite?.name ?? "-"}, " +
+            $"button={_buttonSprite?.name ?? "-"}/{_buttonHotSprite?.name ?? "-"}, input={_inputSprite?.name ?? "-"}, section={_sectionSprite?.name ?? "-"}).");
+    }
+
+    /// <summary>Section title on the gold fading line the game puts behind its skill list titles.</summary>
+    private static GameObject MakeSection(Transform parent, string key)
+    {
+        var rt = MakeRect(parent, "Section-" + key);
+        rt.gameObject.AddComponent<LayoutElement>().preferredHeight = 38f;
+        if (_sectionSprite != null)
+        {
+            var img = rt.gameObject.AddComponent<Image>();
+            img.sprite = _sectionSprite;
+            img.raycastTarget = false;
+        }
+        var t = MakeText(rt, "Label", Loc.T(key), 28f, TextAlignmentOptions.Center);
+        AutoSize(t, 28f);
+        t.raycastTarget = false;
+        Stretch(t.rectTransform, 2f);
+        _labels.Add((t, key));
+        return rt.gameObject;
+    }
+
+    /// <summary>A row of equal-width controls, one row high.</summary>
+    private static RectTransform MakeRow(Transform parent, string name)
+    {
+        var rt = MakeRect(parent, name);
+        var h = rt.gameObject.AddComponent<HorizontalLayoutGroup>();
+        h.spacing = RowGap;
+        h.childControlWidth = true;
+        h.childControlHeight = true;
+        h.childForceExpandWidth = true;
+        h.childForceExpandHeight = true;
+        rt.gameObject.AddComponent<LayoutElement>().preferredHeight = RowHeight;
+        return rt;
+    }
+
+    private static void Flex(GameObject go, float flexible, float width = -1f)
+    {
+        var le = go.GetComponent<LayoutElement>() ?? go.AddComponent<LayoutElement>();
+        le.flexibleWidth = flexible;
+        if (width > 0f) { le.preferredWidth = width; le.minWidth = width; }
+    }
+
+    private static void Ignore(RectTransform rt)
+    {
+        var le = rt.GetComponent<LayoutElement>() ?? rt.gameObject.AddComponent<LayoutElement>();
+        le.ignoreLayout = true;
+    }
+
+    private static Button MakeCloseButton(Transform parent)
+    {
+        if (_closeSprite == null) return MakeTextButton(parent, "Close", "X", OnClose, 34f);
+        var rt = MakeRect(parent, "Close");
+        var img = rt.gameObject.AddComponent<Image>();
+        img.sprite = _closeSprite;
+        img.preserveAspect = true;
+        var b = rt.gameObject.AddComponent<Button>();
+        b.targetGraphic = img;
+        b.navigation = new Navigation { mode = Navigation.Mode.None };
+        var colors = b.colors;
+        colors.highlightedColor = new Color(1f, 0.85f, 0.85f, 1f);
+        colors.pressedColor = new Color(0.7f, 0.7f, 0.7f, 1f);
+        b.colors = colors;
+        AddClick(b, OnClose, "Close");
+        return b;
+    }
+
+    /// <summary>Puts one of the game's sprites on an image: as is when it's already 9-sliced (or when height is 0,
+    /// with its own borders), else as a sliced copy whose end caps keep their shape at any width
+    /// (<see cref="Sliced"/>). False when there is no sprite.</summary>
+    private static bool Dress(Image img, Sprite? sprite, float height)
+    {
+        if (sprite == null) return false;
+        var s = height > 0f ? Sliced(sprite) : sprite;
+        img.sprite = s;
+        img.type = s.border.sqrMagnitude > 0f ? Image.Type.Sliced : Image.Type.Simple;
+        // Scale the caps with the height (the art is drawn ~140 px high, the controls are ~60).
+        if (height > 0f) img.pixelsPerUnitMultiplier = sprite.rect.height / height;
+        img.color = Color.white;
+        return true;
+    }
+
+    private static readonly Dictionary<string, Sprite> _sliced = new();
+
+    /// <summary>The game draws its buttons and bars as Simple images in one aspect ratio; ours come in other widths,
+    /// so they get a copy of the sprite with left/right borders around the pointed end caps (top/bottom 0).</summary>
+    private static Sprite Sliced(Sprite src)
+    {
+        if (src.border.x > 0f || src.border.z > 0f) return src;
+        if (_sliced.TryGetValue(src.name, out var cached) && cached != null) return cached;
+        float cap = Mathf.Min(src.rect.height * 0.75f, src.rect.width * 0.3f);
+        var s = Sprite.Create(src.texture, src.textureRect, new Vector2(0.5f, 0.5f), src.pixelsPerUnit, 0u,
+            SpriteMeshType.FullRect, new Vector4(cap, 0f, cap, 0f));
+        s.name = src.name + "_Sliced";
+        _sliced[src.name] = s;
+        return s;
     }
 
     private static Button Track(Button b, string key)
@@ -595,7 +855,9 @@ public static class CoopUi
         _lastStatus = "";
     }
 
-    /// <summary>The game's main font (the one on the menu tabs) and the sprites of its Confirmation-Panel and tabs.</summary>
+    /// <summary>The game's main font (the one on the menu tabs) and the art of its hub panels, by sprite name:
+    /// frame and glow of the character panel, its title frame, the skill list title line, the Button/Button_Selected
+    /// pair of the menu's buttons (wishlist, "learn more", back), the rune preset name field and the close button.</summary>
     private static void FindGameLook()
     {
         try
@@ -612,14 +874,19 @@ public static class CoopUi
                 var refs = panel.FightButton != null ? panel.FightButton.GetComponentInChildren<LabelReferences>(true) : null;
                 if (refs != null) _fontType = refs.Type;
             }
-            var conf = UnityEngine.Object.FindObjectOfType<ConfirmationPanel>(true);
-            if (conf != null)
-            {
-                var frame = conf.transform.Find("Text-Background");
-                var titleHolder = conf.transform.Find("Settings-Title-Holder");
-                _frameSprite = frame != null ? frame.GetComponent<Image>()?.sprite : null;
-                _titleSprite = titleHolder != null ? titleHolder.GetComponent<Image>()?.sprite : null;
-            }
+
+            var byName = new Dictionary<string, Sprite>();
+            foreach (var s in Resources.FindObjectsOfTypeAll<Sprite>())
+                if (s != null && s.texture != null && !byName.ContainsKey(s.name)) byName[s.name] = s;
+            Sprite? Get(string name) => byName.TryGetValue(name, out var s) ? s : null;
+            _frameSprite = Get("Menu_Frame_NotTransparent") ?? _frameSprite;
+            _titleSprite = Get("Title_Frame") ?? _titleSprite;
+            _glowSprite = Get("Yellow_Glow_01") ?? _glowSprite;
+            _sectionSprite = Get("SkillList_Title_Frame") ?? _sectionSprite;
+            _closeSprite = Get("Close_Button") ?? _closeSprite;
+            _buttonSprite = Get("Button") ?? _buttonSprite;
+            _buttonHotSprite = Get("Button_Selected") ?? _buttonHotSprite;
+            _inputSprite = Get("Craft_Background_List_Frame") ?? _inputSprite;
         }
         catch (Exception ex)
         {
@@ -673,21 +940,38 @@ public static class CoopUi
         return t;
     }
 
-    /// <summary>Button with the game's menu tab sprite (fallback: flat color) and a centered label.</summary>
+    /// <summary>The game's menu button (Button), turning gold (Button_Selected) when hovered or pressed, like its
+    /// wishlist and "learn more" buttons; fallback: flat color.</summary>
     private static Button MakeButton(Transform parent, string name, string label, Action onClick, float size)
     {
         var rt = MakeRect(parent, name);
         var img = rt.gameObject.AddComponent<Image>();
-        if (_tabSprite != null) { img.sprite = _tabSprite; img.color = Color.white; }
-        else img.color = ButtonFallbackColor;
         var b = rt.gameObject.AddComponent<Button>();
         b.targetGraphic = img;
         b.navigation = new Navigation { mode = Navigation.Mode.None };
+        if (Dress(img, _buttonSprite, RowHeight))
+        {
+            if (_buttonHotSprite != null)
+            {
+                var hot = Sliced(_buttonHotSprite);
+                b.transition = Selectable.Transition.SpriteSwap;
+                // SpriteState is boxed in the interop and its pressedSprite setter was stripped: set the fields.
+                var state = new SpriteState();
+                state.m_HighlightedSprite = hot;
+                state.m_PressedSprite = hot;
+                state.m_SelectedSprite = hot;
+                b.spriteState = state;
+            }
+        }
+        else img.color = ButtonFallbackColor;
         AddClick(b, onClick, name);
         var t = MakeText(rt, "Label", label, size, TextAlignmentOptions.Center);
         AutoSize(t, size);
         t.raycastTarget = false;
-        Stretch(t.rectTransform, 4f);
+        Stretch(t.rectTransform, 0f);
+        // Inside the pointed end caps.
+        t.rectTransform.offsetMin = new Vector2(30f, 4f);
+        t.rectTransform.offsetMax = new Vector2(-30f, -2f);
         return b;
     }
 
@@ -702,26 +986,29 @@ public static class CoopUi
         return b;
     }
 
-    /// <summary>TMP_InputField wired by hand: background, a masked text area, placeholder and text. The component
-    /// is added with the GameObject inactive and enabled only once its references are set.</summary>
+    /// <summary>TMP_InputField wired by hand on the frame of the game's rune preset name field: background, a masked
+    /// text area, placeholder and text. The component is added with the GameObject inactive and enabled only once its
+    /// references are set.</summary>
     private static TMP_InputField MakeInputField(Transform parent, string name, string initial)
     {
         var rt = MakeRect(parent, name);
         rt.gameObject.SetActive(false);
         var bg = rt.gameObject.AddComponent<Image>();
-        bg.color = new Color(0f, 0f, 0f, 0.65f);
+        if (!Dress(bg, _inputSprite, RowHeight)) bg.color = new Color(0f, 0f, 0f, 0.65f);
 
         var area = MakeRect(rt, "TextArea");
-        Stretch(area, 12f);
+        Stretch(area, 0f);
+        area.offsetMin = new Vector2(36f, 6f);
+        area.offsetMax = new Vector2(-36f, -6f);
         area.gameObject.AddComponent<RectMask2D>();
 
-        var placeholder = MakeText(area, "Placeholder", Loc.T("ui.ip_hint"), 30f, TextAlignmentOptions.Left);
+        var placeholder = MakeText(area, "Placeholder", Loc.T("ui.ip_hint"), 28f, TextAlignmentOptions.Left);
         _labels.Add((placeholder, "ui.ip_hint"));
         placeholder.color = new Color(1f, 1f, 1f, 0.35f);
         placeholder.fontStyle = FontStyles.Italic;
         Stretch(placeholder.rectTransform, 0f);
 
-        var text = MakeText(area, "Text", "", 30f, TextAlignmentOptions.Left);
+        var text = MakeText(area, "Text", "", 28f, TextAlignmentOptions.Left);
         Stretch(text.rectTransform, 0f);
 
         var input = rt.gameObject.AddComponent<TMP_InputField>();
@@ -730,13 +1017,14 @@ public static class CoopUi
         input.textComponent = text;
         input.placeholder = placeholder;
         input.fontAsset = _font;
-        input.pointSize = 30f;
+        input.pointSize = 28f;
         input.characterLimit = 64;
         input.contentType = TMP_InputField.ContentType.Standard;
         input.lineType = TMP_InputField.LineType.SingleLine;
         input.navigation = new Navigation { mode = Navigation.Mode.None };
         input.caretColor = AccentColor;
         input.customCaretColor = true;
+        input.selectionColor = new Color(0.95f, 0.80f, 0.45f, 0.35f);
         rt.gameObject.SetActive(true);
         input.text = initial;
         return input;
