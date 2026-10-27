@@ -55,12 +55,42 @@ public static class EnemyCasts
 
     // ---------------- host ----------------
 
+    // #9: regular enemies' attacks too, kept cheap: only near a client, at most one per enemy every 0.4 s and a
+    // shared budget of ~40 casts/s (a few KB/s). Bosses, elites and specials keep the old rules.
+    private const float RegularMinInterval = 0.4f;
+    private const float RegularRange = 30f;
+    private const float RegularBudgetPerSecond = 40f;
+    private static float _regularBudget = RegularBudgetPerSecond;
+    private static float _regularBudgetTime;
+    private static int _regularSent, _regularFar, _regularOverBudget;
+
+    private static bool NearAnyClient(Vector3 pos)
+    {
+        foreach (var r in Lobby.CoopSession.Remotes)
+        {
+            var g = r.Ghost;
+            if (g != null && (g.transform.position - pos).sqrMagnitude <= RegularRange * RegularRange) return true;
+        }
+        return false;
+    }
+
     internal static void OnHostCast(HostEnemySync.Tracked t, Skill skill, SkillActivationParameters p)
     {
         if (!NetworkManager.HasPeer || skill == null || p == null) return;
         if ((skill.SkillType & SkillType.Summon) != 0) { _hostSkippedSummon++; return; }
         float now = Time.unscaledTime;
-        if (LastSent.TryGetValue(t.NetId, out float last) && now - last < MinIntervalPerEnemy) { _throttled++; return; }
+        bool regular = !t.ReplayCasts;
+        float minInterval = regular ? RegularMinInterval : MinIntervalPerEnemy;
+        if (LastSent.TryGetValue(t.NetId, out float last) && now - last < minInterval) { _throttled++; return; }
+        if (regular)
+        {
+            if (!NearAnyClient(t.Entity.transform.position)) { _regularFar++; return; }
+            _regularBudget = Mathf.Min(RegularBudgetPerSecond, _regularBudget + (now - _regularBudgetTime) * RegularBudgetPerSecond);
+            _regularBudgetTime = now;
+            if (_regularBudget < 1f) { _regularOverBudget++; return; }
+            _regularBudget -= 1f;
+            _regularSent++;
+        }
         LastSent[t.NetId] = now;
 
         var e = t.Entity;
@@ -235,11 +265,13 @@ public static class EnemyCasts
         _telemetryTimer += unscaledDeltaTime;
         if (_telemetryTimer < TelemetryInterval) return;
         _telemetryTimer = 0f;
-        if (_sent + _recv + _captureErrors + _blockedDamage + _blockedStatus + _blockedPush + _blockedGodProxy > 0)
+        if (_sent + _recv + _regularFar + _captureErrors + _blockedDamage + _blockedStatus + _blockedPush + _blockedGodProxy > 0)
             Plugin.StaticLog.LogInfo(
                 $"[SoulstoneCoop][enemycasts] {NetworkManager.Role}: sent={_sent} ({_bytes} B) throttled={_throttled} hostSkippedSummon={_hostSkippedSummon} " +
                 $"captureErrors={_captureErrors} recv={_recv} played={_played} noPuppet={_noPuppet} noSkill={_noSkill} inactive={_inactive} " +
-                $"rejected={_rejected} errors={_errors} skippedSummon={_skippedSummon} blockedDamage={_blockedDamage} blockedStatus={_blockedStatus} blockedPush={_blockedPush} blockedGodProxy={_blockedGodProxy}");
+                $"rejected={_rejected} errors={_errors} skippedSummon={_skippedSummon} blockedDamage={_blockedDamage} blockedStatus={_blockedStatus} blockedPush={_blockedPush} blockedGodProxy={_blockedGodProxy} " +
+                $"regular={_regularSent} regularFar={_regularFar} regularOverBudget={_regularOverBudget}");
+        _regularSent = _regularFar = _regularOverBudget = 0;
         _sent = _bytes = _throttled = _hostSkippedSummon = _captureErrors = 0;
         _recv = _played = _noPuppet = _noSkill = _inactive = _rejected = _errors = _skippedSummon = 0;
         _blockedDamage = _blockedStatus = _blockedPush = _blockedGodProxy = 0;
@@ -251,7 +283,8 @@ public static class EnemyCasts
 
 // ---------------- Harmony patches (every one wrapped in try/catch) ----------------
 
-/// <summary>Host: capture the casts of tracked enemies flagged ReplayCasts (bosses, elites, specials). Same funnel
+/// <summary>Host: capture the casts of tracked enemies (bosses, elites and specials always; regular ones near a client,
+/// throttled: see OnHostCast). Same funnel
 /// and filter style as the phase 4C LocalCastCapturePatch (its own postfix on the same method).</summary>
 [HarmonyPatch(typeof(SkillCasterComponent), nameof(SkillCasterComponent.CastSkill))]
 public static class HostEnemyCastCapturePatch
@@ -263,7 +296,7 @@ public static class HostEnemyCastCapturePatch
         {
             if (!__result || !CoopRole.IsHostSide || __instance == null || !NetworkManager.HasPeer) return;
             var e = __instance.Entity;
-            if (e == null || !HostEnemySync.TryGetTracked(e.Pointer, out var t) || !t.ReplayCasts || t.DiedSent) return;
+            if (e == null || !HostEnemySync.TryGetTracked(e.Pointer, out var t) || t.DiedSent) return;
             EnemyCasts.OnHostCast(t, skill, parameters);
         }
         catch (Exception ex)
