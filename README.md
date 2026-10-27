@@ -37,28 +37,25 @@ Direct IP is also available (**Host by IP** / type the host's IP → **Join**, U
 | Partners | Shown with their own character, skin and weapon, Steam name, health bar, ally ring and minimap marker; smooth movement, dash and animations; their pets and summons (e.g. the Sentinel's panther) are visible |
 | Enemies | The host owns the world; the guest sees the same enemies, bosses, void hunters and specials, including boss area warnings |
 | Combat | Both players damage the same enemies; enemies chase and hit whoever is closest; statuses (slow, stun) reach the guest |
-| Skills | Each player sees the other's skills (visual only; damage is synced separately) |
+| Skills | Each player sees the other's skills (visual only; damage is synced separately), including rotating shields and the live aim of channels |
+| Chests | Every player sees the reward chests and can open them; the loot is shared as usual |
 | Progression | Team XP (whoever picks up an orb, both get it), loot and kill credit on the guest; each player keeps their own level and upgrades |
 | Pause | Anyone's pause freezes everyone and the host can unpause for all; level-ups open as a compact see-through panel you keep playing under (1-4 to pick) |
-| Death | Downed state, any ally standing next to you revives you, defeat only when everyone is down |
+| Death | Downed state (the partner lies down on your screen), any ally standing next to you revives you, the host included; defeat only when everyone is down. Heal orbs reach every player; guests dodge hits by dashing |
 | End of run | Victory, Home portal, Endless and challenge portals and Restart happen for everyone; the host surrendering ends the run for all |
 | Disconnects | Host leaving ends everyone's run with a notice; a guest leaving (or surrendering) lets the others continue |
 
 ## Known limitations
 
 - Rejoining a run in progress keeps nothing (behind `[Coop] AllowRejoin`, off by default).
-- Chests only exist for the host; the guest gets their share but can't open them.
-- Summons, always-on auras and channel aim of the partner's skills are not shown.
-- Regular enemies don't animate their attacks on the guest (bosses, elites and specials do).
 - Crusade mode is not supported in co-op.
+- Partners' mod skins, Ascension transformation and weapon companions are not shown on their character.
 
 The full list and design notes are in [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Roadmap
 
 - Full rejoin keeping level, skills and items.
-- Chests and other interactables for the guest.
-- Partners' always-on auras.
 - Crusade mode.
 
 ## Settings
@@ -73,6 +70,7 @@ The full list and design notes are in [`docs/roadmap.md`](docs/roadmap.md).
 | `[Coop] MaxPlayers` | `8` | Lobby size (2-8) |
 | `[Coop] EnemyScalePerPlayer` | `0` | Extra enemies per additional player (try `0.25`) |
 | `[Coop] ReplicaCastRadius` | `60` | Don't draw skills of partners farther than this |
+| `[Coop] DashDodge` | `true` | Guests dodge a host-computed hit while dashing (or within their ping after) |
 | `[Coop] LobbyType` | `FriendsOnly` | `Public` if friends of guests can't join |
 | `[Coop] SenderClock` | `false` | Experimental: smoother remote movement on jittery connections |
 | `[Debug] SimulateLatencyMs`, `SimulateJitterMs`, `SimulatePacketLossPercent` | `0` | Simulate a bad network for testing |
