@@ -56,6 +56,7 @@ public enum PacketType : byte
     SkillChannelAim = 123, // either way: a channel of the sender's aims here now: key | front v3 | ground v3, ~10 Hz while it moves (Sequenced)
     GuestEffect = 124, // client -> host: a guest's status / stun / knockback on a puppet, replayed on the real enemy (ReliableUnordered; forces Unreliable)
     StatueSync = 125,  // host -> clients: a boss statue went up (id, prefab name, pos, yaw) or came down (id) (ReliableOrdered)
+    TaskStage = 126,   // host -> clients: map task id u16 | stage u8 (triggered / completed / failed) (ReliableOrdered)
     ChestState = 122,  // host -> clients: chest id u16 | interaction % u8 | opened bool (ReliableOrdered, after its spawn)
 }
 
@@ -185,6 +186,9 @@ public static class PacketRouter
                 break;
             case PacketType.ChestSpawn:
                 Loot.ChestSync.OnChestSpawn(reader);
+                break;
+            case PacketType.TaskStage:
+                Loot.ChestSync.OnTaskStage(reader);
                 break;
             case PacketType.StatueSync:
                 Enemies.StatueSync.OnStatueSync(reader);

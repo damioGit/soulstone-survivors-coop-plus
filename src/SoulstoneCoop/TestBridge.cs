@@ -57,6 +57,7 @@ public static class TestBridge
                 Commands["bosses"] = Bosses;
                 Commands["bossvis"] = BossVis;
                 Commands["statuesync"] = Enemies.StatueSync.TestInfo;
+                Commands["tasks"] = Tasks;
                 Commands["statues"] = _ =>
                 {
                     var live = UnityEngine.Object.FindObjectsOfType<StatueComponent>().Where(x => x != null)
@@ -276,6 +277,41 @@ public static class TestBridge
             parts.Add($"{b.gameObject.name}: renderers {on}/{rs.Length} mats=[{string.Join(",", mats)}] children=[{string.Join(",", kids.Take(8))}] hp={b._health?.CurrentHealth:0} invuln={b._health?.InvulnerabilityTime:0.0}");
         }
         return string.Join(" || ", parts);
+    }
+
+    /// <summary>"cmd tasks [new]": live map tasks (name, stage, trigger, icon text); "new" asks the spawner for one now.</summary>
+    private static string Tasks(string[] args)
+    {
+        var sp = UnityEngine.Object.FindObjectOfType<GameManagerMapTaskSpawnerComponent>();
+        if (args.Length > 0 && args[0] == "list")
+            return string.Join(",", Resources.LoadAll<MapTask>("MapTasks/Tasks").Where(x => x != null).Select(x => x.gameObject.name + ":" + x.GetIl2CppType().Name));
+        if (args.Length > 1 && args[0] == "spawn")
+        {
+            var prefab = Resources.Load<MapTask>("MapTasks/Tasks/" + args[1]);
+            var local = GameState.LocalPlayerEntity;
+            if (prefab == null || local == null) return "no prefab / player";
+            var t = UnityEngine.Object.Instantiate(prefab.gameObject).GetComponent<MapTask>();
+            t.Setup();
+            t.StartTaskAtPosition(local.transform.position + new Vector3(-20f, 0f, 0f), Quaternion.identity);
+            return $"spawned {t.gameObject.name} stage={t.Stage}";
+        }
+        if (args.Length > 0 && args[0] == "new")
+        {
+            if (sp == null) return "no task spawner";
+            sp.GetNewTask();
+            return "asked for a task";
+        }
+        var parts = new List<string> { $"spawner={(sp != null ? $"active={sp._isActive} pending={sp._pendingTasks} simultaneous={sp.SimultaneousTasks}" : "none")}" };
+        foreach (var t in UnityEngine.Object.FindObjectsOfType<MapTask>())
+        {
+            if (t == null) continue;
+            var trig = t._taskTriggerObjectInstance;
+            string text = "";
+            try { var w = t.WorldSpaceMapTaskIcon; var tmp = w != null ? w.GetComponentInChildren<TMPro.TextMeshProUGUI>(true) : null; text = tmp != null ? tmp.text : ""; } catch { }
+            parts.Add($"{t.gameObject.name}({t.GetIl2CppType().Name}) stage={t.Stage} at={t.transform.position:0} trig={(trig != null ? trig.gameObject.name + "@" + trig.transform.position.ToString("0") + ":" + trig.OneTimeTrigger?.State : "-")} " +
+                $"addr={t.TaskMetadata.TaskAddress} diff={t.TaskMetadata.Difficulty} text='{text}'");
+        }
+        return string.Join(" | ", parts);
     }
 
     private static Vector3 _walkVel;

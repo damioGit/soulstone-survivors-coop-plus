@@ -17,16 +17,27 @@ namespace SoulstoneCoop.Loot;
 /// chest's trigger, and when the game's trigger only accepts real players the host hands the interaction to the
 /// stand-in (<see cref="AssistProxies"/>). The reward goes through LootUtil.ProcessLoot, which LootSync already
 /// replicates, so every player gets its share.
+/// Map tasks (MapTask: kill elites / bosses in an area, survive the void presences) work the same way: their trigger
+/// (MapTask._taskTriggerObjectInstance, an InteractableOneTimeTrigger like the chest's) is shown and opened by the
+/// guests too, with the task's minimap icon; the task's stages come as notices (TaskStage), its enemies are puppets and
+/// its reward is a reward object, i.e. a chest above.
 /// </summary>
 public static class ChestSync
 {
     private const float ScanInterval = 0.5f, StateInterval = 0.2f, ReannounceInterval = 4f;
     private const float AssistRadius = 2.6f;
 
+    private const byte KindChest = 0, KindTask = 1;
+
     private sealed class HostChest
     {
         public ushort Id;
-        public InteractableRewardObject Obj = null!;
+        public byte Kind;
+        public InteractableRewardObject? Obj;
+        public MapTask? Task;
+        public GameObject? Root;           // what stands on the map: the chest, or the task's trigger
+        public MapTaskCompletionStage LastStage = MapTaskCompletionStage.None;
+        public bool TriggerGone;
         public byte LastPercent = 255;
         public bool Opened;
         public string Name = "";
@@ -40,6 +51,17 @@ public static class ChestSync
         public Renderer? Bar;
         public string? BarProperty;
         public byte Percent;
+        public int IconId = -1;
+    }
+
+    private static InteractableOneTimeTrigger? Trig(HostChest c)
+    {
+        if (c.Kind == KindTask)
+        {
+            var t = c.Task != null ? c.Task._taskTriggerObjectInstance : null;
+            return t != null ? t.OneTimeTrigger : null;
+        }
+        return c.Obj != null && c.Obj.TriggerObject != null ? c.Obj.TriggerObject.OneTimeTrigger : null;
     }
 
     private static readonly Dictionary<IntPtr, HostChest> _host = new();
@@ -75,7 +97,7 @@ public static class ChestSync
     private static void Clear()
     {
         _host.Clear();
-        foreach (var c in _client.Values) if (c.Copy != null) UnityEngine.Object.Destroy(c.Copy);
+        foreach (var c in _client.Values) RemoveCopy(c);
         _client.Clear();
     }
 
@@ -92,10 +114,22 @@ public static class ChestSync
                 if (o == null || _host.ContainsKey(o.Pointer)) continue;
                 var t0 = o.TriggerObject != null ? o.TriggerObject.OneTimeTrigger : null;
                 if (t0 != null ? t0.State == InteractableTriggerState.Triggered : o.HasTriggered) continue;
-                var c = new HostChest { Id = _nextId++, Obj = o, Name = StripClone(o.gameObject.name) };
+                var c = new HostChest { Kind = KindChest, Obj = o, Root = o.gameObject, Name = StripClone(o.gameObject.name) };
+                if (!Placed(Anchor(c).position)) continue; // not placed yet (parked far away): next scan
+                c.Id = _nextId++;
                 _host[o.Pointer] = c;
                 SendSpawn(c);
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][chests] Host: chest #{c.Id} '{c.Name}' at {o.transform.position}.");
+            }
+            foreach (var task in UnityEngine.Object.FindObjectsOfType<MapTask>())
+            {
+                if (task == null || _host.ContainsKey(task.Pointer) || task.Stage != MapTaskCompletionStage.Spawned) continue;
+                var trig = task._taskTriggerObjectInstance;
+                if (trig == null) continue;
+                var c = new HostChest { Id = _nextId++, Kind = KindTask, Task = task, Root = trig.gameObject, Name = StripClone(task.gameObject.name), LastStage = task.Stage };
+                _host[task.Pointer] = c;
+                SendSpawn(c);
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][chests] Host: map task #{c.Id} '{c.Name}' at {trig.transform.position}.");
             }
         }
 
@@ -109,11 +143,12 @@ public static class ChestSync
             foreach (var kv in _host)
             {
                 var c = kv.Value;
-                var o = c.Obj;
-                bool alive = o != null && o.gameObject.activeInHierarchy;
+                if (c.Kind == KindTask && TaskTick(c)) { (gone ??= new List<IntPtr>()).Add(kv.Key); continue; }
+                if (c.TriggerGone) continue;
+                bool alive = c.Root != null && c.Root.activeInHierarchy;
                 // HasTriggered flips when someone starts interacting; the chest is open once its trigger completes.
-                var trig = alive && o!.TriggerObject != null ? o.TriggerObject.OneTimeTrigger : null;
-                bool opened = !alive || (trig != null ? trig.State == InteractableTriggerState.Triggered : o!.HasTriggered);
+                var trig = alive ? Trig(c) : null;
+                bool opened = !alive || (trig != null ? trig.State == InteractableTriggerState.Triggered : c.Obj != null && c.Obj.HasTriggered);
                 byte pct = 0;
                 if (trig != null)
                 {
@@ -123,9 +158,10 @@ public static class ChestSync
                 if (opened)
                 {
                     SendState(c.Id, 100, true);
-                    (gone ??= new List<IntPtr>()).Add(kv.Key);
+                    c.TriggerGone = true;
+                    if (c.Kind == KindChest) (gone ??= new List<IntPtr>()).Add(kv.Key); // a task is watched until it ends
                     _opened++;
-                    Plugin.StaticLog.LogInfo($"[SoulstoneCoop][chests] Host: chest #{c.Id} opened.");
+                    Plugin.StaticLog.LogInfo($"[SoulstoneCoop][chests] Host: {(c.Kind == KindTask ? "task trigger" : "chest")} #{c.Id} opened.");
                     continue;
                 }
                 if (pct != c.LastPercent && (Mathf.Abs(pct - c.LastPercent) >= 2 || pct == 0 || pct == 100))
@@ -141,7 +177,7 @@ public static class ChestSync
         if (_announceTimer <= 0f)
         {
             _announceTimer = ReannounceInterval;
-            foreach (var c in _host.Values) if (c.Obj != null) SendSpawn(c);
+            foreach (var c in _host.Values) if (c.Root != null && !c.TriggerGone) SendSpawn(c);
         }
     }
 
@@ -162,8 +198,8 @@ public static class ChestSync
     {
         foreach (var c in _host.Values)
         {
-            var o = c.Obj;
-            var trig = o != null && o.TriggerObject != null ? o.TriggerObject.OneTimeTrigger : null;
+            if (c.TriggerGone) continue;
+            var trig = Trig(c);
             if (trig == null) continue;
             var pos = trig.transform.position;
             var current = trig.InteractingEntity;
@@ -217,13 +253,15 @@ public static class ChestSync
 
     private static void SendSpawn(HostChest c)
     {
-        var t = c.Obj.transform;
+        var t = Anchor(c);
         var w = new NetDataWriter();
         w.Put((byte)PacketType.ChestSpawn);
         w.Put(c.Id);
+        w.Put(c.Kind);
         w.Put(c.Name);
         w.Put(t.position.x); w.Put(t.position.y); w.Put(t.position.z);
         w.Put(t.eulerAngles.y);
+        w.Put(c.Task != null ? (byte)c.Task.TaskMetadata.Difficulty : (byte)0);
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
         _spawnSent++;
     }
@@ -239,6 +277,43 @@ public static class ChestSync
         _stateSent++;
     }
 
+    /// <summary>A map task's stage changed: tell the guests. True when the task is over (stop watching it).</summary>
+    private static bool TaskTick(HostChest c)
+    {
+        var task = c.Task;
+        bool exists = task != null && task.gameObject.activeInHierarchy;
+        var stage = exists ? task!.Stage : MapTaskCompletionStage.Failed;
+        if (stage != c.LastStage)
+        {
+            c.LastStage = stage;
+            var w = new NetDataWriter();
+            w.Put((byte)PacketType.TaskStage);
+            w.Put(c.Id);
+            w.Put((byte)stage);
+            NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][chests] Host: map task #{c.Id} -> {stage}.");
+        }
+        if (stage == MapTaskCompletionStage.Completed || stage == MapTaskCompletionStage.Failed || !exists)
+        {
+            if (!c.TriggerGone) SendState(c.Id, 100, true);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>Where the object really stands: a task reward's root sits at infinity (its parts are placed on their
+    /// own), so the trigger's position wins when the root's isn't a real one.</summary>
+    private static Transform Anchor(HostChest c)
+    {
+        var root = c.Root!.transform;
+        var p = root.position;
+        if (Placed(p)) return root;
+        var trig = Trig(c);
+        return trig != null ? trig.transform : root;
+    }
+
+    private static bool Placed(Vector3 p) => !float.IsInfinity(p.x) && !float.IsNaN(p.x) && Mathf.Abs(p.x) < 1e5f && Mathf.Abs(p.z) < 1e5f;
+
     private static string StripClone(string n) => n.EndsWith("(Clone)") ? n.Substring(0, n.Length - 7).Trim() : n;
 
     // ---------------- client ----------------
@@ -246,9 +321,11 @@ public static class ChestSync
     public static void OnChestSpawn(NetDataReader r)
     {
         ushort id = r.GetUShort();
+        byte kind = r.GetByte();
         string name = r.GetString();
         var pos = new Vector3(r.GetFloat(), r.GetFloat(), r.GetFloat());
         float yaw = r.GetFloat();
+        byte difficulty = r.GetByte();
         if (NetworkManager.Role != NetRole.Client || !GameManagerUtil.HasGameManager) return;
         try
         {
@@ -259,8 +336,14 @@ public static class ChestSync
             }
             var c = new ClientChest { Id = id };
             _client[id] = c;
-            c.Copy = BuildCopy(name, pos, yaw, c);
+            c.Copy = BuildCopy(kind, name, pos, yaw, c);
             if (c.Copy != null) _spawned++;
+            if (c.Copy != null && kind == KindTask)
+            {
+                // The game's task icons: TaskEasiest..TaskHardest follow MapTaskDifficulty's order.
+                var icon = (MinimapIconType)((int)MinimapIconType.TaskEasiest + Mathf.Clamp((int)difficulty, 0, 4));
+                try { c.IconId = MinimapManager.RequestIcon(icon, c.Copy.transform, pos); } catch { c.IconId = -1; }
+            }
         }
         catch (Exception ex)
         {
@@ -278,7 +361,7 @@ public static class ChestSync
         c.Percent = pct;
         if (opened)
         {
-            if (c.Copy != null) UnityEngine.Object.Destroy(c.Copy);
+            RemoveCopy(c);
             _client.Remove(id);
             _opened++;
             return;
@@ -286,14 +369,63 @@ public static class ChestSync
         SetBar(c, pct / 100f);
     }
 
-    private static GameObject? BuildCopy(string name, Vector3 pos, float yaw, ClientChest c)
+    private static void RemoveCopy(ClientChest c)
     {
-        var prefabObj = Resources.Load<InteractableRewardObject>("Interactables/" + name);
-        var prefab = prefabObj != null ? prefabObj.gameObject : null;
+        if (c.IconId >= 0)
+        {
+            try { if (GameManagerUtil.HasGameManager) MinimapManager.RequestRemoveIcon(c.IconId); } catch { }
+            c.IconId = -1;
+        }
+        if (c.Copy != null) UnityEngine.Object.Destroy(c.Copy);
+        c.Copy = null;
+    }
+
+    private static int _taskStages;
+    private static Dictionary<string, InteractableRewardObject>? _rewardPrefabs;
+
+    /// <summary>Client: a map task changed stage on the host (TaskStage = 126): a notice like the game's own.</summary>
+    public static void OnTaskStage(NetDataReader r)
+    {
+        ushort id = r.GetUShort();
+        var stage = (MapTaskCompletionStage)r.GetByte();
+        if (NetworkManager.Role != NetRole.Client) return;
+        string? key = stage == MapTaskCompletionStage.Triggered ? "nt.task_started"
+            : stage == MapTaskCompletionStage.Completed ? "nt.task_done"
+            : stage == MapTaskCompletionStage.Failed ? "nt.task_failed" : null;
+        if (key != null) Lobby.CoopSession.Notice(Ui.Loc.Msg(key), 5f);
+        _taskStages++;
+        if ((stage == MapTaskCompletionStage.Completed || stage == MapTaskCompletionStage.Failed) && _client.TryGetValue(id, out var c))
+        {
+            RemoveCopy(c);
+            _client.Remove(id);
+        }
+    }
+
+    private static GameObject? BuildCopy(byte kind, string name, Vector3 pos, float yaw, ClientChest c)
+    {
+        GameObject? prefab = null;
+        if (kind == KindTask)
+        {
+            var task = Resources.Load<MapTask>("MapTasks/Tasks/" + name);
+            var trigPrefab = task != null ? task.TaskTriggerObjectPrefab : null;
+            prefab = trigPrefab != null ? trigPrefab.gameObject : null;
+        }
+        else
+        {
+            var prefabObj = Resources.Load<InteractableRewardObject>("Interactables/" + name);
+            // Task rewards live in subfolders: look them up by name among every reward prefab once.
+            if (prefabObj == null)
+            {
+                _rewardPrefabs ??= Resources.LoadAll<InteractableRewardObject>("Interactables").Where(x => x != null)
+                    .GroupBy(x => x.gameObject.name).ToDictionary(g => g.Key, g => g.First());
+                _rewardPrefabs.TryGetValue(name, out prefabObj);
+            }
+            prefab = prefabObj != null ? prefabObj.gameObject : null;
+        }
         if (prefab == null)
         {
             _loadFailed++;
-            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][chests] Client: no prefab Interactables/{name}.");
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][chests] Client: no prefab for '{name}' (kind {kind}).");
             return null;
         }
         if (_stash == null)
@@ -376,11 +508,12 @@ public static class ChestSync
         var parts = new List<string>();
         foreach (var c in _host.Values)
         {
-            var trig = c.Obj != null && c.Obj.TriggerObject != null ? c.Obj.TriggerObject.OneTimeTrigger : null;
-            parts.Add($"host#{c.Id}@{(c.Obj != null ? c.Obj.transform.position.ToString("0.0") : "-")}:{trig?.State}:{(trig != null ? trig.GetInteractionPercent() : -1):0.00}:hasTriggered={c.Obj?.HasTriggered}:who={(trig?.InteractingEntity != null ? trig.InteractingEntity.gameObject.name : "-")}");
+            var trig = c.TriggerGone ? null : Trig(c);
+            parts.Add($"host#{c.Id}({(c.Kind == KindTask ? "task:" + c.LastStage : "chest")})@{(c.Root != null ? Anchor(c).position.ToString("0.0") : "-")}:{trig?.State}:{(trig != null ? trig.GetInteractionPercent() : -1):0.00}:who={(trig?.InteractingEntity != null ? trig.InteractingEntity.gameObject.name : "-")}");
         }
         foreach (var c in _client.Values)
-            parts.Add($"copy#{c.Id}@{(c.Copy != null ? c.Copy.transform.position.ToString("0.0") : "-")}:{c.Percent}%");
+            parts.Add($"copy#{c.Id}@{(c.Copy != null ? c.Copy.transform.position.ToString("0.0") : "-")}:{c.Percent}%:icon={c.IconId}");
+        if (_taskStages > 0) parts.Add($"taskStages={_taskStages}");
         return parts.Count == 0 ? "none" : string.Join(" ", parts);
     }
 }
