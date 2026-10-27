@@ -647,6 +647,7 @@ public static class CoopLife
         var data = GameManagerUtil.GameData;
         var sgm = data != null ? data.SurvivorsGameManager : null;
         var obj = sgm != null ? sgm.MainObjective : null;
+        if (obj == null && CompleteMasteryObjectives()) return;
         if (obj == null)
         {
             if (sgm == null && CompleteBossRoomProgress(data)) return;
@@ -655,6 +656,32 @@ public static class CoopLife
         }
         obj.Current = obj.Total;
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] Victory: MainObjective {obj.Current}/{obj.Total}.");
+    }
+
+    /// <summary>Mastery: the run is won when the main boss's elimination objective completes; the client's puppet of
+    /// that boss never dies locally (it is recycled), so the host's victory completes the objectives here and
+    /// MasteryGameManager.UpdateAll runs its own victory.</summary>
+    private static bool CompleteMasteryObjectives()
+    {
+        MasteryGameManager? gm = null;
+        foreach (var g in UnityEngine.Object.FindObjectsOfType<MasteryGameManager>()) if (g != null) { gm = g; break; }
+        if (gm == null) return false;
+        int done = 0;
+        var main = gm._eliminateMainBossObjective;
+        if (main == null)
+        {
+            // Made by the finale routine, which clients don't run: an already-met one, for UpdateAll's victory.
+            main = new EliminateSpecificEntitiesObjective("EliminateMainBossObjective", 1);
+            gm._eliminateMainBossObjective = main;
+        }
+        main.Current = Math.Max(main.Total, 1); done++;
+        var boss = gm._mainBossEntity;
+        if (boss != null && boss._health != null && !boss._health.HasBeenKilled && boss.gameObject.activeInHierarchy)
+            Enemies.ClientPuppets.ForceMasteryBossDeath(boss, boss._health);
+        var mo = gm.MainObjective;
+        if (mo != null) { mo.Current = Math.Max(mo.Total, 1); done++; }
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][life] Victory (Mastery): {done} objective(s) completed (main boss objective {(main != null ? "found" : "missing")}).");
+        return done > 0;
     }
 
     /// <summary>The BossRush map (SurvivorsBossRoomGameManager, no SurvivorsGameManager): its UpdateAll wins when

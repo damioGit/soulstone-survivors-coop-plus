@@ -20,7 +20,7 @@ for i in $(seq 1 80); do
   bash $D B cmd pick 0 >/dev/null
   sleep 3
   c=$(bash $D A cmd mastery | grep -o "cycle=[0-9]*")
-  [ "$c" = "cycle=3" ] && { echo "host cycle 3 at i=$i"; break; }
+  [ "$c" = "cycle=${STOP:-3}" ] && { echo "host cycle ${STOP:-3} at i=$i"; break; }
 done
 sleep 4
 bash $D A cmd masterysync; bash $D B cmd masterysync

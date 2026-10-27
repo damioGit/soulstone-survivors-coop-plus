@@ -21,7 +21,128 @@ namespace SoulstoneCoop.Lobby;
 /// </summary>
 public static class MasterySync
 {
-    private const byte KindTrigger = 0, KindState = 1, KindCycle = 2;
+    private const byte KindTrigger = 0, KindState = 1, KindCycle = 2, KindFinale = 3, KindScene = 4;
+
+    // ---- the finale's arena: scene objects the host's finale turned on/off, mirrored on the clients ----
+    private static Dictionary<string, bool>? _sceneBefore;
+    private static float _sceneDiffTimer, _sceneDiffUntil;
+    private static readonly HashSet<string> _sceneSent = new();
+    private static float _arenaReadyAt;
+
+    /// <summary>Every object of the active scene that isn't spawned at runtime (no "(Clone)" on its path, none of
+    /// ours), keyed by its hierarchy path with sibling indexes, with its activeSelf.</summary>
+    private static Dictionary<string, GameObject> SceneObjects()
+    {
+        var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+        var map = new Dictionary<string, GameObject>();
+        foreach (var t in Resources.FindObjectsOfTypeAll<Transform>())
+        {
+            if (t == null) continue;
+            var go = t.gameObject;
+            if (!go.scene.IsValid() || go.scene.handle != scene.handle) continue;
+            string path = PathOf(t);
+            if (path.Contains("(Clone)") || path.Contains("SoulstoneCoop")) continue;
+            map[path] = go;
+        }
+        return map;
+    }
+
+    private static string PathOf(Transform t)
+    {
+        var parts = new List<string>();
+        for (var c = t; c != null; c = c.parent) parts.Add(c.name + "#" + c.GetSiblingIndex());
+        parts.Reverse();
+        return string.Join("/", parts);
+    }
+
+    private static void SnapshotScene()
+    {
+        _sceneBefore = new Dictionary<string, bool>();
+        foreach (var kv in SceneObjects()) _sceneBefore[kv.Key] = kv.Value.activeSelf;
+        _sceneSent.Clear();
+        _sceneDiffTimer = 1f;
+        _sceneDiffUntil = Time.unscaledTime + 15f;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Host: scene snapshot for the finale ({_sceneBefore.Count} objects).");
+    }
+
+    /// <summary>Host, for 15 s after the finale started: send what changed (each path once, with its latest state).</summary>
+    private static void SendSceneDiff(float dt)
+    {
+        if (_sceneBefore == null) return;
+        if (Time.unscaledTime > _sceneDiffUntil) { _sceneBefore = null; return; }
+        _sceneDiffTimer -= dt;
+        if (_sceneDiffTimer > 0f) return;
+        _sceneDiffTimer = 1f;
+        var changes = new List<(string, bool)>();
+        foreach (var kv in SceneObjects())
+        {
+            if (!_sceneBefore.TryGetValue(kv.Key, out bool was)) continue;
+            bool now = kv.Value.activeSelf;
+            if (now == was) continue;
+            _sceneBefore[kv.Key] = now;
+            changes.Add((kv.Key, now));
+        }
+        if (changes.Count == 0) return;
+        for (int start = 0; start < changes.Count; start += 100)
+        {
+            var w = new NetDataWriter();
+            w.Put((byte)PacketType.MasteryEvent);
+            w.Put(KindScene);
+            int n = Mathf.Min(100, changes.Count - start);
+            w.Put((ushort)n);
+            for (int i = 0; i < n; i++) { w.Put(changes[start + i].Item1); w.Put(changes[start + i].Item2); }
+            NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
+        }
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Host: finale scene changes sent ({changes.Count}): {string.Join(", ", changes.Take(6).Select(c => c.Item1.Split('/').Last() + "=" + c.Item2))}");
+    }
+
+    private static void ApplySceneDiff(NetDataReader r)
+    {
+        int n = r.GetUShort();
+        var list = new List<(string, bool)>();
+        for (int i = 0; i < n; i++) list.Add((r.GetString(), r.GetBool()));
+        if (NetworkManager.Role != NetRole.Client) return;
+        var objs = SceneObjects();
+        int applied = 0, missing = 0;
+        foreach (var (path, on) in list)
+        {
+            if (!objs.TryGetValue(path, out var go)) { missing++; continue; }
+            if (go.activeSelf != on) { go.SetActive(on); applied++; }
+        }
+        _arenaReadyAt = Time.unscaledTime;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: finale scene changes applied {applied}/{list.Count} (missing {missing}).");
+    }
+    private static bool _finaleFromHost;
+    private static float _finaleUntil, _hostMovedAt;
+    private static Vector3 _finaleFrom;
+
+    private static Vector3 HostPosition()
+    {
+        var h = CoopSession.Get(Players.HostSlot);
+        return h != null && h.Ghost != null ? h.Ghost.transform.position : Vector3.zero;
+    }
+
+    /// <summary>Client, during the finale: once the host has been pulled far away (into the boss arena), the local
+    /// player is put right next to it.</summary>
+    private static void FollowIntoArena()
+    {
+        if (_finaleUntil <= 0f) return;
+        if (Time.unscaledTime > _finaleUntil) { _finaleUntil = 0f; return; }
+        var host = HostPosition();
+        var local = GameState.LocalPlayerEntity;
+        if (local == null || host == Vector3.zero) return;
+        var d = host - _finaleFrom; d.y = 0f;
+        if (d.sqrMagnitude < 30f * 30f) { _hostMovedAt = 0f; return; } // the host hasn't been moved yet
+        if (_hostMovedAt <= 0f) _hostMovedAt = Time.unscaledTime;
+        bool arenaOn = _arenaReadyAt > 0f && _arenaReadyAt >= _finaleUntil - 20f;
+        if (!arenaOn && Time.unscaledTime - _hostMovedAt < 4f) return; // wait for the arena's objects
+        var pos = host + new Vector3(2f, 0f, 0f);
+        var ch = local._character;
+        if (ch != null) ch.Teleport(pos); else local.transform.position = pos;
+        _finaleUntil = 0f;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: pulled into the arena next to the host ({pos}).");
+    }
+    private static int _finales;
     private static bool _advancingFromHost;
     private static int _lastHostCycle;
     private static int _cyclesSent, _cyclesApplied;
@@ -43,6 +164,7 @@ public static class MasterySync
     public static void Tick(float dt)
     {
         if (NetworkManager.Role == NetRole.Client && !GameManagerUtil.HasGameManager && (_pillarCopies.Count > 0 || _clientObjectives)) ResetClient();
+        if (NetworkManager.Role == NetRole.Client) { try { FollowIntoArena(); } catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][mastery] Follow: {ex.Message}"); _finaleUntil = 0f; } }
         if (NetworkManager.Role != NetRole.Host || !CoopSession.Connected || Global.SelectedGameMode != GameModes.Mastery) return;
         if (!GameManagerUtil.HasGameManager) { _spawnerPtr = IntPtr.Zero; _sentTrigger = false; return; }
         try
@@ -52,6 +174,7 @@ public static class MasterySync
             if (sp.Pointer != _spawnerPtr) { _spawnerPtr = sp.Pointer; _sentTrigger = false; _proxyTimer = 0f; }
             _stateTimer -= dt;
             if (_stateTimer <= 0f) { _stateTimer = 1f; SendState(); }
+            SendSceneDiff(dt);
             var gmc = Manager();
             if (gmc != null && gmc.CurrentMasteryCycle != _lastHostCycle)
             {
@@ -162,6 +285,9 @@ public static class MasterySync
         w.Put((byte)Mathf.Min(bars.Count, 32));
         for (int i = 0; i < Mathf.Min(bars.Count, 32); i++) w.Put(bars[i]);
         WriteObjectives(w);
+        ushort mainId = 0;
+        if (gm._mainBossEntity != null) Enemies.HostEnemySync.TryGetNetId(gm._mainBossEntity, out mainId);
+        w.Put(mainId);
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
     }
 
@@ -180,6 +306,7 @@ public static class MasterySync
         int nb = r.GetByte();
         for (int i = 0; i < nb; i++) bars.Add(r.GetUShort());
         var hostObjectives = ReadObjectives(r);
+        ushort mainBossId = r.AvailableBytes >= 2 ? r.GetUShort() : (ushort)0;
         if (NetworkManager.Role != NetRole.Client || !GameManagerUtil.HasGameManager) return;
         var gm = Manager();
         if (gm == null) return;
@@ -204,6 +331,13 @@ public static class MasterySync
         if (el != null)
             for (int i = 0; i < Mathf.Min(el.Count, elim.Count); i++)
                 if (el[i] != null) { el[i].Total = elim[i].tot; el[i].Current = elim[i].cur; }
+        // The client's manager never spawned the main boss (the host did; ours is its puppet), and the late cycles
+        // and the finale read it: point it at the puppet.
+        if (mainBossId != 0 && (gm._mainBossEntity == null || SpecialBossMissing(gm)))
+        {
+            var boss = Enemies.ClientPuppets.TryGetPuppetEntity(mainBossId);
+            if (boss != null) SetMainBoss(gm, boss, mainBossId);
+        }
         SyncPillars(gm, pillars);
         Enemies.ClientPuppets.ReconcileBossBars(bars);
         ReconcileObjectives(hostObjectives);
@@ -316,6 +450,31 @@ public static class MasterySync
 
     private static int _objectivesAdded;
 
+    private static bool SpecialBossMissing(MasteryGameManager gm)
+    {
+        var bsp = gm.BossSpawnDetails;
+        return bsp != null && bsp.SpecialBossInfo != null && bsp.SpecialBossInfo.Entity == null;
+    }
+
+    /// <summary>What the host's SpawnMainBoss (blocked here) left behind for the finale (ActivateSpecialBossRoutine
+    /// reads it: without it, it threw and the guest was never pulled into the arena): the main boss, the boss
+    /// processor's SpecialBossInfo and the boss's tracker, all pointing at the puppet.</summary>
+    private static void SetMainBoss(MasteryGameManager gm, Entity boss, ushort netId)
+    {
+        gm._mainBossEntity = boss;
+        var bsp = gm.BossSpawnDetails;
+        if (bsp != null)
+        {
+            var info = bsp.SpecialBossInfo ?? new SpecialBossInfo();
+            info.Entity = boss;
+            info.BasicAIComponent = boss._basicAI;
+            bsp.SpecialBossInfo = info;
+        }
+        var tracker = boss.GetComponent<TrackerComponent>() ?? boss.GetComponentInChildren<TrackerComponent>(true);
+        if (tracker != null) gm._mainBossTrackerComponentReference = tracker;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: main boss = puppet #{netId} '{boss.gameObject.name}' (special boss info {(bsp != null)}, tracker {(tracker != null)}).");
+    }
+
     private static void SyncPillars(MasteryGameManager gm, List<(Vector3 pos, bool destroyed)> pillars)
     {
         while (_pillarCopies.Count < pillars.Count)
@@ -350,6 +509,12 @@ public static class MasterySync
     public static void OnMasteryEvent(NetDataReader r)
     {
         byte kind = r.GetByte();
+        if (kind == KindScene)
+        {
+            try { ApplySceneDiff(r); }
+            catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop][mastery] Client scene changes: {ex.Message}"); }
+            return;
+        }
         if (kind == KindState)
         {
             try { ApplyState(r); }
@@ -359,6 +524,16 @@ public static class MasterySync
         if (NetworkManager.Role != NetRole.Client) return;
         try
         {
+            if (kind == KindFinale)
+            {
+                // The client's own finale routine needs what only the host's boss spawn set up (it threw, then hung the
+                // game): instead the guest is pulled into the arena with the host (FollowIntoArena).
+                _finaleUntil = Time.unscaledTime + 20f;
+                _finaleFrom = HostPosition();
+                _finales++;
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: finale - following the host into the arena (host at {_finaleFrom}).");
+                return;
+            }
             if (kind == KindCycle)
             {
                 int hostCycle = r.GetByte();
@@ -400,7 +575,52 @@ public static class MasterySync
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Host: cycle {gm.CurrentMasteryCycle} - clients follow.");
     }
 
-    internal static string TestInfo(string[] args) => $"objectivesAdded={_objectivesAdded} triggers={_triggers} proxyTriggers={_proxyTriggers} clientTriggers={_clientTriggers} cyclesSent={_cyclesSent} cyclesApplied={_cyclesApplied}";
+    /// <summary>Host, postfix of MasteryGameManager.ActivateSpecialBossRoutine (the final boss's scene): clients too.</summary>
+    internal static void AfterFinale()
+    {
+        if (NetworkManager.Role != NetRole.Host || !CoopSession.Connected || _finaleFromHost) return;
+        try { SnapshotScene(); } catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][mastery] Scene snapshot: {ex.Message}"); }
+        Send(KindFinale);
+        _finales++;
+        Plugin.StaticLog.LogInfo("[SoulstoneCoop][mastery] Host: finale - clients follow.");
+    }
+
+    internal static string TestInfo(string[] args) => $"finales={_finales} objectivesAdded={_objectivesAdded} triggers={_triggers} proxyTriggers={_proxyTriggers} clientTriggers={_clientTriggers} cyclesSent={_cyclesSent} cyclesApplied={_cyclesApplied}";
+}
+
+[HarmonyLib.HarmonyPatch(typeof(MasteryGameManager), nameof(MasteryGameManager.ActivateSpecialBossRoutine))]
+public static class MasteryFinalePatch
+{
+    /// <summary>Clients never run their own finale (see MasterySync KindFinale).</summary>
+    [HarmonyLib.HarmonyPrefix]
+    public static bool Prefix()
+    {
+        try { return !CoopRole.IsClientSide; }
+        catch { return true; }
+    }
+
+    [HarmonyLib.HarmonyPostfix]
+    public static void Postfix()
+    {
+        try { MasterySync.AfterFinale(); }
+        catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] MasteryFinalePatch: {ex.Message}"); }
+    }
+}
+
+/// <summary>Client: an exception in MasteryGameManager.UpdateAll aborted the rest of GameLoop.Update every frame (the
+/// guest froze). It stops here; logged a few times so the cause still shows.</summary>
+[HarmonyLib.HarmonyPatch(typeof(MasteryGameManager), nameof(MasteryGameManager.UpdateAll))]
+public static class MasteryUpdateGuardPatch
+{
+    private static int _swallowed;
+
+    [HarmonyLib.HarmonyFinalizer]
+    public static Exception? Finalizer(Exception? __exception)
+    {
+        if (__exception == null || !CoopRole.IsClientSide) return __exception;
+        if (_swallowed++ < 3) Plugin.StaticLog.LogWarning($"[SoulstoneCoop][mastery] MasteryGameManager.UpdateAll threw on the client (kept the frame going): {__exception.Message}");
+        return null;
+    }
 }
 
 [HarmonyLib.HarmonyPatch(typeof(MasteryGameManager), nameof(MasteryGameManager.AdvanceCycle))]

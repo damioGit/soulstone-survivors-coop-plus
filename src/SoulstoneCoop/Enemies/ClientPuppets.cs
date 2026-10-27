@@ -731,6 +731,8 @@ public static class ClientPuppets
         }
         ReleaseBoss(p);
 
+        if (!health.HasBeenKilled && ForceMasteryBossDeath(e, health))
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][puppets] #{p.NetId} Mastery boss: phases skipped, died with the host's.");
         if (!health.HasBeenKilled)
         {
             // Shield/immunity ate it: just remove the puppet.
@@ -738,6 +740,29 @@ public static class ClientPuppets
             RemoveTracking(p);
             DespawnPuppet(p);
         }
+    }
+
+    /// <summary>A Mastery boss turns a lethal hit into its next phase (ReviveOnDeath, PhaseTransition) instead of
+    /// dying, so its puppet "survived" the host's kill and the client's MasteryGameManager never saw the main boss die
+    /// (no victory). Phases off, then the same lethal hit again.</summary>
+    internal static bool ForceMasteryBossDeath(Entity e, HealthComponent health)
+    {
+        var ai = e._basicAI != null ? e._basicAI.TryCast<MasteryBossComponent>() : null;
+        if (ai == null) return false;
+        try
+        {
+            health.ReviveOnDeath = false;
+            ai.CurrentState = Phases.Completed;
+            health.InvulnerabilityTime = 0f;
+            ApplyingNetworkDeath = true;
+            UnitUtil.ChangeEntityHealth(null!, e, -(health.CurrentHealth + 1e9f), true, out _, out _, out _);
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][puppets] Forcing the Mastery boss's death: {ex.Message}");
+        }
+        finally { ApplyingNetworkDeath = false; }
+        return health.HasBeenKilled;
     }
 
     private static int _killCredits, _killCreditErrors;

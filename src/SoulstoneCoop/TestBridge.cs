@@ -56,6 +56,20 @@ public static class TestBridge
                 Commands["boss"] = _ => { Enemies.SpecialsDebug.ForceBoss(); return "boss objective completed"; };
                 Commands["ethereal"] = _ => { var d = GameManagerUtil.AffixGameplayData; if (d == null) return "no affix data"; d.EnableEtherealBosses = true; return "ethereal bosses on"; };
                 Commands["bosses"] = Bosses;
+                Commands["autopick"] = a => { _autoPick = a.Length == 0 || a[0] != "off"; return "autopick " + _autoPick; };
+                Commands["killbosses"] = args =>
+                {
+                    var list = GameManagerUtil.BossEntities;
+                    if (list == null) return "no boss list";
+                    var all = new List<Entity>();
+                    foreach (var b in list) if (b != null && b._health != null && !b._health.HasBeenKilled) all.Add(b);
+                    foreach (var b in all)
+                    {
+                        b._health.InvulnerabilityTime = 0f;
+                        UnitUtil.ChangeEntityHealth(GameState.LocalPlayerEntity!, b, -(b._health.CurrentHealth + 1e9f), true, out _, out _, out _);
+                    }
+                    return "killed " + all.Count;
+                };
                 Commands["bossvis"] = BossVis;
                 Commands["statuesync"] = Enemies.StatueSync.TestInfo;
                 Commands["tasks"] = Tasks;
@@ -114,6 +128,7 @@ public static class TestBridge
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] bridge '{Plugin.TestArg}' in {_dir}");
             }
             TickFight(dt);
+            TickAutoPick(dt);
             TickWalk();
             _poll -= dt;
             if (_poll > 0f) return;
@@ -366,7 +381,7 @@ public static class TestBridge
         if (gm == null) return "no MasteryGameManager";
         var parts = new List<string>
         {
-            $"cycle={gm.CurrentMasteryCycle}/{gm.TotalCyclesAmount} setUp={gm.IsSetUp} spawnTriggered={gm._bossSpawnTriggered} spawnFinished={gm._bossSpawnFinished} lords={gm._lordsKilled} mainBoss={(gm._mainBossEntity != null ? gm._mainBossEntity.gameObject.name : "-")} mainId={gm._mainBossId}",
+            $"special={gm.BossSpawnDetails?.SpecialBossInfo?.Entity?.gameObject.name ?? "-"} tracker={(gm._mainBossTrackerComponentReference != null)} cycle={gm.CurrentMasteryCycle}/{gm.TotalCyclesAmount} setUp={gm.IsSetUp} spawnTriggered={gm._bossSpawnTriggered} spawnFinished={gm._bossSpawnFinished} lords={gm._lordsKilled} mainBoss={(gm._mainBossEntity != null ? gm._mainBossEntity.gameObject.name : "-")} mainId={gm._mainBossId}",
         };
         var dp = gm.DisruptThePillarsObjective;
         if (dp != null) parts.Add($"pillarsObj={dp.GetCurrentProgressPercent():0.00} done={dp.IsComplete()}");
@@ -379,6 +394,20 @@ public static class TestBridge
         foreach (var b in UnityEngine.Object.FindObjectsOfType<MasteryBossComponent>())
             if (b != null) parts.Add($"bossAI:{b.gameObject.name}@{b.transform.position:0} state={b.CurrentState} registered={b.BossRegistered}");
         return string.Join(" | ", parts);
+    }
+
+    private static bool _autoPick;
+    private static float _autoPickTimer;
+
+    /// <summary>"cmd autopick": tests pick the first upgrade card as soon as a choice is open.</summary>
+    private static void TickAutoPick(float dt)
+    {
+        if (!_autoPick) return;
+        _autoPickTimer -= dt;
+        if (_autoPickTimer > 0f) return;
+        _autoPickTimer = 0.25f;
+        var panel = GameManagerUtil.HasGameManager ? GameManagerUtil.GameplayUIManager?.LevelUpPanel : null;
+        if (panel != null && panel.gameObject.activeInHierarchy) Ui.LevelUpOverlay.Pick(panel, 0);
     }
 
     private static Vector3 _walkVel;
