@@ -55,6 +55,8 @@ public static class TestBridge
                 Commands["boss"] = _ => { Enemies.SpecialsDebug.ForceBoss(); return "boss objective completed"; };
                 Commands["ethereal"] = _ => { var d = GameManagerUtil.AffixGameplayData; if (d == null) return "no affix data"; d.EnableEtherealBosses = true; return "ethereal bosses on"; };
                 Commands["bosses"] = Bosses;
+                Commands["guestcc"] = Enemies.GuestEffects.TestApply;
+                Commands["enemycc"] = Enemies.GuestEffects.TestInspect;
                 Commands["levelup"] = _ => { var xp = GameState.LocalPlayerEntity?._experience; if (xp == null) return "no xp"; xp.LevelUpMultipleTimes(1); return "level " + xp.Level; };
                 Commands["pick"] = a =>
                 {

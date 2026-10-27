@@ -54,6 +54,7 @@ public enum PacketType : byte
     HealOrb = 120,     // host -> clients: the game fired heal orbs at every player (origin v3, amount f32): fire one at the local player (ReliableUnordered)
     ChestSpawn = 121,  // host -> clients: a reward chest (id u16, prefab name, pos v3, yaw f32), re-sent every 4 s (ReliableOrdered)
     SkillChannelAim = 123, // either way: a channel of the sender's aims here now: key | front v3 | ground v3, ~10 Hz while it moves (Sequenced)
+    GuestEffect = 124, // client -> host: a guest's status / stun / knockback on a puppet, replayed on the real enemy (ReliableUnordered; forces Unreliable)
     ChestState = 122,  // host -> clients: chest id u16 | interaction % u8 | opened bool (ReliableOrdered, after its spawn)
 }
 
@@ -183,6 +184,9 @@ public static class PacketRouter
                 break;
             case PacketType.ChestSpawn:
                 Loot.ChestSync.OnChestSpawn(reader);
+                break;
+            case PacketType.GuestEffect:
+                Enemies.GuestEffects.OnGuestEffect(reader);
                 break;
             case PacketType.SkillChannelAim:
                 Skills.CastSync.OnSkillChannelAim(reader);

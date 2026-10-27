@@ -158,6 +158,7 @@ public class CoopBehaviour : MonoBehaviour
             Life.GhostDowned.Tick();
             Lobby.PortalSync.Tick(Time.unscaledDeltaTime);
             Enemies.EnemyCasts.Tick(Time.unscaledDeltaTime);
+            Enemies.GuestEffects.Tick(Time.unscaledDeltaTime);
             Enemies.SpecialsDebug.Tick(Time.unscaledDeltaTime);
             Enemies.ObjectiveSync.Tick(Time.unscaledDeltaTime);
             Enemies.EnemyScaling.Tick(Time.unscaledDeltaTime);

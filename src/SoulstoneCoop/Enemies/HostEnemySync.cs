@@ -46,6 +46,9 @@ public static class HostEnemySync
     }
 
     internal static bool TryGetTracked(IntPtr entityPtr, out Tracked t) => ByPtr.TryGetValue(entityPtr, out t!);
+    /// <summary>The live real enemy behind a netId (GuestEffects).</summary>
+    internal static Entity? EntityOf(ushort netId) =>
+        ByNetId.TryGetValue(netId, out var t) && !t.DiedSent && t.Entity != null && t.Entity.gameObject.activeInHierarchy ? t.Entity : null;
 
     private static readonly Dictionary<IntPtr, Tracked> ByPtr = new();
     private static readonly List<Tracked> All = new();

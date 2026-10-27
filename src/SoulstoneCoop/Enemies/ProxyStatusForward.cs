@@ -141,6 +141,30 @@ public static class ProxyStatusForward
         return true;
     }
 
+    /// <summary>The count statuses of an apply, as (wire slot, stacks) pairs (DoTs left out). Shared with GuestEffects.</summary>
+    internal static List<(byte slot, int stacks)> CountStatuses(in AbnormalStatusApplyData d)
+    {
+        Scratch.Clear();
+        Add(SShattered, d.ShatteredApplyData.StacksToApply);
+        Add(SSlow, d.SlowApplyData.StacksToApply);
+        Add(SFragility, d.FragilityApplyData.StacksToApply);
+        Add(SWeakness, d.weaknessApplyData.StacksToApply);
+        Add(SDazed, d.DazedApplyData.StacksToApply);
+        Add(SDisoriented, d.DisorientedApplyData.StacksToApply);
+        Add(SExposed, d.ExposedApplyData.StacksToApply);
+        Add(SDistracted, d.DistractedApplyData.StacksToApply);
+        Add(SBrittle, d.BrittleApplyData.StacksToApply);
+        Add(SDebilitated, d.DebilitatedApplyData.StacksToApply);
+        Add(SCrippled, d.CrippledApplyData.StacksToApply);
+        Add(SDisarray, d.DisarrayApplyData.StacksToApply);
+        Add(SWound, d.WoundApplyData.StacksToApply);
+        Add(SCondemned, d.CondemnedApplyData.StacksToApply);
+        return Scratch;
+    }
+
+    internal const byte BrittleSlot = SBrittle;
+    internal static void SetStatus(ref AbnormalStatusApplyData d, byte slot, int stacks) => Set(ref d, slot, stacks);
+
     internal static void OnHostAbnormal(byte slot, Entity applier, in AbnormalStatusApplyData d, bool ignoreWounds, bool ignoreSynergies)
     {
         Scratch.Clear();
