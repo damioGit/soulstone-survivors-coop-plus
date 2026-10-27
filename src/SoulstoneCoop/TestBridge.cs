@@ -52,6 +52,7 @@ public static class TestBridge
                 Commands["godcast"] = GodCast;
                 Commands["skills"] = ListSkills;
                 Commands["auras"] = Skills.CastSync.TestAuras;
+                Commands["panel"] = a => { Ui.CoopUi.TestOpen(a.Length == 0 || a[0] != "off"); return "panel toggled"; };
                 Commands["speeds"] = _ => PlayerSync.TestSpeeds();
                 StateProviders["affix"] = () => RunSync.LastRunAffixes.Replace(' ', ',');
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] bridge '{Plugin.TestArg}' in {_dir}");
