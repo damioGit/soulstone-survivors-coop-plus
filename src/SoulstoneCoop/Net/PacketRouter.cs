@@ -55,6 +55,7 @@ public enum PacketType : byte
     ChestSpawn = 121,  // host -> clients: a reward chest (id u16, prefab name, pos v3, yaw f32), re-sent every 4 s (ReliableOrdered)
     SkillChannelAim = 123, // either way: a channel of the sender's aims here now: key | front v3 | ground v3, ~10 Hz while it moves (Sequenced)
     GuestEffect = 124, // client -> host: a guest's status / stun / knockback on a puppet, replayed on the real enemy (ReliableUnordered; forces Unreliable)
+    StatueSync = 125,  // host -> clients: a boss statue went up (id, prefab name, pos, yaw) or came down (id) (ReliableOrdered)
     ChestState = 122,  // host -> clients: chest id u16 | interaction % u8 | opened bool (ReliableOrdered, after its spawn)
 }
 
@@ -184,6 +185,9 @@ public static class PacketRouter
                 break;
             case PacketType.ChestSpawn:
                 Loot.ChestSync.OnChestSpawn(reader);
+                break;
+            case PacketType.StatueSync:
+                Enemies.StatueSync.OnStatueSync(reader);
                 break;
             case PacketType.GuestEffect:
                 Enemies.GuestEffects.OnGuestEffect(reader);

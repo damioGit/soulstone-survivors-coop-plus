@@ -55,6 +55,15 @@ public static class TestBridge
                 Commands["boss"] = _ => { Enemies.SpecialsDebug.ForceBoss(); return "boss objective completed"; };
                 Commands["ethereal"] = _ => { var d = GameManagerUtil.AffixGameplayData; if (d == null) return "no affix data"; d.EnableEtherealBosses = true; return "ethereal bosses on"; };
                 Commands["bosses"] = Bosses;
+                Commands["bossvis"] = BossVis;
+                Commands["statuesync"] = Enemies.StatueSync.TestInfo;
+                Commands["statues"] = _ =>
+                {
+                    var live = UnityEngine.Object.FindObjectsOfType<StatueComponent>().Where(x => x != null)
+                        .Select(x => $"{x.gameObject.name}@{x.transform.position:0.0} root={x.transform.root.name} scale={x.transform.lossyScale.x:0.00}");
+                    var all = Resources.FindObjectsOfTypeAll<StatueComponent>().Where(x => x != null).Select(x => x.gameObject.name + (x.gameObject.scene.IsValid() ? "" : "[asset]")).Distinct();
+                    return $"live: {string.Join("; ", live)} || all: {string.Join(", ", all)}";
+                };
                 Commands["guestcc"] = Enemies.GuestEffects.TestApply;
                 Commands["enemycc"] = Enemies.GuestEffects.TestInspect;
                 Commands["levelup"] = _ => { var xp = GameState.LocalPlayerEntity?._experience; if (xp == null) return "no xp"; xp.LevelUpMultipleTimes(1); return "level " + xp.Level; };
@@ -247,6 +256,26 @@ public static class TestBridge
             return "killed " + first.gameObject.name;
         }
         return $"{names.Count}: {string.Join(", ", names)}";
+    }
+
+    /// <summary>"cmd bossvis": for each boss, its renderers (enabled/total), active model children and material names.</summary>
+    private static string BossVis(string[] args)
+    {
+        var list = GameManagerUtil.BossEntities;
+        if (list == null) return "no boss list";
+        var parts = new List<string>();
+        foreach (var b in list)
+        {
+            if (b == null) continue;
+            var rs = b.GetComponentsInChildren<Renderer>(true);
+            int on = rs.Count(r => r != null && r.enabled && r.gameObject.activeInHierarchy);
+            var mats = rs.Where(r => r != null && r.enabled && r.gameObject.activeInHierarchy).SelectMany(r => r.sharedMaterials)
+                .Where(m => m != null).Select(m => m.name).Distinct().Take(4);
+            var kids = new List<string>();
+            for (int i = 0; i < b.transform.childCount; i++) { var c = b.transform.GetChild(i); kids.Add((c.gameObject.activeSelf ? "" : "-") + c.name); }
+            parts.Add($"{b.gameObject.name}: renderers {on}/{rs.Length} mats=[{string.Join(",", mats)}] children=[{string.Join(",", kids.Take(8))}] hp={b._health?.CurrentHealth:0} invuln={b._health?.InvulnerabilityTime:0.0}");
+        }
+        return string.Join(" || ", parts);
     }
 
     private static Vector3 _walkVel;
