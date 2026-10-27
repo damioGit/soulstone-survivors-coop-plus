@@ -155,6 +155,7 @@ public class CoopBehaviour : MonoBehaviour
             Loot.ChestSync.Tick(Time.unscaledDeltaTime);
             Life.CoopLife.Tick(Time.unscaledDeltaTime);
             Life.HealOrbs.Tick(Time.unscaledDeltaTime);
+            Life.GhostDowned.Tick();
             Lobby.PortalSync.Tick(Time.unscaledDeltaTime);
             Enemies.EnemyCasts.Tick(Time.unscaledDeltaTime);
             Enemies.SpecialsDebug.Tick(Time.unscaledDeltaTime);

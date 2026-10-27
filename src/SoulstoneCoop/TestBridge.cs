@@ -44,6 +44,9 @@ public static class TestBridge
                 Commands["dashtest"] = Enemies.ClientIncomingDamage.TestDashDodge;
                 Commands["minimap"] = GhostOverhead.TestInfo;
                 Commands["hint"] = PauseSync.TestHint;
+                Commands["down"] = Life.CoopLife.TestDown;
+                Commands["animparams"] = AnimParams;
+                Commands["ghostdown"] = Life.GhostDowned.TestInfo;
                 StateProviders["affix"] = () => RunSync.LastRunAffixes.Replace(' ', ',');
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] bridge '{Plugin.TestArg}' in {_dir}");
             }
@@ -163,6 +166,21 @@ public static class TestBridge
         float n = args.Length > 0 && float.TryParse(args[0], out var v) ? v : 30f;
         hc.CurrentHealth = Mathf.Max(1f, hc.CurrentHealth - n);
         return $"hp={hc.CurrentHealth:0}";
+    }
+
+    /// <summary>"cmd animparams": the parameters of each partner ghost's model Animator.</summary>
+    private static string AnimParams(string[] args)
+    {
+        var parts = new List<string>();
+        foreach (var r in CoopSession.Remotes)
+        {
+            var a = r.ModelAnimator;
+            if (a == null) { parts.Add($"slot{r.Slot}:no animator"); continue; }
+            var names = new List<string>();
+            for (int i = 0; i < a.parameterCount; i++) { var p = a.GetParameter(i); names.Add($"{p.name}:{p.type}"); }
+            parts.Add($"slot{r.Slot}:{a.name}:[{string.Join(",", names)}]");
+        }
+        return string.Join(" ", parts);
     }
 
     /// <summary>"cmd tp X Z": move the local player there (transform and rigidbody).</summary>

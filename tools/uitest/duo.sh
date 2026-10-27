@@ -15,7 +15,7 @@ req() {
   local d="$OUT/$who"
   rm -f "$d/reply.txt"
   echo "$*" > "$d/request.txt"
-  for i in $(seq 1 60); do [ -f "$d/reply.txt" ] && break; sleep 0.25; done
+  for i in $(seq 1 40); do [ -f "$d/reply.txt" ] && break; sleep 0.25; done
   cat "$d/reply.txt" 2>/dev/null || echo "no reply from $who"; echo
   case "$1" in
     shot) sleep 1.2; py -3 -c "
@@ -34,14 +34,22 @@ case "${1:-}" in
     echo 2066020 > "$G/steam_appid.txt"
     W="-screen-fullscreen 0 -screen-width 1280 -screen-height 720"
     cd "$G"
-    cmd //c start "" "Soulstone Survivors.exe" $W --coop-host --coop-name A --coop-test A
-    sleep 12
-    cmd //c start "" "Soulstone Survivors.exe" $W --coop-connect 127.0.0.1 --coop-name B --coop-test B
-    for w in A B; do for i in $(seq 1 90); do [ -f "$OUT/$w/ready.txt" ] && break; sleep 2; done; done
-    sleep 10
-    for w in A B; do for i in $(seq 1 30); do r=$(req $w play); echo "$w: $r" | head -1; case "$r" in *pressed*) break;; esac; sleep 2; done; done
-    sleep 8
-    req A state; req B state
+    for attempt in 1 2 3; do
+      for p in $(pids); do taskkill //PID $p //F >/dev/null; done; sleep 3
+      rm -rf "$OUT/A" "$OUT/B"
+      cmd //c start "" "Soulstone Survivors.exe" $W --coop-host --coop-name A --coop-test A
+      sleep 12
+      cmd //c start "" "Soulstone Survivors.exe" $W --coop-connect 127.0.0.1 --coop-name B --coop-test B
+      for w in A B; do for i in $(seq 1 60); do [ -f "$OUT/$w/ready.txt" ] && break; sleep 2; done; done
+      sleep 10
+      ok=0
+      for w in A B; do for i in $(seq 1 12); do r=$(req $w play); case "$r" in *pressed*) ok=$((ok+1)); break;; esac; sleep 2; done; done
+      sleep 8
+      sa=$(req A state); sb=$(req B state)
+      case "$sb" in *Connected*) echo "$sa"; echo "$sb"; exit 0;; esac
+      echo "attempt $attempt failed (A: ${sa:0:60} | B: ${sb:0:60}), restarting"
+    done
+    exit 1
     ;;
   stop)
     for p in $(pids); do taskkill //PID $p //F >/dev/null; done

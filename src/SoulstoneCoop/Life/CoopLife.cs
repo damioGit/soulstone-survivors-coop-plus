@@ -902,6 +902,16 @@ public static class CoopLife
         _prevF9 = f9; _prevF10 = f10; _prevF11 = f11;
     }
 
+    /// <summary>Test bridge, "cmd down": the F9 lethal hit, and the life state of everyone as this side sees it.</summary>
+    internal static string TestDown(string[] args)
+    {
+        if (args.Length == 0 || args[0] != "status") DebugLethalHit();
+        var parts = new List<string> { $"localDowned={LocalDowned}" };
+        for (byte s = 0; s < Players.MaxSlots; s++)
+            if (_downFromHost[s] || _progress[s] > 0f) parts.Add($"slot{s}:down={_downFromHost[s]}:revive={_progress[s]:0.00}");
+        return string.Join(" ", parts);
+    }
+
     private static void DebugLethalHit()
     {
         var local = GameState.LocalPlayerEntity;
