@@ -20,6 +20,8 @@ public static class ClientPuppets
     private const float ArriveDistance = 0.15f;  // u: closer than this = stand still, face the host's yaw
     private const float LeadSeconds = 0.1f;      // MoveToLocation aims slightly ahead; the agent smooths it
     private const float MaxExtrapolation = 0.25f;
+    private const float CatchUpError = 0.5f;     // u: beyond this the puppet walks faster to catch up (0.2 overshot)
+    private const float CatchUpRate = 3.5f;      // extra u/s per unit of error
     private const float TelemetryInterval = 5f;
 
     public sealed class Puppet
@@ -375,15 +377,23 @@ public static class ClientPuppets
 
         if (Horizontal(target - actual) > ArriveDistance)
         {
-            if (p.UsePathFollowing) ch.MoveToLocation(target);
+            if (p.UsePathFollowing)
+            {
+                // The host's enemies walk faster than their puppets can (buffs, affixes: a lizard at 2.3 u/s against
+                // a 2.0 cap, a dunebeast at 9.5 against 8), so puppets fell behind and got teleported back every few
+                // seconds. ExternalSpeedModifier is the game's slow (max speed = base x (1 - modifier), 0 = normal):
+                // a negative one speeds up. Match the host's speed plus a share of the error to catch up.
+                float baseSpeed = ch.GetMaxSpeed() / Mathf.Max(0.1f, 1f - ch.ExternalSpeedModifier);
+                float want = Horizontal(vel) + Mathf.Max(0f, err - CatchUpError) * CatchUpRate;
+                if (baseSpeed > 0.1f) ch.ExternalSpeedModifier = Mathf.Clamp(1f - want / baseSpeed, -2f, 0.7f); // slowed on the host too
+                ch.MoveToLocation(target);
+            }
             else ch.SetPosition(Vector3.MoveTowards(actual, target, Mathf.Max(vel.magnitude, 1f) * Time.deltaTime * 1.5f));
         }
-        else
-        {
-            if (p.UsePathFollowing) ch.StopMovement();
-            float rad = p.Yaw * Mathf.Deg2Rad;
-            ch.RotateTowards(new Vector3(Mathf.Sin(rad), 0f, Mathf.Cos(rad)), true, true);
-        }
+        else if (p.UsePathFollowing) ch.StopMovement();
+        // Facing is the host's: an enemy that stops to attack or turns in place no longer faces where it walked.
+        float rad = p.Yaw * Mathf.Deg2Rad;
+        ch.RotateTowards(new Vector3(Mathf.Sin(rad), 0f, Mathf.Cos(rad)), true, true);
     }
 
     private static float Horizontal(Vector3 v) => Mathf.Sqrt(v.x * v.x + v.z * v.z);
