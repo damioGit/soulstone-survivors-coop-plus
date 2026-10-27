@@ -89,7 +89,14 @@ public static class CastSync
         public ChannelingSkill? Skill;
         public bool SeenTrue;
         public float Age;
+        // #10: the live aim of the channel (the funcs the skill polls), streamed to the others while it lasts.
+        public Skill? Owner;
+        public Il2CppSystem.Func<Skill, Vector3>? FrontFunc, GroundFunc;
+        public float AimTimer;
+        public Vector3 LastFront;
     }
+
+    private const float AimInterval = 0.1f; // 10 Hz while a channel is open: ~30 B each
 
     private static readonly Dictionary<string, OpenChannel> LocalChannels = new();
 
@@ -114,6 +121,7 @@ public static class CastSync
             _localCasterPtr = caster != null ? caster.Pointer : IntPtr.Zero;
             _localPlayerPtr = local != null ? local.Pointer : IntPtr.Zero;
             PollChannels(unscaledDeltaTime);
+            AnnounceAuras(unscaledDeltaTime);
         }
         catch (Exception ex)
         {
@@ -149,6 +157,31 @@ public static class CastSync
         int i = name.IndexOf("(Clone)", StringComparison.Ordinal);
         return (i >= 0 ? name.Substring(0, i) : name).Trim();
     }
+
+    // #10b: always-on skills (the rotating shields) are started once by the game and never go through CastSkill
+    // again, so the others never saw them. Announced as a plain cast every few seconds; the receiver starts each
+    // one once on that player's stand-in (RemoteCaster.Play), so late arrivals get them too.
+    private const float AuraInterval = 10f;
+    private static float _auraTimer = 2f;
+    private static int _aurasAnnounced;
+
+    private static void AnnounceAuras(float dt)
+    {
+        _auraTimer -= dt;
+        if (_auraTimer > 0f) return;
+        _auraTimer = AuraInterval;
+        var local = GameState.LocalPlayerEntity;
+        if (local == null || !NetworkManager.HasPeer || !Lobby.CoopSession.LocalInRun) return;
+        foreach (var s in local.GetComponentsInChildren<Skill>(false))
+        {
+            if (s == null || !s.isActiveAndEnabled || s.TryCast<RotatingShieldSkill>() == null) continue;
+            OnLocalCast(s, new SkillActivationParameters());
+            _aurasAnnounced++;
+        }
+    }
+
+    /// <summary>Test bridge, "cmd auras": always-on skills announced so far.</summary>
+    internal static string TestAuras(string[] args) => $"announced={_aurasAnnounced}";
 
     internal static void OnLocalCast(Skill skill, SkillActivationParameters p)
     {
@@ -199,7 +232,13 @@ public static class CastSync
         _bytesSent += w.Length;
 
         if (channel != null && !LocalChannels.ContainsKey(key))
-            LocalChannels[key] = new OpenChannel { Key = key, Func = channel, Skill = skill.TryCast<ChannelingSkill>() };
+            LocalChannels[key] = new OpenChannel
+            {
+                Key = key, Func = channel, Skill = skill.TryCast<ChannelingSkill>(), Owner = skill,
+                FrontFunc = (m.Flags & CastMessage.FFrontFunc) != 0 ? p.GetTargetFrontPosition : null,
+                GroundFunc = (m.Flags & CastMessage.FGroundFunc) != 0 ? p.GetTargetFrontPositionGround : null,
+                LastFront = m.Front,
+            };
 
         if (LoggedKeys.Add(key))
         {
@@ -229,7 +268,7 @@ public static class CastSync
                 }
             }
             catch { on = false; }
-            if (on) continue;
+            if (on) { SendAim(ch, dt); continue; }
             (ended ??= new List<string>()).Add(ch.Key);
         }
         if (ended == null) return;
@@ -244,6 +283,44 @@ public static class CastSync
             _channelEndsSent++;
         }
     }
+
+    /// <summary>#10: the receivers kept aiming a channel at the point where it started; send where it aims now.</summary>
+    private static void SendAim(OpenChannel ch, float dt)
+    {
+        if (ch.FrontFunc == null && ch.GroundFunc == null) return;
+        ch.AimTimer -= dt;
+        if (ch.AimTimer > 0f || !NetworkManager.HasPeer || ch.Owner == null) return;
+        ch.AimTimer = AimInterval;
+        try
+        {
+            Vector3 front = ch.FrontFunc != null ? ch.FrontFunc.Invoke(ch.Owner) : ch.LastFront;
+            Vector3 ground = ch.GroundFunc != null ? ch.GroundFunc.Invoke(ch.Owner) : front;
+            if ((front - ch.LastFront).sqrMagnitude < 0.04f) return; // hasn't moved 20 cm
+            ch.LastFront = front;
+            var w = new NetDataWriter();
+            w.Put((byte)PacketType.SkillChannelAim);
+            w.Put(ch.Key);
+            w.Put(front.x); w.Put(front.y); w.Put(front.z);
+            w.Put(ground.x); w.Put(ground.y); w.Put(ground.z);
+            NetworkManager.Send(w, DeliveryMethod.Sequenced);
+            _aimSent++;
+        }
+        catch { ch.FrontFunc = ch.GroundFunc = null; } // that skill's funcs don't work outside its own call: stop
+    }
+
+    private static int _aimSent, _aimRecv;
+
+    public static void OnSkillChannelAim(NetDataReader reader)
+    {
+        string key = reader.GetString();
+        var front = new Vector3(reader.GetFloat(), reader.GetFloat(), reader.GetFloat());
+        var ground = new Vector3(reader.GetFloat(), reader.GetFloat(), reader.GetFloat());
+        _aimRecv++;
+        RemoteCaster.OnChannelAim(PacketRouter.From, key, front, ground);
+    }
+
+    /// <summary>Test bridge, "cmd aims": channel aim updates sent / received so far.</summary>
+    internal static string TestAims(string[] args) => $"aimSent={_aimSent} aimRecv={_aimRecv} openLocal={LocalChannels.Count}";
 
     private static byte ClampByte(int v) => (byte)Mathf.Clamp(v, 0, 255);
 

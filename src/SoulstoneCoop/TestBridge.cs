@@ -48,6 +48,10 @@ public static class TestBridge
                 Commands["animparams"] = AnimParams;
                 Commands["ghostdown"] = Life.GhostDowned.TestInfo;
                 Commands["walk"] = Walk;
+                Commands["aims"] = Skills.CastSync.TestAims;
+                Commands["godcast"] = GodCast;
+                Commands["skills"] = ListSkills;
+                Commands["auras"] = Skills.CastSync.TestAuras;
                 Commands["speeds"] = _ => PlayerSync.TestSpeeds();
                 StateProviders["affix"] = () => RunSync.LastRunAffixes.Replace(' ', ',');
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] bridge '{Plugin.TestArg}' in {_dir}");
@@ -184,6 +188,33 @@ public static class TestBridge
             parts.Add($"slot{r.Slot}:{a.name}:[{string.Join(",", names)}]");
         }
         return string.Join(" ", parts);
+    }
+
+    /// <summary>"cmd godcast [N]": the God-Entity casts its N-th skill (not the meteor) at the local player's feet.</summary>
+    private static string GodCast(string[] args)
+    {
+        var god = GameManagerUtil.HasGameManager ? GameManagerUtil.GameData?.GodEntity : null;
+        var local = GameState.LocalPlayerEntity;
+        if (god == null || local == null || god._skillCaster == null) return "no god entity";
+        var skills = god.GetComponentsInChildren<Skill>(true).Where(x => x != null).ToList();
+        if (args.Length > 0 && args[0] == "list") return string.Join(",", skills.Select(x => x.gameObject.name + ":" + x.SkillType));
+        int n = args.Length > 0 && int.TryParse(args[0], out var v) ? v : 0;
+        if (n >= skills.Count) return $"only {skills.Count} skills";
+        var skill = skills[n];
+        var p = new SkillActivationParameters();
+        Skills.ActivationParamsRaw.SetVector(p, Skills.ActivationParamsRaw.TargetGroundPosition, local.transform.position + new Vector3(3f, 0f, 0f));
+        Skills.ActivationParamsRaw.SetVector(p, Skills.ActivationParamsRaw.TargetFrontPosition, local.transform.position + new Vector3(3f, 0f, 0f));
+        bool ok = god._skillCaster.CastSkill(skill, p, SkillActivationOptions.IgnoreAll);
+        return $"god cast '{skill.gameObject.name}' ok={ok}";
+    }
+
+    /// <summary>"cmd skills": the local player's skills: name, C# type, SkillType, active.</summary>
+    private static string ListSkills(string[] args)
+    {
+        var local = GameState.LocalPlayerEntity;
+        if (local == null) return "no local player";
+        return string.Join(" | ", local.GetComponentsInChildren<Skill>(true).Where(x => x != null)
+            .Select(x => $"{x.gameObject.name}:{x.GetIl2CppType().Name}:{x.SkillType}:{(x.isActiveAndEnabled ? "on" : "off")}"));
     }
 
     private static Vector3 _walkVel;

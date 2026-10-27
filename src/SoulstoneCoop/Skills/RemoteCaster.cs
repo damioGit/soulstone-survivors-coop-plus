@@ -34,6 +34,7 @@ public static class RemoteCaster
         public Vector3 Front, Ground;
         public float AppliedScale = -1f;
         public string Kind = "";
+        public bool AuraOn; // #10b: an always-on skill (rotating shield) already started on this copy
     }
 
     /// <summary>The stand-in of one other player.</summary>
@@ -558,6 +559,9 @@ public static class RemoteCaster
             && (at - me.transform.position).sqrMagnitude > radius * radius) return PlayResult.Culled;
         var c = GetOrCreateCopy(caster, m.Key, (SkillType)m.SkillType, template);
         if (c == null) return PlayResult.NoSkill;
+        // #10b: always-on skills are announced again every few seconds (for whoever arrived late); start them once.
+        bool aura = c.Skill.TryCast<RotatingShieldSkill>() != null;
+        if (aura && c.AuraOn) return PlayResult.Played;
 
         try
         {
@@ -603,6 +607,11 @@ public static class RemoteCaster
             // those arrive as their own cast messages from the other side.
             bool ok = caster.Entity._skillCaster.CastSkill(c.Skill, p, SkillActivationOptions.IgnoreAll);
             if (!ok) return PlayResult.Rejected;
+            if (aura)
+            {
+                c.AuraOn = true;
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][casts] Always-on '{m.Key}' of slot {slot} started on its stand-in.");
+            }
             QueueVisualProbe(caster, c, m);
             if (template == null) PlayGhostAnimation(caster, c.Skill); // a God cast is not the ghost's own
             return PlayResult.Played;
@@ -612,6 +621,14 @@ public static class RemoteCaster
             Plugin.StaticLog.LogError($"[SoulstoneCoop][casts] Playing '{m.Key}' for slot {slot}: {ex}");
             return PlayResult.Error;
         }
+    }
+
+    /// <summary>#10: a channel of that player now aims here; the copy's front/ground funcs read these live.</summary>
+    internal static void OnChannelAim(byte slot, string key, Vector3 front, Vector3 ground)
+    {
+        if (!Casters.TryGetValue(slot, out var c) || !c.Copies.TryGetValue(key, out var copy)) return;
+        copy.Front = front;
+        copy.Ground = ground;
     }
 
     internal static void OnChannelEnd(byte slot, string key)

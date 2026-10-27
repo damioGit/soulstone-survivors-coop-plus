@@ -35,6 +35,10 @@ public static class GodCasts
     private static int _sent, _bytes, _captureErrors, _recv, _played, _paused, _noMeteor, _failed, _errors;
 
     internal static bool IsMeteor(Skill skill) => _meteorPtr != IntPtr.Zero && skill.Pointer == _meteorPtr;
+    /// <summary>#15: any skill the scene's God-Entity casts (bosses' ProxyGodSkill makes it cast theirs too).</summary>
+    internal static bool IsGodCaster(SkillCasterComponent caster) =>
+        _godPtr != IntPtr.Zero && caster != null && caster.Entity != null && caster.Entity.Pointer == _godPtr;
+    private static readonly Dictionary<string, Skill?> GodSkillsByKey = new();
     internal static void CountCaptureError() => _captureErrors++;
 
     /// <summary>Both sides: find this scene's God-Entity meteor skill (the host to filter its casts, the client as the
@@ -80,7 +84,10 @@ public static class GodCasts
         if (god.Pointer != _godPtr) _lookups = 0;
         _lookups++;
         _godPtr = god.Pointer;
-        _meteor = GameManagerUtil.GetGodSkillById(god, MeteorSkillId);
+        GodSkillsByKey.Clear();
+        // Throws while the God-Entity is still being set up on a loading client: just try again next second.
+        try { _meteor = GameManagerUtil.GetGodSkillById(god, MeteorSkillId); }
+        catch { _meteor = null; return; }
         _meteorPtr = _meteor != null ? _meteor.Pointer : IntPtr.Zero;
         if (_meteor != null)
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][godcasts] God meteor skill: '{KeyOf(_meteor)}' ({_meteor.GetIl2CppType().Name}, type={_meteor.SkillType}).");
@@ -142,7 +149,7 @@ public static class GodCasts
         try
         {
             if (Time.timeScale < 0.0001f) { _paused++; return; }
-            var template = _meteor;
+            var template = FindLocalGodSkill(key) ?? (key == (_meteor != null ? KeyOf(_meteor) : null) ? _meteor : null);
             if (template == null) { _noMeteor++; return; }
             m.Key = RemoteCaster.GodKeyPrefix + key;
             m.SkillType = (int)template.SkillType;
@@ -165,21 +172,35 @@ public static class GodCasts
         }
     }
 
+    /// <summary>#15, client: the skill with that key under our own God-Entity (the scenes are the same).</summary>
+    private static Skill? FindLocalGodSkill(string key)
+    {
+        if (GodSkillsByKey.TryGetValue(key, out var cached)) return cached;
+        var god = GameManagerUtil.HasGameManager ? GameManagerUtil.GameData?.GodEntity : null;
+        Skill? found = null;
+        if (god != null)
+            foreach (var s in god.GetComponentsInChildren<Skill>(true))
+                if (s != null && KeyOf(s) == key) { found = s; break; }
+        GodSkillsByKey[key] = found;
+        if (found == null) Plugin.StaticLog.LogInfo($"[SoulstoneCoop][godcasts] Client: no God-Entity skill '{key}' here.");
+        return found;
+    }
+
     private static void PutV3(NetDataWriter w, Vector3 v) { w.Put(v.x); w.Put(v.y); w.Put(v.z); }
     private static Vector3 GetV3(NetDataReader r) => new(r.GetFloat(), r.GetFloat(), r.GetFloat());
 }
 
-/// <summary>Host: capture the God-Entity's meteor casts (pointer filter: every other cast of the game returns at the
-/// first comparison). Its own postfix on the same method as the 4C and 4D capture patches.</summary>
+/// <summary>Host: capture the God-Entity's casts: its meteors and, #15, whatever bosses make it cast through
+/// ProxyGodSkill (pointer filters: every other cast of the game returns at the first comparisons). Its own postfix on the same method as the 4C and 4D capture patches.</summary>
 [HarmonyPatch(typeof(SkillCasterComponent), nameof(SkillCasterComponent.CastSkill))]
 public static class HostGodCastCapturePatch
 {
     [HarmonyPostfix]
-    public static void Postfix(Skill skill, SkillActivationParameters parameters, bool __result)
+    public static void Postfix(SkillCasterComponent __instance, Skill skill, SkillActivationParameters parameters, bool __result)
     {
         try
         {
-            if (!__result || skill == null || !GodCasts.IsMeteor(skill)) return;
+            if (!__result || skill == null || !(GodCasts.IsMeteor(skill) || GodCasts.IsGodCaster(__instance))) return;
             if (!CoopRole.IsHostSide || !NetworkManager.HasPeer) return;
             GodCasts.OnHostCast(skill, parameters);
         }
