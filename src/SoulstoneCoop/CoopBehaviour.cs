@@ -160,6 +160,7 @@ public class CoopBehaviour : MonoBehaviour
             Enemies.EnemyScaling.Tick(Time.unscaledDeltaTime);
             RebuildGhostIfModelInactive();
             HandleDebugHotkeys();
+            TestBridge.Tick(Time.unscaledDeltaTime);
             LogSyncStats();
         }
         catch (System.Exception ex)

@@ -92,21 +92,6 @@ public class Plugin : BasePlugin
             Log.LogError($"Could not patch EnemyPrefabsUtil.SpawnEnemyEntity (enemy keys fall back to prefab names): {ex}");
         }
 
-        // Phase 6: the client swaps the host's Survivors affixes in while its AffixGameplayData is built. A
-        // constructor, so patched by hand: if this fails, runs still start, just with the client's own affixes.
-        try
-        {
-            var ctor = AccessTools.Constructor(typeof(AffixGameplayData),
-                new[] { typeof(Il2CppSystem.Collections.Generic.List<string>), typeof(int) });
-            harmony.Patch(ctor,
-                prefix: new HarmonyMethod(typeof(Lobby.RunSync), nameof(Lobby.RunSync.AffixCtorPrefix)),
-                postfix: new HarmonyMethod(typeof(Lobby.RunSync), nameof(Lobby.RunSync.AffixCtorPostfix)));
-        }
-        catch (System.Exception ex)
-        {
-            Log.LogError($"Could not patch AffixGameplayData..ctor (the client keeps its own affixes): {ex}");
-        }
-
         // Phase 7: take over the Steam callback pump (lobby invites, P2P sessions). By hand: if it fails, the game
         // keeps pumping its own callbacks and only the Steam invite is lost.
         try
@@ -146,6 +131,10 @@ public class Plugin : BasePlugin
     /// same Steam account can be told apart.</summary>
     internal static string? NameArg;
 
+    /// <summary>Test only: run the agent test bridge (Ui/UiProbe.cs) under this name (--coop-test A), with its
+    /// request/reply files in %USERPROFILE%\soulstone-uitest\A.</summary>
+    internal static string? TestArg;
+
     /// <summary>Version sent and checked in the connection handshake.</summary>
     internal static string HandshakeVersion => FakeVersionArg ?? PluginVersion;
 
@@ -158,6 +147,7 @@ public class Plugin : BasePlugin
             else if (args[i] == "--coop-connect" && i + 1 < args.Length) ConnectAddressArg = args[i + 1];
             else if (args[i] == "--coop-fake-version" && i + 1 < args.Length) FakeVersionArg = args[i + 1];
             else if (args[i] == "--coop-name" && i + 1 < args.Length) NameArg = args[i + 1];
+            else if (args[i] == "--coop-test" && i + 1 < args.Length) TestArg = args[i + 1];
             // Phase 8: network simulation per instance (two games on one PC share the .cfg).
             else if (args[i] == "--coop-sim-latency" && i + 1 < args.Length && int.TryParse(args[i + 1], out var lat)) _simLatency = lat;
             else if (args[i] == "--coop-sim-jitter" && i + 1 < args.Length && int.TryParse(args[i + 1], out var jit)) _simJitter = jit;

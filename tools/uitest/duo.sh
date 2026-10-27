@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Two game instances on this PC for co-op tests: A hosts (direct IP), B joins 127.0.0.1. Both run the TestBridge.
+#   duo.sh start      build, deploy, launch A and B windowed, press Play, wait for B connected
+#   duo.sh stop       kill both, remove steam_appid.txt, restore the screen settings from the backup
+#   duo.sh A "state"  send one bridge command to an instance and print the reply (shots are also shrunk to *_s.jpg)
+set -u
+G="/i/SteamLibrary/steamapps/common/Soulstone Survivors"
+OUT="$USERPROFILE/soulstone-uitest"
+REPO=/i/soulstone-coop
+
+pids() { tasklist //FI "IMAGENAME eq Soulstone Survivors.exe" //FO CSV //NH | grep -i soulstone | cut -d, -f2 | tr -d '"'; }
+
+req() {
+  local who=$1; shift
+  local d="$OUT/$who"
+  rm -f "$d/reply.txt"
+  echo "$*" > "$d/request.txt"
+  for i in $(seq 1 60); do [ -f "$d/reply.txt" ] && break; sleep 0.25; done
+  cat "$d/reply.txt" 2>/dev/null || echo "no reply from $who"; echo
+  case "$1" in
+    shot) sleep 1.2; py -3 -c "
+from PIL import Image
+im=Image.open(r'$d/$2.png').convert('RGB'); im.resize((im.width//2, im.height//2)).save(r'$d/$2_s.jpg',quality=85)" ;;
+  esac
+}
+
+case "${1:-}" in
+  start)
+    cd $REPO
+    dotnet build src/SoulstoneCoop -c Release -p:GameDir="I:\\SteamLibrary\\steamapps\\common\\Soulstone Survivors" -p:SkipDeploy=true 2>&1 | grep -E " error |Kompilacja NIE" && exit 1
+    for p in $(pids); do taskkill //PID $p //F >/dev/null; done; sleep 3
+    cp src/SoulstoneCoop/bin/Release/net6.0/SoulstoneCoop.dll "$G/BepInEx/plugins/SoulstoneCoop/" || exit 1
+    rm -f "$USERPROFILE/.soulstone-uitest"
+    echo 2066020 > "$G/steam_appid.txt"
+    W="-screen-fullscreen 0 -screen-width 1280 -screen-height 720"
+    cd "$G"
+    cmd //c start "" "Soulstone Survivors.exe" $W --coop-host --coop-name A --coop-test A
+    sleep 12
+    cmd //c start "" "Soulstone Survivors.exe" $W --coop-connect 127.0.0.1 --coop-name B --coop-test B
+    for w in A B; do for i in $(seq 1 90); do [ -f "$OUT/$w/ready.txt" ] && break; sleep 2; done; done
+    sleep 10
+    for w in A B; do for i in $(seq 1 30); do r=$(req $w play); echo "$w: $r" | head -1; case "$r" in *pressed*) break;; esac; sleep 2; done; done
+    sleep 8
+    req A state; req B state
+    ;;
+  stop)
+    for p in $(pids); do taskkill //PID $p //F >/dev/null; done
+    rm -f "$G/steam_appid.txt"
+    reg import "I:\\soulstone-coop-backup\\registry.reg" 2>&1 | tail -1
+    echo stopped
+    ;;
+  A|B) who=$1; shift; req $who "$@" ;;
+  *) echo "usage: duo.sh start|stop|A cmd|B cmd" ;;
+esac
