@@ -133,7 +133,7 @@ public static class SpecialsDebug
     }
 
     /// <summary>The recipe of GameManagerAffixSpecialEntitiesComponent.SpawnAffixSpecialEntities (0x80C0C0).</summary>
-    private static Entity SpawnManual(string path, Vector3 pos, bool elite)
+    internal static Entity SpawnManual(string path, Vector3 pos, bool elite)
     {
         var prefab = ResourcesUtil.Load<Entity>(path) ?? throw new Exception($"no prefab at '{path}'");
         ResourcesUtil.GetPrefabInstance<Entity>(prefab, pos, Quaternion.identity, out var inst);

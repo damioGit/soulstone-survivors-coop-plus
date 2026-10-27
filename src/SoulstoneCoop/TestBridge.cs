@@ -58,6 +58,16 @@ public static class TestBridge
                 Commands["bossvis"] = BossVis;
                 Commands["statuesync"] = Enemies.StatueSync.TestInfo;
                 Commands["tasks"] = Tasks;
+                Commands["inv"] = Inventory;
+                Commands["itemdiag"] = Loot.ItemDiag.Info;
+                Commands["ore"] = a =>
+                {
+                    var ci = System.Globalization.CultureInfo.InvariantCulture;
+                    var pos = new Vector3(float.Parse(a[0], ci), 0f, float.Parse(a[1], ci));
+                    string path = a.Length > 2 ? a[2] : "Minerals/CommonCopper-Ore";
+                    Enemies.SpecialsDebug.SpawnManual(path, pos, false);
+                    return $"spawned {path} at {pos}";
+                };
                 Commands["statues"] = _ =>
                 {
                     var live = UnityEngine.Object.FindObjectsOfType<StatueComponent>().Where(x => x != null)
@@ -312,6 +322,17 @@ public static class TestBridge
                 $"addr={t.TaskMetadata.TaskAddress} diff={t.TaskMetadata.Difficulty} text='{text}'");
         }
         return string.Join(" | ", parts);
+    }
+
+    /// <summary>"cmd inv": the local player's run inventory: soulstones, prestige and items (materials) by id.</summary>
+    private static string Inventory(string[] args)
+    {
+        var inv = GameState.LocalPlayerEntity?._inventory;
+        var d = inv != null ? inv.InventoryData : null;
+        if (d == null) return "no inventory";
+        var items = new List<string>();
+        if (d.Items != null) foreach (var it in d.Items) if (it != null) items.Add($"{it.ItemId}={it.Quantity:0}");
+        return $"minor={d.MinorSoulstones:0} corrupted={d.CorruptedSoulstones} vile={d.VileSoulstones} wicked={d.WickedSoulstones} hateful={d.HatefulSoulstones} rogue={d.RogueSoulstones} prestige={d.Prestige:0} items=[{string.Join(",", items)}]";
     }
 
     private static Vector3 _walkVel;

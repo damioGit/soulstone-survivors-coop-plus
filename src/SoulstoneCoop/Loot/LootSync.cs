@@ -46,13 +46,12 @@ public static class LootSync
     }
 
     private static readonly List<LootMsg> Pending = new();
-    private static bool _itemListBroken;
 
     // Telemetry window
     private static float _telemetryTimer;
     private static int _sent, _sentBytes, _sentItems, _sentPowerUps, _skippedPersonal, _captureErrors;
     private static long _sentXp;
-    private static int _recv, _replayed, _replayErrors, _builtItems, _itemFallbacks, _dropped;
+    private static int _recv, _replayed, _replayErrors, _dropped;
     private static long _recvXp;
     private static int _blockedPuppetLoot, _blockedPortal;
 
@@ -360,7 +359,10 @@ public static class LootSync
                 };
             }
 
-            var items = m.Items.Count > 0 ? BuildItems(m) : null;
+            // Materials (copper, iron...): a List<ItemDropRuntimeData> built here came out garbled through the interop
+            // (chance 0, quantity garbage: the client never got a single material). Rolled and handed out below,
+            // the way ProcessLoot does it, with this player's own roll ("one per player", as the game does for N).
+            Il2CppList.List<ItemDropRuntimeData>? items = null;
 
             Il2CppList.List<PowerUpRequest>? pus = null;
             if (m.PowerUps.Count > 0)
@@ -372,6 +374,7 @@ public static class LootSync
 
             ReplayingNetworkLoot = true;
             LootUtil.ProcessLoot(m.Xp, m.Prestige, cur!, items!, pus!, m.Pos, m.Instant, m.Interval);
+            if (m.Items.Count > 0) GiveItems(m);
             _replayed++;
         }
         catch (Exception ex)
@@ -384,44 +387,25 @@ public static class LootSync
         }
     }
 
-    /// <summary>Items by ItemId (same build, same ItemCollectionSO). ItemDropRuntimeData is a non-blittable struct
-    /// in the interop; if building the list fails once, fall back to the dying puppet's own LootComponent list.</summary>
-    private static Il2CppList.List<ItemDropRuntimeData>? BuildItems(LootMsg m)
+    /// <summary>ProcessLoot's item step for the local player: roll each item's chance and quantity, then add it right
+    /// away (instant loot) or send the game's item projectile, which adds it to the inventory when it arrives.</summary>
+    private static void GiveItems(LootMsg m)
     {
-        if (!_itemListBroken)
+        var local = GameState.LocalPlayerEntity;
+        if (local == null) return;
+        foreach (var it in m.Items)
         {
-            try
-            {
-                var collection = Global.ItemCollection;
-                var list = new Il2CppList.List<ItemDropRuntimeData>();
-                foreach (var it in m.Items)
-                {
-                    var def = collection != null ? collection.GetItemDefinitionById((ItemId)it.Id) : null;
-                    if (def == null) continue;
-                    var d = new ItemDropRuntimeData
-                    {
-                        ItemDefinition = def,
-                        Chance = it.Chance,
-                        QuantityMin = it.Min,
-                        QuantityMax = it.Max,
-                    };
-                    list.Add(d);
-                }
-                _builtItems += list.Count;
-                return list;
-            }
-            catch (Exception ex)
-            {
-                _itemListBroken = true;
-                Plugin.StaticLog.LogError($"[SoulstoneCoop][loot] Building List<ItemDropRuntimeData> failed, using the puppet's list from now on: {ex}");
-            }
+            if (UnityEngine.Random.value > it.Chance) continue;
+            int qty = UnityEngine.Random.Range(it.Min, Mathf.Max(it.Min, it.Max) + 1);
+            if (qty <= 0) continue;
+            var id = (ItemId)it.Id;
+            if (m.Instant) LootUtil.AddItemToEntity(local, id, qty);
+            else ItemProjectile.FireProjectile(m.Pos, local, id, qty);
+            _givenItems += qty;
         }
-
-        _itemFallbacks++;
-        var puppet = Enemies.ClientPuppets.TryGetPuppetEntity(m.NetId);
-        var loot = puppet != null ? puppet._loot : null;
-        return loot != null ? loot.PossibleItems : null;
     }
+
+    private static int _givenItems;
 
     private static void LogTelemetry()
     {
@@ -436,12 +420,12 @@ public static class LootSync
         {
             Plugin.StaticLog.LogInfo(
                 $"[SoulstoneCoop][loot] Client: recv={_recv} replayed={_replayed} pending={Pending.Count} dropped={_dropped} xp={_recvXp} " +
-                $"builtItems={_builtItems} itemFallbacks={_itemFallbacks} errors={_replayErrors} blockedPuppetLoot={_blockedPuppetLoot} " +
+                $"givenItems={_givenItems} errors={_replayErrors} blockedPuppetLoot={_blockedPuppetLoot} " +
                 $"blockedPortal={_blockedPortal} {ShareStats()} {LocalProgress()}");
         }
         _sent = _sentBytes = _sentItems = _sentPowerUps = _skippedPersonal = 0;
         _sentXp = 0;
-        _recv = _replayed = _builtItems = _itemFallbacks = _dropped = 0;
+        _recv = _replayed = _givenItems = _dropped = 0;
         _recvXp = 0;
         _blockedPuppetLoot = _blockedPortal = 0;
         _xpToClient = _xpKeptHost = 0;
