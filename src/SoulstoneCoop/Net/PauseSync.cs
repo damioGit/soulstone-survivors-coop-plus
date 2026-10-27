@@ -10,7 +10,7 @@ public enum PauseReason : byte
 {
     None = 0,
     Pause = 1,
-    /// <summary>No longer sent (0.9.2, issue #1: level-ups never pause in co-op). Kept on the wire; never freezes.</summary>
+    /// <summary>An upgrade choice is open and, with [Coop] PauseOnLevelUp, everyone waits for it (0.10).</summary>
     LevelUp = 2,
     /// <summary>Level-up popup open on the full-screen panel without stopping the time ([Debug] LevelUpFullPanel):
     /// the others see a banner, never a freeze. The overlay sends None.</summary>
@@ -45,7 +45,7 @@ public static class PauseSync
     public static bool Freezes(byte slot)
     {
         if (slot >= Players.MaxSlots || (_overrideMask & (1 << slot)) != 0) return false;
-        return Reasons[slot] == PauseReason.Pause
+        return (Reasons[slot] == PauseReason.Pause || Reasons[slot] == PauseReason.LevelUp)
             && NetworkManager.HasPeer && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.InRun(slot);
     }
 
@@ -63,8 +63,7 @@ public static class PauseSync
     public static bool IsChoosing(byte slot)
     {
         if (slot >= Players.MaxSlots || !NetworkManager.HasPeer || !Lobby.CoopSession.LocalInRun || !Lobby.CoopSession.InRun(slot)) return false;
-        var r = Reasons[slot];
-        return r == PauseReason.Choosing || r == PauseReason.LevelUp;
+        return Reasons[slot] == PauseReason.Choosing;
     }
 
     /// <summary>That player is in its pause menu but the host lifted the freeze.</summary>
@@ -188,6 +187,7 @@ public static class PauseSync
         // still pauses our own game, and that's nobody else's business either.
         LocalReason = TimeUtil.PauseTime < 0.001f && !infoPanel ? PauseReason.Pause
                     : levelUpPopup && noPause && !overlay ? PauseReason.Choosing // debug full panel: banner only
+                    : levelUpPopup && !noPause && NetworkManager.HasPeer && Lobby.CoopSession.LocalInRun ? PauseReason.LevelUp // everyone waits
                     : PauseReason.None;
         LevelUpPolicy.DebugHotkey();
 

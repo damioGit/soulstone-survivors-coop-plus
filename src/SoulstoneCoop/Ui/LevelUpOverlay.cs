@@ -582,7 +582,7 @@ public static class LevelUpOverlay
 
     /// <summary>1-4: same flag the game's own option keys set (LevelUpPanelItem.Selected / the skill swap's Selected),
     /// so the game's checks (minimum time, lock / banish mode, skill swap) all still apply.</summary>
-    private static void Pick(LevelUpPanelManager panel, int n)
+    internal static void Pick(LevelUpPanelManager panel, int n)
     {
         try
         {

@@ -55,6 +55,14 @@ public static class TestBridge
                 Commands["boss"] = _ => { Enemies.SpecialsDebug.ForceBoss(); return "boss objective completed"; };
                 Commands["ethereal"] = _ => { var d = GameManagerUtil.AffixGameplayData; if (d == null) return "no affix data"; d.EnableEtherealBosses = true; return "ethereal bosses on"; };
                 Commands["bosses"] = Bosses;
+                Commands["levelup"] = _ => { var xp = GameState.LocalPlayerEntity?._experience; if (xp == null) return "no xp"; xp.LevelUpMultipleTimes(1); return "level " + xp.Level; };
+                Commands["pick"] = a =>
+                {
+                    var panel = GameManagerUtil.GameplayUIManager?.LevelUpPanel;
+                    if (panel == null) return "no level-up panel";
+                    Ui.LevelUpOverlay.Pick(panel, a.Length > 0 && int.TryParse(a[0], out var n) ? n : 0);
+                    return "picked";
+                };
                 Commands["god"] = _ => { var h = GameState.LocalPlayerEntity?._health; if (h == null) return "no health"; h.InvulnerabilityTime = 100000f; return "invulnerable"; };
                 Commands["panel"] = a => { Ui.CoopUi.TestOpen(a.Length == 0 || a[0] != "off"); return "panel toggled"; };
                 Commands["speeds"] = _ => PlayerSync.TestSpeeds();

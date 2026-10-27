@@ -431,6 +431,8 @@ public static class CoopUi
         else if (RunSync.HoldForPartner) text = Loc.T("bn.loading", ("names", CoopSession.NamesWhere(r => r.ChangingScene)));
         else if ((names = CoopSession.NamesWhere(r => PauseSync.Freezes(r.Slot) && PauseSync.ReasonOf(r.Slot) == PauseReason.Pause)).Length > 0)
             text = Loc.T(NetworkManager.Role == NetRole.Host ? "bn.paused_host" : "bn.paused", ("names", names));
+        else if ((names = CoopSession.NamesWhere(r => PauseSync.Freezes(r.Slot) && PauseSync.ReasonOf(r.Slot) == PauseReason.LevelUp)).Length > 0)
+            text = Loc.T("bn.levelup_wait", ("names", names));
         else if ((names = CoopSession.NamesWhere(r => PauseSync.IsChoosing(r.Slot))).Length > 0)
             text = Loc.T("bn.choosing", ("names", names));
         else if (LevelUpOverlay.BannerText != null) text = LevelUpOverlay.BannerText;
