@@ -52,6 +52,10 @@ public static class TestBridge
                 Commands["godcast"] = GodCast;
                 Commands["skills"] = ListSkills;
                 Commands["auras"] = Skills.CastSync.TestAuras;
+                Commands["boss"] = _ => { Enemies.SpecialsDebug.ForceBoss(); return "boss objective completed"; };
+                Commands["ethereal"] = _ => { var d = GameManagerUtil.AffixGameplayData; if (d == null) return "no affix data"; d.EnableEtherealBosses = true; return "ethereal bosses on"; };
+                Commands["bosses"] = Bosses;
+                Commands["god"] = _ => { var h = GameState.LocalPlayerEntity?._health; if (h == null) return "no health"; h.InvulnerabilityTime = 100000f; return "invulnerable"; };
                 Commands["panel"] = a => { Ui.CoopUi.TestOpen(a.Length == 0 || a[0] != "off"); return "panel toggled"; };
                 Commands["speeds"] = _ => PlayerSync.TestSpeeds();
                 StateProviders["affix"] = () => RunSync.LastRunAffixes.Replace(' ', ',');
@@ -216,6 +220,23 @@ public static class TestBridge
         if (local == null) return "no local player";
         return string.Join(" | ", local.GetComponentsInChildren<Skill>(true).Where(x => x != null)
             .Select(x => $"{x.gameObject.name}:{x.GetIl2CppType().Name}:{x.SkillType}:{(x.isActiveAndEnabled ? "on" : "off")}"));
+    }
+
+    /// <summary>"cmd bosses [kill]": the bosses this side has (puppets on a client), optionally killing the first (host).</summary>
+    private static string Bosses(string[] args)
+    {
+        var list = GameManagerUtil.BossEntities;
+        if (list == null) return "no boss list";
+        var names = new List<string>();
+        Entity? first = null;
+        foreach (var b in list) { if (b == null) continue; first ??= b; names.Add($"{b.gameObject.name}@{b.transform.position:0}"); }
+        if (args.Length > 0 && args[0] == "kill" && first != null && first._health != null)
+        {
+            first._health.InvulnerabilityTime = 0f;
+            UnitUtil.ChangeEntityHealth(GameState.LocalPlayerEntity!, first, -(first._health.CurrentHealth + 1e9f), true, out _, out _, out _);
+            return "killed " + first.gameObject.name;
+        }
+        return $"{names.Count}: {string.Join(", ", names)}";
     }
 
     private static Vector3 _walkVel;

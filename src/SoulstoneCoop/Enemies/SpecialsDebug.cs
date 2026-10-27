@@ -41,7 +41,7 @@ public static class SpecialsDebug
         _prevF7 = f7; _prevF8 = f8;
     }
 
-    private static void ForceBoss()
+    internal static void ForceBoss()
     {
         var data = GameManagerUtil.GameData;
         var sgm = data?.SurvivorsGameManager;
