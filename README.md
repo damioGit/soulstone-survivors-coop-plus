@@ -40,7 +40,7 @@ Direct IP is also available (**Host by IP** / type the host's IP → **Join**, U
 | Skills | Each player sees the other's skills (visual only; damage is synced separately), including rotating shields and the live aim of channels |
 | Chests | Every player sees the reward chests and can open them; the loot is shared as usual |
 | Progression | Team XP (whoever picks up an orb, both get it), loot and kill credit on the guest; each player keeps their own level and upgrades |
-| Pause | Anyone's pause freezes everyone and the host can unpause for all; level-ups open as a compact see-through panel you keep playing under (1-4 to pick) |
+| Pause | Anyone's pause freezes everyone and the host can unpause for all; upgrade choices pause the group until everyone has picked (or the compact panel, with `PauseOnLevelUp = false`) |
 | Death | Downed state (the partner lies down on your screen), any ally standing next to you revives you, the host included; defeat only when everyone is down. Heal orbs reach every player; guests dodge hits by dashing |
 | End of run | Victory, Home portal, Endless and challenge portals and Restart happen for everyone; the host surrendering ends the run for all |
 | Disconnects | Host leaving ends everyone's run with a notice; a guest leaving (or surrendering) lets the others continue |
@@ -71,6 +71,7 @@ The full list and design notes are in [`docs/roadmap.md`](docs/roadmap.md).
 | `[Coop] EnemyScalePerPlayer` | `0` | Extra enemies per additional player (try `0.25`) |
 | `[Coop] ReplicaCastRadius` | `60` | Don't draw skills of partners farther than this |
 | `[Coop] DashDodge` | `true` | Guests dodge a host-computed hit while dashing (or within their ping after) |
+| `[Coop] PauseOnLevelUp` | `true` | Upgrade choices pause everyone until all have picked (30 s cap); `false` = small panel, no pause |
 | `[Coop] LobbyType` | `FriendsOnly` | `Public` if friends of guests can't join |
 | `[Coop] SenderClock` | `false` | Experimental: smoother remote movement on jittery connections |
 | `[Debug] SimulateLatencyMs`, `SimulateJitterMs`, `SimulatePacketLossPercent` | `0` | Simulate a bad network for testing |
