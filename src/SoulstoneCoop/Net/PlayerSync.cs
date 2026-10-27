@@ -70,6 +70,8 @@ public static class PlayerSync
         public readonly List<DashEvent> DashEvents = new();
         public bool Dashing;
         public float DashingSince;
+        public float SpeedEstimate; // #13: that player's top speed as seen on its ghost
+        public float SmoothSpeed;
         public GhostDashTrail? Trail; // issue #2: the after-images DashEffect leaves on the real player
         public PlayerTransformState Latest;
         public bool LatestFresh;
@@ -357,14 +359,23 @@ public static class PlayerSync
         m.HasLastGhostPos = true;
         vel.y = 0f;
 
-        float maxSpeed = 0f;
+        float localMax = 0f;
         var local = GameState.LocalPlayerEntity;
-        if (local != null && local._character != null) maxSpeed = local._character.GetMaxSpeed();
-        if (maxSpeed <= 0.1f) maxSpeed = 6f;
+        if (local != null && local._character != null) localMax = local._character.GetMaxSpeed();
+        if (localMax <= 0.1f) localMax = 6f;
+        bool dashing = UpdateGhostDash(m);
+        // #13: the walk was normalized by OUR max speed, so a faster or slower partner's legs ran out of step. Its own
+        // top speed is learned from how fast its ghost actually moves (not while dashing, not on a teleport); it
+        // starts at ours and slowly comes down again if that player gets slower.
+        float speed = vel.magnitude;
+        if (m.SpeedEstimate <= 0f) m.SpeedEstimate = localMax;
+        if (!dashing && speed < 25f) m.SmoothSpeed = Mathf.Lerp(m.SmoothSpeed, speed, Mathf.Clamp01(dt * 4f)); // ~0.25 s: the ghost's jitter averages out
+        if (m.SmoothSpeed > m.SpeedEstimate) m.SpeedEstimate = m.SmoothSpeed;
+        else m.SpeedEstimate = Mathf.Max(Mathf.Max(2f, m.SmoothSpeed), m.SpeedEstimate - 0.5f * dt);
+        float maxSpeed = m.SpeedEstimate;
         Vector3 lv = t.InverseTransformDirection(vel) / maxSpeed;
         float fwd = Mathf.Clamp(lv.z, -1f, 1f), side = Mathf.Clamp(lv.x, -1f, 1f);
         float animDt = Time.deltaTime > 0f ? Time.deltaTime : dt;
-        bool dashing = UpdateGhostDash(m);
         foreach (var a in m.Animators)
         {
             try
@@ -387,6 +398,10 @@ public static class PlayerSync
         m.Trail ??= new GhostDashTrail(r.Slot, r.Info.CharacterId);
         m.Trail.Update(t, ModelRoot(t, r.ModelAnimator), dashing, vel.magnitude);
     }
+
+    /// <summary>Test bridge, "cmd speeds": each partner ghost's learned top speed.</summary>
+    internal static string TestSpeeds() =>
+        string.Join(" ", Motions.Select(kv => $"slot{kv.Key}:{kv.Value.SpeedEstimate:0.00}"));
 
     /// <summary>The direct child of the ghost root holding the model animator: the character model, as the game's
     /// PlayerPrefabReferences (the source of DashEffect's renderers).</summary>

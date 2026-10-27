@@ -41,7 +41,11 @@ public sealed unsafe class SteamTransport : ITransport
         public int PingMs = -1;
         public ushort SeqOut, SeqIn;
         public bool SeqInValid;
+        public uint Session; // #2: the client's connection attempt (Hello), to tell a lost Accept from a rejoin
     }
+
+    /// <summary>#2, client: random per transport (a new connection attempt), sent in every Hello.</summary>
+    private readonly uint _session = (uint)new System.Random().Next(1, int.MaxValue);
 
     public string Kind => "Steam";
     public bool HasPeer => _byId.Count > 0;
@@ -306,8 +310,20 @@ public sealed unsafe class SteamTransport : ITransport
             if (!r.TryGetString(out proto)) proto = "";
         }
         catch { }
+        uint session = 0;
+        try { if (r.AvailableBytes >= 4) session = r.GetUInt(); } catch { }
 
-        if (_byId.TryGetValue(from, out var known)) { SendAccept(from, known.Slot); return; } // our Accept was lost; Hello is resent every second
+        if (_byId.TryGetValue(from, out var known))
+        {
+            // Hello is resent every second until the Accept arrives: the same attempt only lost our Accept.
+            if (known.Session == session) { SendAccept(from, known.Slot); return; }
+            // #2: the same Steam account with a new attempt: it quit and came back before we noticed the drop
+            // (~15 s). Its old slot goes first, so it gets a fresh one with the Welcome and everything after it.
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][steam] {from} ({SteamLobby.FriendName(from)}) is back with a new session: releasing slot {known.Slot} first.");
+            // Not PeerGone: that closes the Steam session with this user, and the new Accept goes through it.
+            RemovePeer(known);
+            _cb.Disconnected(known.Slot);
+        }
 
         // Refusals are Ui.Loc.Msg: the client shows them in its language (an older mod shows the English inside).
         string? refuse = null;
@@ -334,7 +350,7 @@ public sealed unsafe class SteamTransport : ITransport
             return;
         }
 
-        AddPeer(from, slot);
+        AddPeer(from, slot).Session = session;
         Status = NetStatus.Connected;
         LastError = null;
         SendAccept(from, slot);
@@ -349,6 +365,7 @@ public sealed unsafe class SteamTransport : ITransport
         w.Put(ConnectionKey);
         w.Put(Plugin.HandshakeVersion);
         w.Put(SteamLobby.Proto);
+        w.Put(_session);
         Raw(_hostId, w, SteamNative.SendReliable, ChannelMain);
     }
 

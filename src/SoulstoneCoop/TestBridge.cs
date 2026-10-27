@@ -47,10 +47,13 @@ public static class TestBridge
                 Commands["down"] = Life.CoopLife.TestDown;
                 Commands["animparams"] = AnimParams;
                 Commands["ghostdown"] = Life.GhostDowned.TestInfo;
+                Commands["walk"] = Walk;
+                Commands["speeds"] = _ => PlayerSync.TestSpeeds();
                 StateProviders["affix"] = () => RunSync.LastRunAffixes.Replace(' ', ',');
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] bridge '{Plugin.TestArg}' in {_dir}");
             }
             TickFight(dt);
+            TickWalk();
             _poll -= dt;
             if (_poll > 0f) return;
             _poll = 0.2f;
@@ -181,6 +184,32 @@ public static class TestBridge
             parts.Add($"slot{r.Slot}:{a.name}:[{string.Join(",", names)}]");
         }
         return string.Join(" ", parts);
+    }
+
+    private static Vector3 _walkVel;
+    private static float _walkUntil;
+
+    /// <summary>"cmd walk VX VZ SECONDS": slide the local player at that velocity (u/s) for a while.</summary>
+    private static string Walk(string[] args)
+    {
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        if (args.Length < 3) return "usage: walk VX VZ SECONDS";
+        _walkVel = new Vector3(float.Parse(args[0], ci), 0f, float.Parse(args[1], ci));
+        _walkUntil = Time.unscaledTime + float.Parse(args[2], ci);
+        var local = GameState.LocalPlayerEntity;
+        var ch = local != null ? local._character : null;
+        return $"walking at {_walkVel.magnitude:0.0} u/s (own max speed {(ch != null ? ch.GetMaxSpeed() : -1):0.0})";
+    }
+
+    private static void TickWalk()
+    {
+        if (Time.unscaledTime >= _walkUntil) return;
+        var local = GameState.LocalPlayerEntity;
+        if (local == null) return;
+        var pos = local.transform.position + _walkVel * Time.deltaTime;
+        local.transform.position = pos;
+        var rb = local.GetComponent<Rigidbody>();
+        if (rb != null) rb.position = pos;
     }
 
     /// <summary>"cmd tp X Z": move the local player there (transform and rigidbody).</summary>
