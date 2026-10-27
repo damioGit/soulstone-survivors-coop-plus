@@ -61,6 +61,8 @@ public static class TestBridge
                 Commands["tasks"] = Tasks;
                 Commands["inv"] = Inventory;
                 Commands["hpbonus"] = Enemies.EnemyHealthBonus.TestInfo;
+                Commands["mastery"] = Mastery;
+                Commands["masterysync"] = Lobby.MasterySync.TestInfo;
                 Commands["hit"] = a =>
                 {
                     var local = GameState.LocalPlayerEntity;
@@ -355,6 +357,28 @@ public static class TestBridge
         var items = new List<string>();
         if (d.Items != null) foreach (var it in d.Items) if (it != null) items.Add($"{it.ItemId}={it.Quantity:0}");
         return $"minor={d.MinorSoulstones:0} corrupted={d.CorruptedSoulstones} vile={d.VileSoulstones} wicked={d.WickedSoulstones} hateful={d.HatefulSoulstones} rogue={d.RogueSoulstones} prestige={d.Prestige:0} items=[{string.Join(",", items)}]";
+    }
+
+    /// <summary>"cmd mastery": the Mastery run's state on this side.</summary>
+    private static string Mastery(string[] args)
+    {
+        var gm = UnityEngine.Object.FindObjectOfType<MasteryGameManager>();
+        if (gm == null) return "no MasteryGameManager";
+        var parts = new List<string>
+        {
+            $"cycle={gm.CurrentMasteryCycle}/{gm.TotalCyclesAmount} setUp={gm.IsSetUp} spawnTriggered={gm._bossSpawnTriggered} spawnFinished={gm._bossSpawnFinished} lords={gm._lordsKilled} mainBoss={(gm._mainBossEntity != null ? gm._mainBossEntity.gameObject.name : "-")} mainId={gm._mainBossId}",
+        };
+        var dp = gm.DisruptThePillarsObjective;
+        if (dp != null) parts.Add($"pillarsObj={dp.GetCurrentProgressPercent():0.00} done={dp.IsComplete()}");
+        var mo = gm.MainObjective;
+        if (mo != null) parts.Add($"main={mo.Current}/{mo.Total}");
+        var pillars = UnityEngine.Object.FindObjectsOfType<MasteryPillar>();
+        parts.Add("pillars=" + string.Join(",", pillars.Where(x => x != null).Select(x => $"{x.gameObject.name}:{(x.Destroyed ? "X" : "ok")}@{x.transform.position:0}")));
+        foreach (var sp in UnityEngine.Object.FindObjectsOfType<MasteryBossSpawner>())
+            if (sp != null) parts.Add($"spawner@{sp.transform.position:0} active={sp.gameObject.activeInHierarchy} triggered={sp._triggered} timer={sp._currentTimer:0.0}/{sp.TimeToEnter:0.0}");
+        foreach (var b in UnityEngine.Object.FindObjectsOfType<MasteryBossComponent>())
+            if (b != null) parts.Add($"bossAI:{b.gameObject.name}@{b.transform.position:0} state={b.CurrentState} registered={b.BossRegistered}");
+        return string.Join(" | ", parts);
     }
 
     private static Vector3 _walkVel;

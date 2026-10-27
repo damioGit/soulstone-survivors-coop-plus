@@ -593,7 +593,10 @@ public static class ClientPuppets
         try
         {
             var list = GameManagerUtil.BossEntities;
-            if (list != null && !list.Contains(inst)) GameManagerUtil.RegisterBossEntity(inst);
+            // Mastery: the host's boss gets its bar only once it wakes up (the main boss waits in the ritual), so
+            // its puppet's bar follows the host's list (MasterySync state -> ReconcileBossBars).
+            bool masteryBoss = inst._basicAI != null && inst._basicAI.TryCast<MasteryBossComponent>() != null;
+            if (!masteryBoss && list != null && !list.Contains(inst)) GameManagerUtil.RegisterBossEntity(inst);
             list = GameManagerUtil.BossEntities;
             p.BossRegistered = list != null && list.Contains(inst);
             _bossesCreated++;
@@ -618,6 +621,30 @@ public static class ClientPuppets
         {
             _bossErrors++;
             Plugin.StaticLog.LogWarning($"[SoulstoneCoop][puppets] Boss setup after Setup (#{p.NetId} '{p.Key}'): {ex.Message}");
+        }
+    }
+
+    /// <summary>Mastery: the boss bars shown are the host's ones (netIds of its GameManagerUtil.BossEntities).</summary>
+    internal static void ReconcileBossBars(HashSet<ushort> hostBars)
+    {
+        var list = GameManagerUtil.BossEntities;
+        if (list == null) return;
+        foreach (var p in ByNetId.Values)
+        {
+            if (p.Dead || !p.IsBoss || p.Entity == null) continue;
+            bool want = hostBars.Contains(p.NetId);
+            bool has = list.Contains(p.Entity);
+            if (want && !has)
+            {
+                GameManagerUtil.RegisterBossEntity(p.Entity);
+                p.BossRegistered = true;
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][puppets] Boss bar of #{p.NetId} '{p.Key}' shown (host's boss woke up).");
+            }
+            else if (!want && has)
+            {
+                GameManagerUtil.DeregisterBossEntity(p.Entity);
+                p.BossRegistered = false;
+            }
         }
     }
 

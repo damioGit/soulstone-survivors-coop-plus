@@ -225,3 +225,34 @@ public static class ClientEntitySetupLeakPatch
         }
     }
 }
+
+/// <summary>Mastery, client: MasteryGameManager.SpawnBoss (run when the portal fires and at each new cycle) spawns the
+/// lords, which the host owns; on the client it ran into the blocked spawns and threw. Skipped: the lords come as
+/// puppets.</summary>
+[HarmonyPatch(typeof(MasteryGameManager), nameof(MasteryGameManager.SpawnBoss))]
+public static class ClientMasterySpawnBossPatch
+{
+    [HarmonyPrefix]
+    public static bool Prefix()
+    {
+        try { return !CoopRole.IsClientSide; }
+        catch { return true; }
+    }
+}
+
+/// <summary>The game's CharacterAnimator.UpdateAll can hit a puppet set up a frame earlier (seen with the static
+/// void tentacles of the Mastery maps) and throw; uncaught, that skipped the rest of GameLoop.Update for the frame.
+/// The exception stops here (that frame's remaining animators wait one frame).</summary>
+[HarmonyPatch(typeof(ECM2.Examples.Animation.UnityCharacterAnimatorExample.CharacterAnimator), nameof(ECM2.Examples.Animation.UnityCharacterAnimatorExample.CharacterAnimator.UpdateAll))]
+public static class CharacterAnimatorUpdateGuardPatch
+{
+    private static int _swallowed;
+
+    [HarmonyFinalizer]
+    public static Exception? Finalizer(Exception? __exception)
+    {
+        if (__exception == null || !CoopRole.IsClientSide) return __exception;
+        if (_swallowed++ < 3) Plugin.StaticLog.LogWarning($"[SoulstoneCoop][puppets] CharacterAnimator.UpdateAll threw on the client (kept the frame going): {__exception.Message}");
+        return null;
+    }
+}
