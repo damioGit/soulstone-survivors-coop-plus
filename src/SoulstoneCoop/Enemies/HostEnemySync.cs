@@ -33,6 +33,10 @@ public static class HostEnemySync
         public float BossMultMaxHealth;
         public sbyte HostPendingBosses;
         public bool HostHasPendingBosses;
+        // Issue #6: the tier list's EnemyPrefabData (SpawnEnemyEntity), so the client can rebuild it.
+        public bool HasPrefabType;
+        public int PrefabType;
+        public bool DataIsElite, DataIsEndless;
     }
 
     // Phase 4D: captured right before Entity.Setup by the patches at the end of this file.
@@ -64,6 +68,9 @@ public static class HostEnemySync
     internal static Entity? CtxPrefab;
     internal static sbyte CtxTier = -1;
     internal static bool CtxElite;
+    internal static bool CtxHasType;
+    internal static int CtxType;
+    internal static bool CtxDataElite, CtxDataEndless;
 
     // Telemetry window
     private static int _snapshotsSent, _slicesSent, _snapshotBytes, _spawnsSent, _diedSent, _despawnsSent;
@@ -121,12 +128,13 @@ public static class HostEnemySync
 
         Entity? prefab = null;
         sbyte tier = -1;
-        bool elite = false;
+        bool elite = false, hasType = false;
         if (CtxActive)
         {
             prefab = CtxPrefab;
             tier = CtxTier;
             elite = CtxElite;
+            hasType = CtxHasType;
             CtxActive = false; // one Setup per SpawnEnemyEntity
         }
 
@@ -147,6 +155,10 @@ public static class HostEnemySync
             Key = EnemyPrefabKeys.HostKeyFor(e, prefab, ownerNetId),
             Tier = tier,
             IsElite = elite,
+            HasPrefabType = hasType,
+            PrefabType = hasType ? CtxType : 0,
+            DataIsElite = hasType && CtxDataElite,
+            DataIsEndless = hasType && CtxDataEndless,
         };
         FillPhase4D(t);
         ByPtr[t.Ptr] = t;
@@ -257,6 +269,10 @@ public static class HostEnemySync
             BossMultMaxHealth = t.BossMultMaxHealth,
             HostPendingBosses = t.HostPendingBosses,
             HostHasPendingBosses = t.HostHasPendingBosses,
+            HasPrefabType = t.HasPrefabType,
+            PrefabType = t.PrefabType,
+            DataIsElite = t.DataIsElite,
+            DataIsEndless = t.DataIsEndless,
         };
         var w = new NetDataWriter();
         msg.Write(w);
@@ -548,6 +564,14 @@ public static class HostSpawnEnemyEntityPatch
             HostEnemySync.CtxPrefab = prefabData?.Prefab;
             HostEnemySync.CtxTier = prefabData != null ? (sbyte)Mathf.Clamp(prefabData.Tier, -1, 127) : (sbyte)-1;
             HostEnemySync.CtxElite = isElite;
+            var data = prefabData?.PrefabData;
+            HostEnemySync.CtxHasType = data != null;
+            if (data != null)
+            {
+                HostEnemySync.CtxType = (int)data.Type;
+                HostEnemySync.CtxDataElite = data.IsElite;
+                HostEnemySync.CtxDataEndless = data.IsEndless;
+            }
         }
         catch (Exception ex)
         {
@@ -560,6 +584,7 @@ public static class HostSpawnEnemyEntityPatch
     {
         HostEnemySync.CtxActive = false;
         HostEnemySync.CtxPrefab = null;
+        HostEnemySync.CtxHasType = false;
     }
 }
 

@@ -450,6 +450,13 @@ public static class CoopUi
         if (_bannerText!.text != text) _bannerText.text = text;
         // In the menu just above the Fight button, between our panel and the character panel; in runs near the top.
         float y = _inMenu ? -860f : -140f, w = _inMenu ? 820f : 1000f;
+        // The level-up panel at the top would sit on the banner (the pad hint): the banner goes under it (author's 1.1.0, #5).
+        if (!_inMenu && LevelUpOverlay.PanelScreenSpan is Vector2 span && Screen.height > 0)
+        {
+            float k = 1080f / Screen.height; // this canvas scales with the height (ref 1080)
+            float panelTop = (Screen.height - span.y) * k, panelBottom = (Screen.height - span.x) * k;
+            if (panelTop < -y + _bannerRt.rect.height && panelBottom > -y) y = -(panelBottom + 8f);
+        }
         if (Mathf.Abs(_bannerRt.anchoredPosition.y - y) > 0.5f) _bannerRt.anchoredPosition = new Vector2(0f, y);
         if (Mathf.Abs(_bannerRt.sizeDelta.x - w) > 0.5f) _bannerRt.sizeDelta = new Vector2(w, _bannerRt.sizeDelta.y);
     }
@@ -590,6 +597,8 @@ public static class CoopUi
         _fallbackButton.SetActive(false);
 
         BuildBanner(rootRt);
+        GameLook.Font = _font;
+        PartyHud.Build(rootRt); // party panel in runs (from the author's 1.1.0, issue #7): nested canvas, under the game's own
         _root = root;
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Co-op UI built (font {_font.name} [{_fontType}], language {Loc.Codes[(int)Loc.Current]}).");
         Loc.CheckGlyphs(_font, "co-op UI");

@@ -1,6 +1,6 @@
 # Soulstone Coop
 
-> **This is a modified copy of [gskolber/soulstone-survivors-coop](https://github.com/gskolber/soulstone-survivors-coop).** It's the same mod by the same author, with new features and fixes made with the help of AI (Claude) so it supports more of the game: the Co-op panel restyled to match the game, Mastery and Titan Hunt in co-op, the guest's crowd control, chests and map tasks, boss statues, smoother enemies, more synced effects, tougher enemies in co-op, co-op options in the panel and Polish texts. All credit for the original mod goes to its author. What's new: [docs/releases/0.10.0.md](docs/releases/0.10.0.md).
+> **This is a modified copy of [gskolber/soulstone-survivors-coop](https://github.com/gskolber/soulstone-survivors-coop).** It's the same mod by the same author, with new features and fixes made with the help of AI (Claude) so it supports more of the game: the Co-op panel restyled to match the game, Mastery and Titan Hunt in co-op, the guest's crowd control, chests and map tasks, boss statues, smoother enemies, more synced effects, tougher enemies in co-op, co-op options in the panel and Polish texts. It also includes the author's own 1.1.0 additions (party panel, upgrade panel above the HUD with gamepad support, guests seeing every enemy). All credit for the original mod goes to its author. What's new: [docs/releases/0.10.0.md](docs/releases/0.10.0.md).
 >
 > **Download:** the [Releases](../../releases) page, file `SoulstoneCoop-0.10.0.zip` (unpack it into the game's folder; everyone in the group needs this same version).
 
@@ -77,6 +77,8 @@ The full list and design notes are in [`docs/roadmap.md`](docs/roadmap.md).
 | `[Coop] ReplicaCastRadius` | `60` | Don't draw skills of partners farther than this |
 | `[Coop] DashDodge` | `true` | Guests dodge a host-computed hit while dashing (or within their ping after) |
 | `[Coop] EnemyHealthBonus` | `50` | Enemy health +% per extra player (2 players: +50 %); 0 = off |
+| `[Coop] PartyHud` | `true` | In a run, a panel at the top left with each partner's health, level, XP, revives left and state |
+| `[Coop] LevelUpPanelPosition` | `Top` | Where the compact upgrade panel sits: `Top` (above your character) or `Bottom` (just above the health bar) |
 | `[Coop] PauseOnLevelUp` | `true` | Upgrade choices pause everyone until all have picked (30 s cap); `false` = small panel, no pause |
 | `[Coop] LobbyType` | `FriendsOnly` | `Public` if friends of guests can't join |
 | `[Coop] SenderClock` | `false` | Experimental: smoother remote movement on jittery connections |

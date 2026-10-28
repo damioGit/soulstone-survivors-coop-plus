@@ -36,6 +36,7 @@ public class Plugin : BasePlugin
         StaticLog = Log;
         Log.LogInfo($"{PluginName} {PluginVersion} loading...");
         Net.LevelUpPolicy.Bind(Config);
+        Ui.PartyHud.Bind(Config); // party panel (the author's 1.1.0)
         Ui.Loc.Init(Config); // docs/i18n-notas.md
 
         AutoHost = Config.Bind("Debug", "AutoHost", false,

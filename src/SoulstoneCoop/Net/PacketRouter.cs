@@ -59,6 +59,7 @@ public enum PacketType : byte
     TaskStage = 126,   // host -> clients: map task id u16 | stage u8 (triggered / completed / failed) (ReliableOrdered)
     MasteryEvent = 127, // host -> clients: a Mastery event (the portal fired, ...) the clients replay (ReliableOrdered)
     CrusadeEvent = 128, // Titan Hunt: map choice, shared progress (keys, door, blood), portals (ReliableOrdered)
+    PartyStatus = 129, // party panel (the author's 1.1.0, issue #7): sender's level u16 | xp progress u8 (/255) | death guards u8, on change at <= 4 Hz + every 2 s (ReliableOrdered)
     ChestState = 122,  // host -> clients: chest id u16 | interaction % u8 | opened bool (ReliableOrdered, after its spawn)
 }
 
@@ -78,6 +79,7 @@ public static class PacketRouter
         PacketType.SkillCast or PacketType.SkillChannelEnd => DeliveryMethod.ReliableOrdered, // an end never overtakes its start
         PacketType.SummonSpawn or PacketType.SummonDespawn => DeliveryMethod.ReliableOrdered,
         PacketType.SummonStates or PacketType.SkillChannelAim => DeliveryMethod.Sequenced,
+        PacketType.PartyStatus => DeliveryMethod.ReliableOrdered, // level, XP progress and revives (party panel)
         // Positions go in the host's PlayersState (one packet per tick); damage, ClientState, requests: host only.
         _ => null,
     };
@@ -188,6 +190,9 @@ public static class PacketRouter
                 break;
             case PacketType.ChestSpawn:
                 Loot.ChestSync.OnChestSpawn(reader);
+                break;
+            case PacketType.PartyStatus:
+                Life.PartyStatus.OnPacket(reader);
                 break;
             case PacketType.CrusadeEvent:
                 Lobby.CrusadeSync.OnEvent(reader, From);

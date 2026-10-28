@@ -47,6 +47,7 @@ public class CoopBehaviour : MonoBehaviour
             Players.Left += slot => DestroyGhost(Lobby.CoopSession.Get(slot));
             Lobby.CoopSession.EnsureHooked();
             PauseSync.EnsureHooked();
+            Life.PartyStatus.EnsureHooked();
             Enemies.HostEnemySync.EnsureHooked();
             Enemies.ClientPuppets.EnsureHooked();
             Enemies.RemoteProxy.EnsureHooked();
@@ -92,6 +93,7 @@ public class CoopBehaviour : MonoBehaviour
                 r.GhostRebuilds = 0;
                 r.IdentityRebuilds = 0;
                 Life.PartnerHealth.Reset(r.Slot); // its 1 s refresh fills it again, and ours goes out now
+                Life.PartyStatus.Reset(r.Slot);
                 var t = local!.gameObject.transform;
                 var spawnPos = t.position + t.right * 2f;
                 r.Ghost = VisualGhostFactory.Create(local, r, spawnPos, t.rotation, $"SoulstoneCoop_RemoteGhost{r.Slot}");
@@ -159,6 +161,8 @@ public class CoopBehaviour : MonoBehaviour
             Lobby.PortalSync.Tick(Time.unscaledDeltaTime);
             Lobby.MasterySync.Tick(Time.unscaledDeltaTime);
             Lobby.CrusadeSync.Tick(Time.unscaledDeltaTime);
+            Life.PartyStatus.Tick(Time.unscaledDeltaTime);
+            Ui.PartyHud.Tick(Time.unscaledDeltaTime);
             Enemies.EnemyCasts.Tick(Time.unscaledDeltaTime);
             Enemies.GuestEffects.Tick(Time.unscaledDeltaTime);
             Enemies.StatueSync.Tick(Time.unscaledDeltaTime);
