@@ -1,5 +1,9 @@
 # Soulstone Coop
 
+> **This is a modified copy of [gskolber/soulstone-survivors-coop](https://github.com/gskolber/soulstone-survivors-coop).** It's the same mod by the same author, with new features and fixes made with the help of AI (Claude) so it supports more of the game: the Co-op panel restyled to match the game, Mastery and Titan Hunt in co-op, the guest's crowd control, chests and map tasks, boss statues, smoother enemies, more synced effects, tougher enemies in co-op, co-op options in the panel and Polish texts. All credit for the original mod goes to its author. What's new: [docs/releases/0.10.0.md](docs/releases/0.10.0.md).
+>
+> **Download:** the [Releases](../../releases) page, file `SoulstoneCoop-0.10.0.zip` (unpack it into the game's folder; everyone in the group needs this same version).
+
 Online co-op for [Soulstone Survivors](https://store.steampowered.com/app/2066020/Soulstone_Survivors/): up to 8 players in the same run, invited through Steam.
 
 An unofficial fan mod, not affiliated with or endorsed by the game's developers. Built on [BepInEx 6](https://github.com/BepInEx/BepInEx) (IL2CPP).
