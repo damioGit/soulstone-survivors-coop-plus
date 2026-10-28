@@ -20,6 +20,6 @@ for i in $(seq 1 150); do
   case "$a" in *Menu*) echo "host in menu"; break;; esac
   case "$am" in cycle=4*) ;; esac
 done
-echo "== client finale"; grep -E "mastery\] Client: (finale|pulled|main boss)|Victory|RunEnd" "$G/LogOutput.1.log" | cut -c50-220
-echo "== host finale"; grep -E "mastery\] Host: finale|Victory|RunEnd" "$G/LogOutput.log" | cut -c50-200 | tail -4
+echo "== client finale"; grep -E "mastery] Client: (finale|pulled|main boss)|Victory|RunEnd|scene changes|phases skipped" "$G/LogOutput.1.log" | cut -c50-220
+echo "== host finale"; grep -E "mastery] Host: (finale|scene)|Victory|RunEnd" "$G/LogOutput.log" | cut -c50-200 | tail -4
 echo "== exceptions"; grep -c "^Exception" "$G/LogOutput.log" "$G/LogOutput.1.log"

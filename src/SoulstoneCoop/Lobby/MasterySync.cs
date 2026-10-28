@@ -21,17 +21,92 @@ namespace SoulstoneCoop.Lobby;
 /// </summary>
 public static class MasterySync
 {
-    private const byte KindTrigger = 0, KindState = 1, KindCycle = 2, KindFinale = 3, KindScene = 4;
+    private const byte KindTrigger = 0, KindState = 1, KindCycle = 2, KindFinale = 3, KindScene = 4, KindLoadScene = 5;
+
+    // ---- the finale's arena is a scene of its own (Addressables "_Scenes/SurvivorsCthulhuArena"), loaded additively
+    // by the boss's phase change when it pulls the players in; the client's boss puppet runs no phases ----
+    private static HashSet<string>? _scenesBefore;
+    private static readonly HashSet<string> _scenesLoading = new();
+
+    private static HashSet<string> LoadedScenes()
+    {
+        var set = new HashSet<string>();
+        for (int i = 0; i < UnityEngine.SceneManagement.SceneManager.sceneCount; i++)
+            set.Add(UnityEngine.SceneManagement.SceneManager.GetSceneAt(i).name);
+        return set;
+    }
+
+    /// <summary>Host, during the finale: scenes loaded since it started go to the clients.</summary>
+    private static void SendNewScenes()
+    {
+        if (_scenesBefore == null) return;
+        foreach (var name in LoadedScenes())
+        {
+            if (!_scenesBefore.Add(name)) continue;
+            var w = new NetDataWriter();
+            w.Put((byte)PacketType.MasteryEvent);
+            w.Put(KindLoadScene);
+            w.Put(name);
+            NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Host: scene '{name}' loaded - clients load it too.");
+        }
+    }
+
+    private static void LoadSceneFromHost(string name)
+    {
+        if (LoadedScenes().Contains(name) || !_scenesLoading.Add(name)) return;
+        _loadingBefore = LoadingScreenManager._loadingRequests;
+        // the game's own loader, as ChangeSceneAction uses (the type isn't public in the interop assembly)
+        var m = HarmonyLib.AccessTools.Method(HarmonyLib.AccessTools.TypeByName("SceneCommands"), "LoadSceneAsync",
+            new[] { typeof(string), typeof(UnityEngine.SceneManagement.LoadSceneMode) });
+        if (m == null) { Plugin.StaticLog.LogWarning("[SoulstoneCoop][mastery] Client: no SceneCommands.LoadSceneAsync."); return; }
+        m.Invoke(null, new object[] { name, UnityEngine.SceneManagement.LoadSceneMode.Additive });
+        _sceneAwaited = name;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: loading the host's scene '{name}'.");
+    }
+
+    private static string? _sceneAwaited;
+    private static int _loadingBefore;
+    private static float _sceneInAt;
+
+    /// <summary>Client: the loader put up the loading screen, which the boss's phase action takes down on the host;
+    /// once the scene is in, take it down here.</summary>
+    private static void FinishSceneLoad()
+    {
+        if (_sceneAwaited == null) return;
+        if (_sceneInAt <= 0f)
+        {
+            var sc = UnityEngine.SceneManagement.SceneManager.GetSceneByName(_sceneAwaited);
+            if (!sc.IsValid() || !sc.isLoaded) return;
+            _sceneInAt = Time.unscaledTime;
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: scene '{_sceneAwaited}' in.");
+        }
+        // the loading screen may be pushed a little late: watch for 3 s
+        for (int i = 0; i < 5 && LoadingScreenManager._loadingRequests > _loadingBefore; i++)
+        {
+            LoadingScreenManager.Pop();
+            Plugin.StaticLog.LogInfo("[SoulstoneCoop][mastery] Client: loading screen closed.");
+        }
+        if (Time.unscaledTime - _sceneInAt > 3f) { _sceneAwaited = null; _sceneInAt = 0f; }
+    }
+
+    internal static string TestLoadScene(string[] args)
+    {
+        if (args.Length == 0) return "scenes: " + string.Join(", ", LoadedScenes());
+        _scenesLoading.Remove(args[0]);
+        LoadSceneFromHost(args[0]);
+        return "loading " + args[0];
+    }
 
     // ---- the finale's arena: scene objects the host's finale turned on/off, mirrored on the clients ----
-    private static Dictionary<string, bool>? _sceneBefore;
+    private static List<(GameObject go, string path, bool on)>? _sceneBefore;
     private static float _sceneDiffTimer, _sceneDiffUntil;
     private static readonly HashSet<string> _sceneSent = new();
     private static float _arenaReadyAt;
 
     /// <summary>Every object of the active scene that isn't spawned at runtime (no "(Clone)" on its path, none of
     /// ours), keyed by its hierarchy path with sibling indexes, with its activeSelf.</summary>
-    private static Dictionary<string, GameObject> SceneObjects()
+    private static Dictionary<string, GameObject> SceneObjects(bool clones = false)
     {
         var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
         var map = new Dictionary<string, GameObject>();
@@ -41,7 +116,7 @@ public static class MasterySync
             var go = t.gameObject;
             if (!go.scene.IsValid() || go.scene.handle != scene.handle) continue;
             string path = PathOf(t);
-            if (path.Contains("(Clone)") || path.Contains("SoulstoneCoop")) continue;
+            if ((!clones && path.Contains("(Clone)")) || path.Contains("SoulstoneCoop")) continue;
             map[path] = go;
         }
         return map;
@@ -57,32 +132,57 @@ public static class MasterySync
 
     private static void SnapshotScene()
     {
-        _sceneBefore = new Dictionary<string, bool>();
-        foreach (var kv in SceneObjects()) _sceneBefore[kv.Key] = kv.Value.activeSelf;
+        // Paths are worked out once; after that only activeSelf is read, so this can run for the whole finale (the
+        // arena turns on when the boss pulls the players in, on a phase change long after the finale started).
+        _sceneBefore = new List<(GameObject, string, bool)>();
+        foreach (var kv in SceneObjects()) _sceneBefore.Add((kv.Value, kv.Key, kv.Value.activeSelf));
         _sceneSent.Clear();
         _sceneDiffTimer = 1f;
-        _sceneDiffUntil = Time.unscaledTime + 15f;
+        _sceneDiffUntil = float.MaxValue;
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Host: scene snapshot for the finale ({_sceneBefore.Count} objects).");
     }
 
-    /// <summary>Host, for 15 s after the finale started: send what changed (each path once, with its latest state).</summary>
-    private static void SendSceneDiff(float dt)
+    // The boss's phase changes (the pull into the arena comes with one, long after the finale started) turn objects
+    // on/off through SetGameObjectStateAction; the client's boss puppet runs no phases, so the host watches those
+    // targets until the run ends.
+    private static readonly List<(GameObject go, string path, bool on)> _phaseTargets = new();
+    private static float _phaseTimer;
+
+    private static void CollectPhaseTargets()
     {
-        if (_sceneBefore == null) return;
-        if (Time.unscaledTime > _sceneDiffUntil) { _sceneBefore = null; return; }
-        _sceneDiffTimer -= dt;
-        if (_sceneDiffTimer > 0f) return;
-        _sceneDiffTimer = 1f;
-        var changes = new List<(string, bool)>();
-        foreach (var kv in SceneObjects())
+        _phaseTargets.Clear();
+        var seen = new HashSet<IntPtr>();
+        foreach (var a in Resources.FindObjectsOfTypeAll<SetGameObjectStateAction>())
         {
-            if (!_sceneBefore.TryGetValue(kv.Key, out bool was)) continue;
-            bool now = kv.Value.activeSelf;
-            if (now == was) continue;
-            _sceneBefore[kv.Key] = now;
-            changes.Add((kv.Key, now));
+            if (a == null || a.TargetGameObject == null || !seen.Add(a.TargetGameObject.Pointer)) continue;
+            var go = a.TargetGameObject;
+            if (!go.scene.IsValid()) continue;
+            _phaseTargets.Add((go, PathOf(go.transform), go.activeSelf));
+        }
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Host: watching {_phaseTargets.Count} phase target(s): {string.Join(", ", _phaseTargets.Take(12).Select(t => t.go.name + "=" + t.on))}");
+    }
+
+    private static void SendPhaseTargets(float dt)
+    {
+        if (_phaseTargets.Count == 0) return;
+        _phaseTimer -= dt;
+        if (_phaseTimer > 0f) return;
+        _phaseTimer = 0.25f;
+        var changes = new List<(string, bool)>();
+        for (int i = 0; i < _phaseTargets.Count; i++)
+        {
+            var (go, path, on) = _phaseTargets[i];
+            if (go == null || go.activeSelf == on) continue;
+            _phaseTargets[i] = (go, path, go.activeSelf);
+            changes.Add((path, go.activeSelf));
         }
         if (changes.Count == 0) return;
+        SendScene(changes);
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Host: phase targets changed ({changes.Count}): {string.Join(", ", changes.Take(8).Select(c => c.Item1.Split('/').Last() + "=" + c.Item2))}");
+    }
+
+    private static void SendScene(List<(string, bool)> changes)
+    {
         for (int start = 0; start < changes.Count; start += 100)
         {
             var w = new NetDataWriter();
@@ -93,6 +193,30 @@ public static class MasterySync
             for (int i = 0; i < n; i++) { w.Put(changes[start + i].Item1); w.Put(changes[start + i].Item2); }
             NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
         }
+    }
+
+    /// <summary>Host, from the finale to the end of the run: send what changed in the scene.</summary>
+    private static void SendSceneDiff(float dt)
+    {
+        try { SendNewScenes(); } catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][mastery] Scenes: {ex.Message}"); _scenesBefore = null; }
+        try { SendPhaseTargets(dt); } catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][mastery] Phase targets: {ex.Message}"); _phaseTargets.Clear(); }
+        if (_sceneBefore == null) return;
+        if (Time.unscaledTime > _sceneDiffUntil) { _sceneBefore = null; return; }
+        _sceneDiffTimer -= dt;
+        if (_sceneDiffTimer > 0f) return;
+        _sceneDiffTimer = 1f;
+        var changes = new List<(string, bool)>();
+        for (int i = 0; i < _sceneBefore.Count; i++)
+        {
+            var (go, path, was) = _sceneBefore[i];
+            if (go == null) continue;
+            bool now = go.activeSelf;
+            if (now == was) continue;
+            _sceneBefore[i] = (go, path, now);
+            changes.Add((path, now));
+        }
+        if (changes.Count == 0) return;
+        SendScene(changes);
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Host: finale scene changes sent ({changes.Count}): {string.Join(", ", changes.Take(6).Select(c => c.Item1.Split('/').Last() + "=" + c.Item2))}");
     }
 
@@ -103,18 +227,65 @@ public static class MasterySync
         for (int i = 0; i < n; i++) list.Add((r.GetString(), r.GetBool()));
         if (NetworkManager.Role != NetRole.Client) return;
         var objs = SceneObjects();
+        Dictionary<string, GameObject>? all = null;
         int applied = 0, missing = 0;
         foreach (var (path, on) in list)
         {
-            if (!objs.TryGetValue(path, out var go)) { missing++; continue; }
+            if (!objs.TryGetValue(path, out var go))
+            {
+                all ??= SceneObjects(true);
+                if (!all.TryGetValue(path, out go)) { missing++; Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: no '{path}'."); continue; }
+            }
             if (go.activeSelf != on) { go.SetActive(on); applied++; }
         }
         _arenaReadyAt = Time.unscaledTime;
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: finale scene changes applied {applied}/{list.Count} (missing {missing}).");
     }
     private static bool _finaleFromHost;
-    private static float _finaleUntil, _hostMovedAt;
-    private static Vector3 _finaleFrom;
+    private static float _finaleUntil, _hostStillSince;
+    private static Vector3 _hostStill, _hostLast;
+    private static bool _followPending;
+    private static float _pulledAt;
+    private static int _groundLayer = -1;
+    private static GameObject? _floor;
+
+    /// <summary>Layer of what's under a point (the floor the characters stand on), or -1.</summary>
+    private static int GroundLayerUnder(Vector3 at)
+    {
+        var hits = Physics.RaycastAll(at + Vector3.up * 3f, Vector3.down, 20f);
+        float best = float.MaxValue; int layer = -1; string name = "-";
+        foreach (var h in hits)
+        {
+            if (h.collider == null || h.collider.isTrigger || h.distance >= best) continue;
+            var local = GameState.LocalPlayerEntity;
+            if (local != null && h.collider.transform.IsChildOf(local.transform)) continue; // the character itself
+            best = h.distance; layer = h.collider.gameObject.layer; name = h.collider.gameObject.name;
+        }
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: ground under {at}: '{name}' layer {layer}.");
+        return layer;
+    }
+
+    /// <summary>The client fell through the arena (its floor wasn't turned on here): an invisible floor under the
+    /// host, on the ground's layer.</summary>
+    private static void MakeFloor(Vector3 host)
+    {
+        if (_floor == null)
+        {
+            _floor = new GameObject("SoulstoneCoop-ArenaFloor");
+            var box = _floor.AddComponent<BoxCollider>();
+            box.size = new Vector3(70f, 1f, 70f);
+        }
+        if (_groundLayer >= 0) _floor.layer = _groundLayer;
+        _floor.transform.position = new Vector3(host.x, host.y - 0.5f, host.z);
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: fell below the arena - floor made at {_floor.transform.position} (layer {_floor.layer}).");
+    }
+
+    internal static void DropFloor()
+    {
+        if (_floor != null) UnityEngine.Object.Destroy(_floor);
+        _floor = null;
+        _pulledAt = 0f;
+    }
 
     private static Vector3 HostPosition()
     {
@@ -122,25 +293,42 @@ public static class MasterySync
         return h != null && h.Ghost != null ? h.Ghost.transform.position : Vector3.zero;
     }
 
-    /// <summary>Client, during the finale: once the host has been pulled far away (into the boss arena), the local
-    /// player is put right next to it.</summary>
+    /// <summary>Client, from the finale to the end of the run: the main boss pulls the players into its arena on a
+    /// phase change (not when the finale starts), and the client's own boss can't. When the host jumps far (> 30 u in
+    /// one step) and then lands (1 s without moving), the local player is put next to it.</summary>
     private static void FollowIntoArena()
     {
         if (_finaleUntil <= 0f) return;
-        if (Time.unscaledTime > _finaleUntil) { _finaleUntil = 0f; return; }
+        if (!GameManagerUtil.HasGameManager) { _finaleUntil = 0f; DropFloor(); return; }
         var host = HostPosition();
         var local = GameState.LocalPlayerEntity;
         if (local == null || host == Vector3.zero) return;
-        var d = host - _finaleFrom; d.y = 0f;
-        if (d.sqrMagnitude < 30f * 30f) { _hostMovedAt = 0f; return; } // the host hasn't been moved yet
-        if (_hostMovedAt <= 0f) _hostMovedAt = Time.unscaledTime;
-        bool arenaOn = _arenaReadyAt > 0f && _arenaReadyAt >= _finaleUntil - 20f;
-        if (!arenaOn && Time.unscaledTime - _hostMovedAt < 4f) return; // wait for the arena's objects
-        var pos = host + new Vector3(2f, 0f, 0f);
+        if (_pulledAt > 0f && Time.unscaledTime - _pulledAt < 20f && local.transform.position.y < host.y - 4f)
+        {
+            MakeFloor(host);
+            var back = host + new Vector3(1.5f, 0.5f, 0f);
+            var c = local._character;
+            if (c != null) c.Teleport(back); else local.transform.position = back;
+            _pulledAt = Time.unscaledTime;
+            return;
+        }
+        var step = host - _hostLast; step.y = 0f;
+        _hostLast = host;
+        if (step.sqrMagnitude > 30f * 30f) { _followPending = true; _hostStill = host; _hostStillSince = Time.unscaledTime; return; }
+        if (!_followPending) return;
+        var moved = host - _hostStill;
+        if (moved.sqrMagnitude > 0.3f * 0.3f) { _hostStill = host; _hostStillSince = Time.unscaledTime; return; }
+        if (Time.unscaledTime - _hostStillSince < 1f) return;
+        _followPending = false;
+        var away = local.transform.position - host; away.y = 0f;
+        if (away.sqrMagnitude < 15f * 15f) return; // already there
+        if (_groundLayer < 0) _groundLayer = GroundLayerUnder(local.transform.position);
+        var pos = host + new Vector3(1.5f, 0.5f, 0f); // a little above the floor: the character settles onto it
         var ch = local._character;
         if (ch != null) ch.Teleport(pos); else local.transform.position = pos;
-        _finaleUntil = 0f;
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: pulled into the arena next to the host ({pos}).");
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: pulled next to the host ({pos}).");
+        _pulledAt = Time.unscaledTime;
+        GroundLayerUnder(pos);
     }
     private static int _finales;
     private static bool _advancingFromHost;
@@ -164,9 +352,10 @@ public static class MasterySync
     public static void Tick(float dt)
     {
         if (NetworkManager.Role == NetRole.Client && !GameManagerUtil.HasGameManager && (_pillarCopies.Count > 0 || _clientObjectives)) ResetClient();
+        if (NetworkManager.Role == NetRole.Client) { try { FinishSceneLoad(); } catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][mastery] Scene load: {ex.Message}"); _sceneAwaited = null; } }
         if (NetworkManager.Role == NetRole.Client) { try { FollowIntoArena(); } catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][mastery] Follow: {ex.Message}"); _finaleUntil = 0f; } }
         if (NetworkManager.Role != NetRole.Host || !CoopSession.Connected || Global.SelectedGameMode != GameModes.Mastery) return;
-        if (!GameManagerUtil.HasGameManager) { _spawnerPtr = IntPtr.Zero; _sentTrigger = false; return; }
+        if (!GameManagerUtil.HasGameManager) { _spawnerPtr = IntPtr.Zero; _sentTrigger = false; _phaseTargets.Clear(); _sceneBefore = null; _scenesBefore = null; return; }
         try
         {
             var sp = Spawner();
@@ -504,6 +693,8 @@ public static class MasterySync
         foreach (var go in _pillarCopies) if (go != null) UnityEngine.Object.Destroy(go);
         _pillarCopies.Clear();
         _clientObjectives = false;
+        _scenesLoading.Clear();
+        DropFloor();
     }
 
     public static void OnMasteryEvent(NetDataReader r)
@@ -513,6 +704,14 @@ public static class MasterySync
         {
             try { ApplySceneDiff(r); }
             catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop][mastery] Client scene changes: {ex.Message}"); }
+            return;
+        }
+        if (kind == KindLoadScene)
+        {
+            string name = r.GetString();
+            if (NetworkManager.Role != NetRole.Client) return;
+            try { LoadSceneFromHost(name); }
+            catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop][mastery] Client scene '{name}': {ex.Message}"); }
             return;
         }
         if (kind == KindState)
@@ -528,10 +727,11 @@ public static class MasterySync
             {
                 // The client's own finale routine needs what only the host's boss spawn set up (it threw, then hung the
                 // game): instead the guest is pulled into the arena with the host (FollowIntoArena).
-                _finaleUntil = Time.unscaledTime + 20f;
-                _finaleFrom = HostPosition();
+                _finaleUntil = Time.unscaledTime; // active until the run's scene goes
+                _hostLast = HostPosition();
+                _followPending = false;
                 _finales++;
-                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: finale - following the host into the arena (host at {_finaleFrom}).");
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: finale - following the host into the arena (host at {_hostLast}).");
                 return;
             }
             if (kind == KindCycle)
@@ -579,6 +779,8 @@ public static class MasterySync
     internal static void AfterFinale()
     {
         if (NetworkManager.Role != NetRole.Host || !CoopSession.Connected || _finaleFromHost) return;
+        _scenesBefore = LoadedScenes();
+        try { CollectPhaseTargets(); } catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][mastery] Phase targets: {ex.Message}"); }
         try { SnapshotScene(); } catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][mastery] Scene snapshot: {ex.Message}"); }
         Send(KindFinale);
         _finales++;

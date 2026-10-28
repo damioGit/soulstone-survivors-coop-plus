@@ -111,6 +111,33 @@ public static class TestBridge
                     var all = Resources.FindObjectsOfTypeAll<StatueComponent>().Where(x => x != null).Select(x => x.gameObject.name + (x.gameObject.scene.IsValid() ? "" : "[asset]")).Distinct();
                     return $"live: {string.Join("; ", live)} || all: {string.Join(", ", all)}";
                 };
+                Commands["near"] = a =>
+                {
+                    // big renderers/colliders around a point (also inactive ones): what makes up an arena
+                    var ci = System.Globalization.CultureInfo.InvariantCulture;
+                    var at = new Vector3(float.Parse(a[0], ci), 0f, float.Parse(a[1], ci));
+                    float r = a.Length > 2 ? float.Parse(a[2], ci) : 40f;
+                    var rows = new List<string>();
+                    foreach (var rd in Resources.FindObjectsOfTypeAll<Renderer>())
+                    {
+                        if (rd == null || !rd.gameObject.scene.IsValid()) continue;
+                        var b = rd.bounds; var c = b.center; c.y = 0f;
+                        if ((c - at).magnitude > r || b.size.x < 25f || rd.transform.root.name.Contains("(Clone)") || rd.transform.root.name == "Player") continue;
+                        rows.Add($"R {rd.transform.root.name}/{rd.gameObject.name} act={rd.gameObject.activeInHierarchy} en={rd.enabled} vis={rd.isVisible} size={b.size:0} y={b.center.y:0.0}");
+                    }
+                    foreach (var co in Resources.FindObjectsOfTypeAll<Collider>())
+                    {
+                        if (co == null || co.isTrigger || !co.gameObject.scene.IsValid()) continue;
+                        var b = co.bounds; var c = b.center; c.y = 0f;
+                        if ((c - at).magnitude > r || b.size.x < 8f) continue;
+                        rows.Insert(0, $"C {co.transform.root.name}/{co.gameObject.name} act={co.gameObject.activeInHierarchy} en={co.enabled} layer={co.gameObject.layer} size={b.size:0}");
+                    }
+                    foreach (var cam in Resources.FindObjectsOfTypeAll<Camera>())
+                        if (cam != null && cam.gameObject.scene.IsValid())
+                            rows.Insert(0, $"CAM {cam.transform.root.name}/{cam.name} act={cam.gameObject.activeInHierarchy} en={cam.enabled} mask={cam.cullingMask:X} far={cam.farClipPlane:0} pos={cam.transform.position:0}");
+                    return rows.Count + " | " + string.Join(" ; ", rows.Distinct().Take(60));
+                };
+                Commands["loadscene"] = Lobby.MasterySync.TestLoadScene;
                 Commands["guestcc"] = Enemies.GuestEffects.TestApply;
                 Commands["enemycc"] = Enemies.GuestEffects.TestInspect;
                 Commands["levelup"] = _ => { var xp = GameState.LocalPlayerEntity?._experience; if (xp == null) return "no xp"; xp.LevelUpMultipleTimes(1); return "level " + xp.Level; };
