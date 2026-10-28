@@ -18,7 +18,7 @@ public static class CrusadeSync
     internal const string FinalScene = "SurvivorsFinalBoss";
     private const byte KindGo = 0, KindChoosing = 1, KindState = 2, KindBlood = 3, KindBloodReq = 4, KindOptions = 5,
         KindSuggest = 6, KindPortalReq = 7;
-    private const byte PortalChoice = 0, PortalPrimordial = 1;
+    private const byte PortalChoice = 0, PortalPrimordial = 1, PortalGoblin = 2;
 
     // ---- the guest's say: it opens the choice / takes the portals through the host, sees the titans on offer on its
     // own panel, and its press there is a proposal the host sees ----
@@ -164,6 +164,14 @@ public static class CrusadeSync
         var panel = Panel();
         if (panel != null && panel.IsOpen) return; // already choosing
         var lobby = Lobby();
+        if (which == PortalGoblin)
+        {
+            var m = Map();
+            if (m?.GoblinPortalTrigger == null || !m.GoblinPortalTrigger.activeInHierarchy) return;
+            CoopSession.Notice(Ui.Loc.Msg("nt.titan_choice_by", ("name", who)), 4f);
+            m.OnPlayerGoblinCavePortal();
+            return;
+        }
         if (which == PortalPrimordial)
         {
             if (lobby?.PrimordialPortalObject == null || !lobby.PrimordialPortalObject.activeInHierarchy) return;
@@ -481,10 +489,23 @@ public static class CrusadeSync
         Done(map.CollectVoidKingLoot);
         Kill(map.KillLastBossObjective); Kill(map.KillVoidKingSeatedObjective); Kill(map.KillVoidKingObjective); Kill(map.KillVoidKingGiantObjective);
         if (map._crusadeData != null && _hostKnown && _host.FinalKilled) map._crusadeData.HasKilledFinalBoss = true;
+        _clientWon = true;
+        MarkVictory();
         try { map.StartCoroutine(GameManagerUtil.OpenPortalAndObjective(0f)); }
         catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][crusade] Client: victory branch: {ex.Message}"); }
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][crusade] Client: the host won - objectives done, final boss {(_hostKnown && _host.FinalKilled)}, victory branch started.");
         return true;
+    }
+
+    private static bool _clientWon;
+
+    /// <summary>The end screen reads GameStats.Result: the host's victory is ours.</summary>
+    private static void MarkVictory()
+    {
+        var stats = GameManagerUtil.GameStats;
+        if (stats == null) return;
+        try { stats.Result = new Il2CppSystem.Nullable<MatchResult>(MatchResult.Victory); }
+        catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][crusade] Client: match result: {ex.Message}"); }
     }
 
     internal static bool EnterHomePortalFromHost()
@@ -500,7 +521,9 @@ public static class CrusadeSync
             // ProcessOnPlayerEnterPortal works on it.
             var data = GameManagerUtil.GameData;
             if (data != null && data.EnterPortalObjective == null) data.EnterPortalObjective = new SimpleObjective("EnterPortalObjective");
+            if (_clientWon) MarkVictory();
             map.OnPlayerEnterHomePortal();
+            if (_clientWon) MarkVictory();
             bool went = data?.EnterPortalObjective != null && data.EnterPortalObjective.Completed;
             if (!went)
             {
@@ -522,9 +545,26 @@ public static class CrusadeSync
 
     internal static void ResetForScene()
     {
+        _clientWon = false;
         _hostKnown = false;
         _sent = default;
         _stateTimer = _refreshTimer = 0f;
+    }
+
+    private static bool _lastCutscene;
+
+    /// <summary>Host: one of the map's presentations / Void King timelines is playing.</summary>
+    internal static bool CutscenePlaying()
+    {
+        if (Global.SelectedGameMode != GameModes.Crusade) return false;
+        var map = Map();
+        bool on = map != null && map._isPlayingPresentation;
+        if (on != _lastCutscene)
+        {
+            _lastCutscene = on;
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][crusade] Host: cutscene {(on ? "started - the others wait" : "over")}.");
+        }
+        return on;
     }
 
     internal static bool Active => Global.SelectedGameMode == GameModes.Crusade && CoopSession.Connected;
@@ -758,6 +798,7 @@ public static class CrusadeSync
     /// <summary>Prefix of the portals that open the titan choice: on a client only the host's choice opens it.</summary>
     internal static bool AllowOpenChoice() => AllowPortal(PortalChoice);
     internal static bool AllowPrimordial() => AllowPortal(PortalPrimordial);
+    internal static bool AllowGoblin() => AllowPortal(PortalGoblin);
 
     private static bool AllowPortal(byte which)
     {
@@ -1053,4 +1094,11 @@ public static class CrusadeRerollPatch
 {
     [HarmonyPrefix]
     public static bool Prefix() => CrusadeSync.AllowReroll();
+}
+
+[HarmonyPatch(typeof(CrusadeGameManager), nameof(CrusadeGameManager.OnPlayerGoblinCavePortal))]
+public static class CrusadeGoblinPortalPatch
+{
+    [HarmonyPrefix]
+    public static bool Prefix() => CrusadeSync.AllowGoblin();
 }

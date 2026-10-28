@@ -42,13 +42,15 @@ for k in 1 2 3 4 5; do
   case "$(bash $D A cmd crusade info)" in *lightSigil=open*) bash $D A cmd crusade goto sigil; sleep 8; info "sigil$k";; *) break;; esac
 done
 bash $D A shot f_sig >/dev/null; bash $D B shot f_sigB >/dev/null
-for k in 1 2 3 4 5 6; do
-  for i in 1 2 3 4 5; do bash $D A cmd killbosses >/dev/null; sleep 3; done
+for k in $(seq 1 25); do
+  for i in 1 2 3; do bash $D A cmd killbosses >/dev/null; sleep 3; done
   for w in A B; do bash $D $w cmd god >/dev/null; done
-  info "vk$k"; echo "bosses A: $(bash $D A cmd bosses | cut -c1-200)"
-  bash $D A shot f_vk$k >/dev/null; bash $D B shot f_vk${k}B >/dev/null
-  bash $D A cmd crusade info | grep -q "home@([^)]*) act=True" && { echo "home open"; break; }
+  grep -q "AttemptCallCredits" "$G/LogOutput.log" && { echo "credits after $k"; break; }
+  bash $D A cmd crusade info | grep -q "home@([^)]*) act=True" && { echo "home open after $k"; break; }
+  [ $((k % 5)) = 0 ] && { info "vk$k"; bash $D A shot f_vk$k >/dev/null; bash $D B shot f_vk${k}B >/dev/null; }
 done
+grep -q "AttemptCallCredits" "$G/LogOutput.log" && sleep 45
+for t in 1 2 3; do bash $D A cmd crusade goto blood >/dev/null; sleep 4; done; info crown
 bash $D A cmd crusade goto home; sleep 15; info home
 bash $D A shot f_home >/dev/null; bash $D B shot f_homeB >/dev/null
 echo "A: $(bash $D A state | cut -c1-120)"; echo "B: $(bash $D B state | cut -c1-120)"

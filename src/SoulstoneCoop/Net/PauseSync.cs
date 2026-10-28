@@ -15,6 +15,9 @@ public enum PauseReason : byte
     /// <summary>Level-up popup open on the full-screen panel without stopping the time ([Debug] LevelUpFullPanel):
     /// the others see a banner, never a freeze. The overlay sends None.</summary>
     Choosing = 3,
+    /// <summary>A cutscene plays (Titan Hunt's boss presentations, the Void King): only the host's game plays it, the
+    /// others wait with a banner.</summary>
+    Cutscene = 4,
 }
 
 /// <summary>
@@ -45,7 +48,7 @@ public static class PauseSync
     public static bool Freezes(byte slot)
     {
         if (slot >= Players.MaxSlots || (_overrideMask & (1 << slot)) != 0) return false;
-        return (Reasons[slot] == PauseReason.Pause || Reasons[slot] == PauseReason.LevelUp)
+        return (Reasons[slot] == PauseReason.Pause || Reasons[slot] == PauseReason.LevelUp || Reasons[slot] == PauseReason.Cutscene)
             && NetworkManager.HasPeer && Lobby.CoopSession.LocalInRun && Lobby.CoopSession.InRun(slot);
     }
 
@@ -188,6 +191,7 @@ public static class PauseSync
         LocalReason = TimeUtil.PauseTime < 0.001f && !infoPanel ? PauseReason.Pause
                     : levelUpPopup && noPause && !overlay ? PauseReason.Choosing // debug full panel: banner only
                     : levelUpPopup && !noPause && NetworkManager.HasPeer && Lobby.CoopSession.LocalInRun ? PauseReason.LevelUp // everyone waits
+                    : NetworkManager.Role == NetRole.Host && NetworkManager.HasPeer && Lobby.CoopSession.LocalInRun && Lobby.CrusadeSync.CutscenePlaying() ? PauseReason.Cutscene
                     : PauseReason.None;
         LevelUpPolicy.DebugHotkey();
 
