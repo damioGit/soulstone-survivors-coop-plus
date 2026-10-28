@@ -156,6 +156,8 @@ public static class PortalSync
     {
         var sgm = GameManagerUtil.GameData?.SurvivorsGameManager;
         if (sgm != null) { sgm.OnPlayerEnterPortal(); return true; }
+        var crusade = CrusadeSync.Map();
+        if (crusade != null) { crusade.OnPlayerEnterHomePortal(); return true; }
         var room = BossRoom();
         if (room == null) return false;
         room.OnPlayerEnterPortal();

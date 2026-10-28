@@ -32,6 +32,8 @@ case "${1:-}" in
     cp src/SoulstoneCoop/bin/Release/net6.0/SoulstoneCoop.dll "$G/BepInEx/plugins/SoulstoneCoop/" || exit 1
     rm -f "$USERPROFILE/.soulstone-uitest"
     echo 2066020 > "$G/steam_appid.txt"
+    # silent tests: master volume 0 (duo.sh stop restores the registry from the backup)
+    reg add "HKCU\Software\Game Smithing\Soulstone Survivors" //v masterVolume_h3359004273 //t REG_DWORD //d 0 //f >/dev/null
     W="-screen-fullscreen 0 -screen-width 1280 -screen-height 720"
     cd "$G"
     for attempt in 1 2 3; do

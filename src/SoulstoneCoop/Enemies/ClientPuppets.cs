@@ -595,7 +595,7 @@ public static class ClientPuppets
             var list = GameManagerUtil.BossEntities;
             // Mastery: the host's boss gets its bar only once it wakes up (the main boss waits in the ritual), so
             // its puppet's bar follows the host's list (MasterySync state -> ReconcileBossBars).
-            bool masteryBoss = inst._basicAI != null && inst._basicAI.TryCast<MasteryBossComponent>() != null;
+            bool masteryBoss = Global.SelectedGameMode == GameModes.Mastery && inst._basicAI != null && inst._basicAI.TryCast<MasteryBossComponent>() != null;
             if (!masteryBoss && list != null && !list.Contains(inst)) GameManagerUtil.RegisterBossEntity(inst);
             list = GameManagerUtil.BossEntities;
             p.BossRegistered = list != null && list.Contains(inst);

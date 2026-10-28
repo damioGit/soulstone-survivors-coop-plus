@@ -27,6 +27,9 @@ public static class RunSync
         public int MasteryLevel;
         public bool HasAffixes;              // Survivors: override the client's affixes with List
         public List<string> Affixes = new();
+        public SigilDifficultyTierType CrusadeTier; // Titan Hunt: the host's sigil, endless level, final map
+        public int CrusadeLevel;
+        public bool CrusadeFinal;
     }
 
     private static RunParams? _clientRun;      // client: the host's run we're loading into (affix override)
@@ -47,11 +50,6 @@ public static class RunSync
         }
         if (role == NetRole.Host && CoopSession.Connected)
         {
-            if (mode == GameModes.Crusade)
-            {
-                CoopSession.Notice(Ui.Loc.Msg("nt.crusade"));
-                return false;
-            }
             var away = CoopSession.NamesWhere(r => r.Place != LobbyPlace.Menu);
             if (away.Length > 0)
             {
@@ -122,6 +120,9 @@ public static class RunSync
             MasteryTier = _hostRun.MasteryTier,
             MasteryLevel = _hostRun.MasteryLevel,
             HasAffixes = _hostRun.HasAffixes,
+            CrusadeTier = Global.CrusadeDifficultyTier,
+            CrusadeLevel = Global.CrusadeDynamicLevel,
+            CrusadeFinal = Global.CrusadeIsFinalBossMap,
         };
         p.Affixes.AddRange(_hostRun.Affixes);
         _hostRun = p;
@@ -155,6 +156,9 @@ public static class RunSync
             Mode = Global.SelectedGameMode,
             MasteryTier = Global.MasteryDifficultyTier,
             MasteryLevel = Global.MasteryDynamicLevel,
+            CrusadeTier = Global.CrusadeDifficultyTier,
+            CrusadeLevel = Global.CrusadeDynamicLevel,
+            CrusadeFinal = Global.CrusadeIsFinalBossMap,
         };
         if (p.Mode == GameModes.Survivor)
         {
@@ -175,6 +179,9 @@ public static class RunSync
         w.Put(p.HasAffixes);
         w.Put((ushort)p.Affixes.Count);
         foreach (var a in p.Affixes) w.Put(a);
+        w.Put((int)p.CrusadeTier);
+        w.Put(p.CrusadeLevel);
+        w.Put(p.CrusadeFinal);
     }
 
     private static RunParams ReadParams(NetDataReader r)
@@ -189,11 +196,14 @@ public static class RunSync
         };
         int n = r.GetUShort();
         for (int i = 0; i < n; i++) p.Affixes.Add(r.GetString());
+        p.CrusadeTier = (SigilDifficultyTierType)r.GetInt();
+        p.CrusadeLevel = r.GetInt();
+        p.CrusadeFinal = r.GetBool();
         return p;
     }
 
     private static string Describe(RunParams p) =>
-        $"scene={p.Scene} mode={p.Mode} mastery={p.MasteryTier}/{p.MasteryLevel} affixes=[{string.Join(",", p.Affixes)}]";
+        $"scene={p.Scene} mode={p.Mode} mastery={p.MasteryTier}/{p.MasteryLevel} crusade={p.CrusadeTier}/{p.CrusadeLevel}{(p.CrusadeFinal ? "/final" : "")} affixes=[{string.Join(",", p.Affixes)}]";
 
     // =====================================================================================
     // Client: follow the host
@@ -252,7 +262,7 @@ public static class RunSync
     {
         var maps = Global.MapCollection;
         if (maps != null && maps.GetMapById(p.Scene) == null && p.Mode == GameModes.Survivor) return Ui.Loc.Msg("why.no_map", ("map", p.Scene));
-        if (!Application.CanStreamedLevelBeLoaded(p.Scene)) return Ui.Loc.Msg("why.no_scene", ("map", p.Scene));
+        if (p.Mode != GameModes.Crusade && !Application.CanStreamedLevelBeLoaded(p.Scene)) return Ui.Loc.Msg("why.no_scene", ("map", p.Scene));
         return null;
     }
 
@@ -262,6 +272,9 @@ public static class RunSync
         Global.SelectedGameMode = p.Mode;
         Global.MasteryDifficultyTier = p.MasteryTier;
         Global.MasteryDynamicLevel = p.MasteryLevel;
+        Global.CrusadeDifficultyTier = p.CrusadeTier;
+        Global.CrusadeDynamicLevel = p.CrusadeLevel;
+        Global.CrusadeIsFinalBossMap = p.CrusadeFinal;
         _clientRun = p;
 
         // Issue #3: the game builds AffixGameplayData from the profile's list (null when the map's affixes are off)
@@ -584,6 +597,14 @@ public static class CrusadeFightPatch
         try { if (!RunSync.AllowFight(GameModes.Crusade)) { __result = false; return false; } }
         catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] CrusadeFightPatch.Prefix: {ex}"); }
         return true;
+    }
+
+    [HarmonyPostfix]
+    public static void Postfix(bool __result)
+    {
+        if (!__result) return;
+        try { RunSync.AfterHostFight(CrusadeSync.LobbyScene); }
+        catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] CrusadeFightPatch.Postfix: {ex}"); }
     }
 }
 

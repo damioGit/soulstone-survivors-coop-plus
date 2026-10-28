@@ -57,7 +57,7 @@ public static class MasterySync
         if (LoadedScenes().Contains(name) || !_scenesLoading.Add(name)) return;
         _loadingBefore = LoadingScreenManager._loadingRequests;
         // the game's own loader, as ChangeSceneAction uses (the type isn't public in the interop assembly)
-        var m = HarmonyLib.AccessTools.Method(HarmonyLib.AccessTools.TypeByName("SceneCommands"), "LoadSceneAsync",
+        var m = HarmonyLib.AccessTools.Method(typeof(CrusadeGameManager).Assembly.GetType("SceneCommands"), "LoadSceneAsync",
             new[] { typeof(string), typeof(UnityEngine.SceneManagement.LoadSceneMode) });
         if (m == null) { Plugin.StaticLog.LogWarning("[SoulstoneCoop][mastery] Client: no SceneCommands.LoadSceneAsync."); return; }
         m.Invoke(null, new object[] { name, UnityEngine.SceneManagement.LoadSceneMode.Additive });

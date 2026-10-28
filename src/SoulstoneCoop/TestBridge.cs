@@ -25,9 +25,28 @@ public static class TestBridge
 
     public static bool Enabled => Plugin.TestArg != null;
 
+    private static bool _god;
+    private static float _godTimer;
+
+    /// <summary>Test "god": invulnerable and topped up, every scene (some hits ignore InvulnerabilityTime).</summary>
+    private static void TickGod(float dt)
+    {
+        if (!_god) return;
+        _godTimer -= dt;
+        if (_godTimer > 0f) return;
+        _godTimer = 0.3f;
+        var local = GameState.LocalPlayerEntity;
+        var h = local?._health;
+        if (local == null || h == null || h.HasBeenKilled) return;
+        h.InvulnerabilityTime = 100000f;
+        float max = local._stats != null ? local._stats.GetMaxHealth() : h.CurrentHealth;
+        if (h.CurrentHealth < max * 0.6f) UnitUtil.ChangeEntityHealth(local, local, max - h.CurrentHealth, false, out _, out _, out _);
+    }
+
     public static void Tick(float dt)
     {
         if (Plugin.TestArg == null) return;
+        try { TickGod(dt); } catch { _godTimer = 5f; }
         try
         {
             if (_dir == null)
@@ -138,6 +157,7 @@ public static class TestBridge
                     return rows.Count + " | " + string.Join(" ; ", rows.Distinct().Take(60));
                 };
                 Commands["loadscene"] = Lobby.MasterySync.TestLoadScene;
+                Commands["crusade"] = Lobby.CrusadeSync.Test;
                 Commands["guestcc"] = Enemies.GuestEffects.TestApply;
                 Commands["enemycc"] = Enemies.GuestEffects.TestInspect;
                 Commands["levelup"] = _ => { var xp = GameState.LocalPlayerEntity?._experience; if (xp == null) return "no xp"; xp.LevelUpMultipleTimes(1); return "level " + xp.Level; };
@@ -148,7 +168,7 @@ public static class TestBridge
                     Ui.LevelUpOverlay.Pick(panel, a.Length > 0 && int.TryParse(a[0], out var n) ? n : 0);
                     return "picked";
                 };
-                Commands["god"] = _ => { var h = GameState.LocalPlayerEntity?._health; if (h == null) return "no health"; h.InvulnerabilityTime = 100000f; return "invulnerable"; };
+                Commands["god"] = _ => { _god = true; var h = GameState.LocalPlayerEntity?._health; if (h == null) return "no health (kept on)"; h.InvulnerabilityTime = 100000f; return "invulnerable"; };
                 Commands["panel"] = a => { Ui.CoopUi.TestOpen(a.Length == 0 || a[0] != "off"); return "panel toggled"; };
                 Commands["speeds"] = _ => PlayerSync.TestSpeeds();
                 StateProviders["affix"] = () => RunSync.LastRunAffixes.Replace(' ', ',');
@@ -162,7 +182,9 @@ public static class TestBridge
             _poll = 0.2f;
             var req = Path.Combine(_dir, "request.txt");
             if (!File.Exists(req)) return;
-            string line = File.ReadAllText(req).Trim();
+            string line;
+            try { line = File.ReadAllText(req).Trim(); }
+            catch (IOException) { return; } // still being written: next poll
             File.Delete(req);
             string reply;
             try { reply = Run(line); }
@@ -188,7 +210,7 @@ public static class TestBridge
             case "state": return State();
             case "play": return PressPlay();
             case "fight":
-                _fightMode = parts.Length > 1 && parts[1] == "mastery" ? GameModes.Mastery : GameModes.Survivor;
+                _fightMode = parts.Length > 1 && parts[1] == "mastery" ? GameModes.Mastery : parts.Length > 1 && parts[1] == "crusade" ? GameModes.Crusade : GameModes.Survivor;
                 _fightStep = 1;
                 _fightTimer = 0f;
                 return "fight started";

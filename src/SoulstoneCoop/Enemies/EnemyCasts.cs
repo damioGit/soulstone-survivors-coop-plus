@@ -201,8 +201,11 @@ public static class EnemyCasts
                 float until = Time.time + ChannelReplaySeconds;
                 p.IsBeingChanneled = (Func<bool>)(() => Time.time < until);
             }
-            if ((flags & CastMessage.FFrontFunc) != 0) p.GetTargetFrontPosition = (Func<Skill, Vector3>)(_ => frontPoint);
-            if ((flags & CastMessage.FGroundFunc) != 0) p.GetTargetFrontPositionGround = (Func<Skill, Vector3>)(_ => groundPoint);
+            // A charged attack's telegraph (SkillChargingTimeTraitLineArea, ...) asks for the aim point: always give one.
+            bool charging = skill.ChargingTrait != null;
+            if ((flags & CastMessage.FFrontFunc) != 0 || charging) p.GetTargetFrontPosition = (Func<Skill, Vector3>)(_ => frontPoint);
+            if ((flags & CastMessage.FGroundFunc) != 0 || charging) p.GetTargetFrontPositionGround = (Func<Skill, Vector3>)(_ => groundPoint);
+            if (charging && (flags & CastMessage.FFront) == 0) ActivationParamsRaw.SetVector(p, ActivationParamsRaw.TargetFrontPosition, frontPoint);
 
             // IgnoreAll: no cooldown / busy / combat checks, no procs or extra multicasts.
             bool ok = caster.CastSkill(skill, p, SkillActivationOptions.IgnoreAll);

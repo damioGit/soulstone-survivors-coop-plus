@@ -647,6 +647,13 @@ public static class CoopLife
         var data = GameManagerUtil.GameData;
         var sgm = data != null ? data.SurvivorsGameManager : null;
         var obj = sgm != null ? sgm.MainObjective : null;
+        if (Global.SelectedGameMode == GameModes.Crusade)
+        {
+            // Titan Hunt: the sigil is lit on the host; its exit portals open here with the titan blood
+            // (CrusadeSync), and the Home portal is mirrored like on the other maps.
+            if (!Lobby.CrusadeSync.ClientVictory()) Plugin.StaticLog.LogWarning("[SoulstoneCoop][life] Victory (Titan Hunt): no map manager here.");
+            return;
+        }
         if (obj == null && CompleteMasteryObjectives()) return;
         if (obj == null)
         {
@@ -699,6 +706,7 @@ public static class CoopLife
     {
         var data = GameManagerUtil.GameData;
         if (data == null) return;
+        if (Lobby.CrusadeSync.EnterHomePortalFromHost()) { _pendingPortalTimer = 0f; return; }
         var obj = data.EnterPortalObjective;
         if (obj == null)
         {
@@ -747,6 +755,8 @@ public static class CoopLife
     internal static void OnHostVictory()
     {
         if (!Connected || !InMatch || RunEnding) return;
+        // Titan Hunt: every map opens its exit portal this way (after the titan blood); only the final map's is the end.
+        if (Global.SelectedGameMode == GameModes.Crusade && !Global.CrusadeIsFinalBossMap) return;
         ReviveDownedClients();
         EndRun(EndKind.Victory);
     }
@@ -1150,6 +1160,18 @@ public static class CoopLifeHomePortalPatch
     {
         try { if (!CoopLife.FromNetwork) CoopLife.OnLocalPortalEntered(); }
         catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] CoopLifeHomePortalPatch: {ex}"); }
+    }
+}
+
+/// <summary>Titan Hunt's Home portal (back to the fortress, the run's end).</summary>
+[HarmonyPatch(typeof(CrusadeGameManager), nameof(CrusadeGameManager.OnPlayerEnterHomePortal))]
+public static class CoopLifeCrusadeHomePortalPatch
+{
+    [HarmonyPrefix]
+    public static void Prefix()
+    {
+        try { if (!CoopLife.FromNetwork) CoopLife.OnLocalPortalEntered(); }
+        catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] CoopLifeCrusadeHomePortalPatch: {ex}"); }
     }
 }
 

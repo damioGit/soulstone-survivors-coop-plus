@@ -58,6 +58,7 @@ public enum PacketType : byte
     StatueSync = 125,  // host -> clients: a boss statue went up (id, prefab name, pos, yaw) or came down (id) (ReliableOrdered)
     TaskStage = 126,   // host -> clients: map task id u16 | stage u8 (triggered / completed / failed) (ReliableOrdered)
     MasteryEvent = 127, // host -> clients: a Mastery event (the portal fired, ...) the clients replay (ReliableOrdered)
+    CrusadeEvent = 128, // Titan Hunt: map choice, shared progress (keys, door, blood), portals (ReliableOrdered)
     ChestState = 122,  // host -> clients: chest id u16 | interaction % u8 | opened bool (ReliableOrdered, after its spawn)
 }
 
@@ -187,6 +188,9 @@ public static class PacketRouter
                 break;
             case PacketType.ChestSpawn:
                 Loot.ChestSync.OnChestSpawn(reader);
+                break;
+            case PacketType.CrusadeEvent:
+                Lobby.CrusadeSync.OnEvent(reader, From);
                 break;
             case PacketType.MasteryEvent:
                 Lobby.MasterySync.OnMasteryEvent(reader);
