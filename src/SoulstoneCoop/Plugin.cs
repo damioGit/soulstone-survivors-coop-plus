@@ -12,7 +12,7 @@ public class Plugin : BasePlugin
     public const string PluginGuid = "com.kolber.soulstonecoop";
     public const string PluginName = "Soulstone Coop";
     // Checked in the connection handshake (phase 6): host and client must match exactly.
-    public const string PluginVersion = "0.10.0";
+    public const string PluginVersion = "0.11.0";
 
     internal static ManualLogSource StaticLog = null!;
     internal static BepInEx.Configuration.ConfigEntry<bool> AutoHost = null!;
@@ -37,6 +37,7 @@ public class Plugin : BasePlugin
         Log.LogInfo($"{PluginName} {PluginVersion} loading...");
         Net.LevelUpPolicy.Bind(Config);
         Ui.PartyHud.Bind(Config); // party panel (the author's 1.1.0)
+        Ui.CameraZoom.Bind(Config);
         Ui.Loc.Init(Config); // docs/i18n-notas.md
 
         AutoHost = Config.Bind("Debug", "AutoHost", false,
@@ -70,10 +71,17 @@ public class Plugin : BasePlugin
         ReplicaCastRadius = Config.Bind("Coop", "ReplicaCastRadius", 60f,
             "Spells of the other players are only replayed (visual only) when they are within this distance of you; farther ones are off screen anyway. " +
             "Saves the effects of 7 builds on every PC. 0 = always replay.");
-        EnemyHealthBonus = Config.Bind("Coop", "EnemyHealthBonus", 50f, new BepInEx.Configuration.ConfigDescription(
-            "Host: extra health of every enemy, in percent, for each additional player in the run (two players deal about " +
-            "twice the damage). 50 = +50 % with 2 players, +100 % with 3. Try 100 for harder runs; 0 = the game's own health.",
+        EnemyHealthBonus = Config.Bind("Coop", "EnemyHealthBonus", 100f, new BepInEx.Configuration.ConfigDescription(
+            "Host: extra health of every enemy, in percent, for each additional player in the run. " +
+            "100 = +100 % with 2 players, +200 % with 3. 0 = the game's own health.",
             new BepInEx.Configuration.AcceptableValueRange<float>(0f, 300f)));
+        // 0.11.0 raised the default from 50 to 100 (enemies were too easy in co-op): lower values move up once.
+        var settingsRevision = Config.Bind("Internal", "SettingsRevision", 0, "Do not edit: tracks one-time updates of old defaults.");
+        if (settingsRevision.Value < 1)
+        {
+            if (EnemyHealthBonus.Value < 100f) EnemyHealthBonus.Value = 100f;
+            settingsRevision.Value = 1;
+        }
         DashDodge = Config.Bind("Coop", "DashDodge", true,
             "Guests: a hit the host computes while you are dashing (or right after, within your ping) is dodged, like the dash dodge when playing alone.");
         _simLatency = simLatency.Value;

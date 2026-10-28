@@ -172,6 +172,95 @@ public static class TestBridge
                 Commands["guestcc"] = Enemies.GuestEffects.TestApply;
                 Commands["enemycc"] = Enemies.GuestEffects.TestInspect;
                 Commands["levelup"] = _ => { var xp = GameState.LocalPlayerEntity?._experience; if (xp == null) return "no xp"; xp.LevelUpMultipleTimes(1); return "level " + xp.Level; };
+                Commands["healpath"] = _ => GameManagerHealingCrystalSpawnComponent.PrefabPath ?? "-";
+                // Host: "forcecast Slayer Bladestorm 5" casts that enemy's skill at us, channeled for 5 s.
+                Commands["forcecast"] = a =>
+                {
+                    if (a.Length < 2) return "usage: forcecast ENTITY_PART SKILL_PART [SECONDS]";
+                    float secs = a.Length > 2 && float.TryParse(a[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var f) ? f : 5f;
+                    foreach (var e in UnityEngine.Object.FindObjectsOfType<Entity>())
+                    {
+                        if (e == null || e.gameObject.name.IndexOf(a[0], StringComparison.OrdinalIgnoreCase) < 0 || e._skillCaster == null) continue;
+                        foreach (var s in e.GetComponentsInChildren<Skill>(true))
+                        {
+                            if (s == null || s.gameObject.name.IndexOf(a[1], StringComparison.OrdinalIgnoreCase) < 0) continue;
+                            float until = Time.time + secs;
+                            var p = new SkillActivationParameters { TargetEntity = GameState.LocalPlayerEntity };
+                            p.IsBeingChanneled = (Il2CppSystem.Func<bool>)(() => Time.time < until);
+                            var me = GameState.LocalPlayerEntity;
+                            Vector3 aim = me != null ? me.transform.position : e.transform.position;
+                            p.GetTargetFrontPosition = (Il2CppSystem.Func<Skill, Vector3>)(_ => aim);
+                            p.GetTargetFrontPositionGround = (Il2CppSystem.Func<Skill, Vector3>)(_ => aim);
+                            Skills.ActivationParamsRaw.SetVector(p, Skills.ActivationParamsRaw.TargetFrontPosition, aim);
+                            bool ok = e._skillCaster.CastSkill(s, p, SkillActivationOptions.IgnoreAll);
+                            return $"cast {s.gameObject.name} by {e.gameObject.name}: {ok}";
+                        }
+                    }
+                    return "not found";
+                };
+                Commands["find"] = a =>
+                {
+                    if (a.Length == 0) return "usage: find NAME_PART";
+                    var hits = new List<string>();
+                    foreach (var e in UnityEngine.Object.FindObjectsOfType<Entity>())
+                        if (e != null && e.gameObject.name.IndexOf(a[0], StringComparison.OrdinalIgnoreCase) >= 0)
+                            hits.Add($"{e.gameObject.name}@{e.transform.position:0} team={(e._team != null ? e._team.Team.ToString() : "-")} setup={e.HasBeenSetUp} tracked={Enemies.HostEnemySync.TryGetNetId(e, out var id)}#{id} icon={(e._health != null ? e._health.MinimapIconId : -9)} ignore={(e._health != null && e._health.IgnoreMinimapTracking)}");
+                    return hits.Count + ": " + string.Join(" | ", hits.Take(8));
+                };
+                Commands["mmicons"] = _ =>
+                {
+                    var items = MinimapManager._items;
+                    if (items == null) return "no items";
+                    var arr = items._elements;
+                    int n = Mathf.Min(items.Count, arr != null ? arr.Length : 0);
+                    var counts = new System.Collections.Generic.Dictionary<string, int>();
+                    for (int i = 0; i < n; i++)
+                    {
+                        var it = arr![i];
+                        if (it == null || it.State != MinimapItemState.Active) continue;
+                        string k = it.Type + ":" + (it.TransformToFollow != null ? it.TransformToFollow.name : "-");
+                        counts[k] = counts.TryGetValue(k, out var c) ? c + 1 : 1;
+                    }
+                    return string.Join(" | ", counts.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key} x{kv.Value}"));
+                };
+                // Host: "spawn Bosses/Slayer" puts that prefab 6 m from the first guest (or from us).
+                Commands["spawn"] = a =>
+                {
+                    if (a.Length == 0) return "usage: spawn RESOURCE_PATH";
+                    var at = GameState.LocalPlayerEntity != null ? GameState.LocalPlayerEntity.transform.position : Vector3.zero;
+                    foreach (var r in CoopSession.Remotes) if (r.Ghost != null) { at = r.Ghost.transform.position; break; }
+                    var e = Enemies.SpecialsDebug.SpawnManual(a[0], at + new Vector3(6f, 0f, 0f), false);
+                    return "spawned " + e.gameObject.name;
+                };
+                Commands["xpmult"] = _ => Loot.LootSync.MultiplierInfo();
+                // A pickup the game's way (through the shared pool); "xpmod V" adds V to our ExperienceModifier stat.
+                Commands["pickup"] = a =>
+                {
+                    var xp = GameState.LocalPlayerEntity?._experience;
+                    if (xp == null || a.Length == 0 || !float.TryParse(a[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var n)) return "usage: pickup N";
+                    xp.AddExperience(n);
+                    return $"lv={xp._level} exp={xp._experience:F1} toAdd={xp._experienceToAdd:F1}";
+                };
+                Commands["xpmod"] = a =>
+                {
+                    var st = GameState.LocalPlayerEntity?._stats?.Stats;
+                    if (st == null) return "no stats";
+                    if (a.Length > 0 && float.TryParse(a[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v)) st.ExperienceModifier += v;
+                    return $"ExperienceModifier={st.ExperienceModifier:F3}";
+                };
+                Commands["xp"] = a =>
+                {
+                    var xp = GameState.LocalPlayerEntity?._experience;
+                    if (xp == null) return "no xp";
+                    string S() => $"lv={xp._level} exp={xp._experience:F1} toAdd={xp._experienceToAdd:F1} req={xp._requiredExperience:F1} hidden={xp.HiddenExperienceMultiplier:F2} disc={xp._endlessExperienceDiscount:F2}";
+                    string before = S();
+                    if (a.Length > 0 && float.TryParse(a[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var n))
+                    {
+                        Loot.LootSync.ApplyingSharedXp = true;
+                        try { xp.AddExperience(n); } finally { Loot.LootSync.ApplyingSharedXp = false; }
+                    }
+                    return before + " -> " + S();
+                };
                 Commands["pick"] = a =>
                 {
                     var panel = GameManagerUtil.GameplayUIManager?.LevelUpPanel;

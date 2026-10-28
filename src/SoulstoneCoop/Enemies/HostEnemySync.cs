@@ -102,14 +102,15 @@ public static class HostEnemySync
     {
         if (e == null || e.IsPlayer()) return false;
         var team = e._team;
-        if (team == null || ((int)team.Team & 3) != 0) return false; // Players | Summons
+        // Ores (CommonCopper-Ore...) have no team component at all: 0.11.0 tracks them too (guests had no ores).
+        if (team != null && ((int)team.Team & 3) != 0) return false; // Players | Summons
         if (e.EntityName == "EntityNameGod" || e == GameManagerUtil.GameData?.GodEntity) return false;
         string key = EnemyPrefabKeys.HostKeyFor(e, null);
         bool ok = key.StartsWith(EnemyPrefabKeys.ResPrefix + "Minerals/", StringComparison.OrdinalIgnoreCase)
                || key.StartsWith(EnemyPrefabKeys.ResPrefix + "Pillars/", StringComparison.OrdinalIgnoreCase);
         string name = EnemyPrefabKeys.StripClone(e.gameObject.name);
         if (LoggedUntracked.Add(name))
-            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][enemies] Host: non-enemy-team entity '{name}' team={team.Team} key={key} -> {(ok ? "tracked" : "not tracked")}");
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][enemies] Host: non-enemy-team entity '{name}' team={(team != null ? team.Team.ToString() : "none")} key={key} -> {(ok ? "tracked" : "not tracked")}");
         return ok;
     }
 

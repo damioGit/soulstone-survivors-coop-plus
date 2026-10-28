@@ -14,8 +14,8 @@ namespace SoulstoneCoop.Loot;
 /// multipliers, and its player collects them (XpDropper and the collectables use PlayerEntities[0] = local).
 /// ProcessLoot already hands items/prestige/minor soulstones to every Players-team entity, so "each player gets
 /// their own" is the game's native N-player behaviour. See docs/fase4b-investigacao.md.
-/// XP is the exception (team XP): each drop's orbs exist in ONE world - the nearest living player's - and every
-/// AddExperience of the local player is shared with the partner (XpShare = 17). See docs/fase4b-notas.md.
+/// XP is the exception (team XP): each drop's orbs exist in ONE world - the nearest living player's - and since
+/// 0.11.0 all XP goes through one pool on the host (XpShare raw in, XpGain out), so everyone levels together.
 /// </summary>
 public static class LootSync
 {
@@ -175,63 +175,162 @@ public static class LootSync
         return best;
     }
 
-    // ---------------- both: shared XP ----------------
+    // ---------------- both: shared XP (0.11.0: one pool, the team's XP bonus) ----------------
+    //
+    // Every player levels at the same moment: one pool, kept by the host. Whoever collects XP (orbs, projectiles:
+    // AddExperience is the single funnel) lets the game add it as usual, measures what its own XP bonus made of it
+    // (the multiplier), takes it back and sends the raw amount to the host (XpShare). The host turns each raw
+    // amount into raw x the team multiplier - the average of every player's own multiplier, so each player's
+    // bonus counts 1/N (2 players: half, 4: a quarter) - and adds that same amount to everyone (itself and XpGain).
+    // A downed or dead player holds what reaches it until it revives (the level-up popup would freeze the group).
 
     private const float ShareFlushInterval = 0.1f;
+    private const float MultiplierSendInterval = 1f;
 
-    /// <summary>Set while we add the partner's collected XP, so it isn't echoed back.</summary>
+    /// <summary>Set while we add XP ourselves (tests), so it isn't taken back and shared again.</summary>
     internal static bool ApplyingSharedXp;
 
-    private static float _shareOut, _shareIn, _shareFlushTimer;
+    private static float _shareOut, _shareIn, _shareFlushTimer, _gainOut;
     private static int _sharePackets, _shareRecvPackets;
     private static double _shareSentSum, _shareRecvSum;
     private static long _xpToClient, _xpKeptHost;
     private static int _dropsToClient, _dropsKept;
     private static double _shareAppliedSum, _shareDiscardedSum;
 
-    /// <summary>ExperienceComponent.AddExperience prefix (the single funnel of XP collection: orbs in both XpDropper
-    /// modes, ExperienceProjectile). Raw amount, before the collector's XP stat: the partner applies its own.
-    /// Returns false (skip the original) for XP our own DOWNED player picks up (phase 4A): it still goes to the
-    /// partner, and is held for us like the partner's shared XP (applied on revive, no echo).</summary>
+    // The XP multiplier: ours (measured on our pickups), the others' (host: from XpMultiplier).
+    private static float _ownMultiplier = 1f, _sentMultiplier = -1f, _multiplierTimer;
+    private static readonly Dictionary<byte, float> Multipliers = new();
+    private static float _pickupBefore;
+    private static ExperienceComponent? _pickupComp;
+
+    /// <summary>ExperienceComponent.AddExperience prefix. Our own player's pickup in co-op: the original runs (its
+    /// usual side effects, and the multiplier to measure) and the postfix takes the amount back.</summary>
     internal static bool OnLocalAddExperience(ExperienceComponent comp, float amount)
     {
+        _pickupComp = null;
         if (ApplyingSharedXp || amount <= 0f || !NetworkManager.HasPeer) return true;
         var local = GameState.LocalPlayerEntity;
         if (local == null || comp.Entity == null || comp.Entity.Pointer != local.Pointer) return true;
         _shareOut += amount;
-        if (!Life.CoopLife.LocalDowned) return true;
-        _shareIn += amount;
-        _ownHeldWhileDown += amount;
-        return false;
+        if (Life.CoopLife.LocalDowned) { _ownHeldWhileDown += amount; return false; }
+        _pickupComp = comp;
+        _pickupBefore = comp._experienceToAdd;
+        return true;
+    }
+
+    /// <summary>Postfix: what the game added is our multiplier x amount; it comes back through the pool.</summary>
+    internal static void AfterLocalAddExperience(ExperienceComponent comp, float amount)
+    {
+        if (_pickupComp == null || comp.Pointer != _pickupComp.Pointer) return;
+        _pickupComp = null;
+        float added = comp._experienceToAdd - _pickupBefore;
+        comp._experienceToAdd = _pickupBefore;
+        if (added > 0f && amount > 0f) _ownMultiplier = added / amount;
     }
 
     private static double _ownHeldWhileDown;
 
+    /// <summary>The team multiplier: the average of the multipliers of the players in the run.</summary>
+    private static float TeamMultiplier()
+    {
+        float sum = _ownMultiplier;
+        int n = 1;
+        foreach (var r in Lobby.CoopSession.Remotes)
+        {
+            if (!r.InRun && !r.ChangingScene) continue;
+            sum += Multipliers.TryGetValue(r.Slot, out var m) ? m : 1f;
+            n++;
+        }
+        return sum / n;
+    }
+
     private static void FlushShare(float unscaledDeltaTime)
     {
+        _multiplierTimer += unscaledDeltaTime;
+        if (_multiplierTimer >= MultiplierSendInterval)
+        {
+            _multiplierTimer = 0f;
+            if (CoopRole.IsClientSide && NetworkManager.HasPeer && Mathf.Abs(_ownMultiplier - _sentMultiplier) > 0.001f)
+            {
+                var mw = new NetDataWriter();
+                mw.Put((byte)PacketType.XpMultiplier);
+                mw.Put(_ownMultiplier);
+                NetworkManager.Send(mw, DeliveryMethod.ReliableOrdered);
+                _sentMultiplier = _ownMultiplier;
+            }
+        }
+
         _shareFlushTimer += unscaledDeltaTime;
         if (_shareFlushTimer < ShareFlushInterval) return;
         _shareFlushTimer = 0f;
-        if (_shareOut <= 0f) return;
-        if (!NetworkManager.HasPeer) { _shareOut = 0f; return; }
-        var w = new NetDataWriter();
-        w.Put((byte)PacketType.XpShare);
-        w.Put(_shareOut);
-        NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
-        _sharePackets++;
-        _shareSentSum += _shareOut;
-        _shareOut = 0f;
+        if (!NetworkManager.HasPeer) { _shareOut = 0f; _gainOut = 0f; return; }
+        if (_shareOut > 0f)
+        {
+            if (CoopRole.IsHostSide) HostAddRaw(_shareOut);
+            else
+            {
+                var w = new NetDataWriter();
+                w.Put((byte)PacketType.XpShare);
+                w.Put(_shareOut);
+                NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
+            }
+            _sharePackets++;
+            _shareSentSum += _shareOut;
+            _shareOut = 0f;
+        }
+        if (_gainOut > 0f && CoopRole.IsHostSide)
+        {
+            var w = new NetDataWriter();
+            w.Put((byte)PacketType.XpGain);
+            w.Put(_gainOut);
+            NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
+            _gainOut = 0f;
+        }
     }
 
-    /// <summary>Layout: type u8 | amount f32 (raw XP the partner collected since the last packet).</summary>
+    /// <summary>Host: raw XP someone collected becomes the same gain for everyone.</summary>
+    private static void HostAddRaw(float raw)
+    {
+        float gain = raw * TeamMultiplier();
+        _shareIn += gain;
+        _gainOut += gain;
+        ApplyShareIn();
+    }
+
+    /// <summary>Host, layout: type u8 | amount f32 (raw XP the sender collected since its last packet).</summary>
     public static void OnXpShare(NetDataReader r)
     {
         float amount = r.GetFloat();
-        if (amount <= 0f) return;
+        if (amount <= 0f || !CoopRole.IsHostSide) return;
+        _shareRecvPackets++;
+        _shareRecvSum += amount;
+        HostAddRaw(amount);
+    }
+
+    /// <summary>Client, layout: type u8 | amount f32 (the pool's gain, the team bonus already in).</summary>
+    public static void OnXpGain(NetDataReader r)
+    {
+        float amount = r.GetFloat();
+        if (amount <= 0f || !CoopRole.IsClientSide) return;
         _shareRecvPackets++;
         _shareRecvSum += amount;
         _shareIn += amount;
         ApplyShareIn();
+    }
+
+    /// <summary>Host, layout: type u8 | multiplier f32 (the sender's own XP multiplier).</summary>
+    public static void OnXpMultiplier(NetDataReader r)
+    {
+        float m = r.GetFloat();
+        if (!CoopRole.IsHostSide || m <= 0f || m > 100f) return;
+        Multipliers[PacketRouter.From] = m;
+    }
+
+    internal static string MultiplierInfo()
+    {
+        var parts = new List<string> { $"me={_ownMultiplier:F3}" };
+        foreach (var kv in Multipliers) parts.Add($"{kv.Key}={kv.Value:F3}");
+        return $"xpMult team={TeamMultiplier():F3} ({string.Join(",", parts)})";
     }
 
     private static void ApplyShareIn()
@@ -241,25 +340,14 @@ public static class LootSync
         var local = GameState.LocalPlayerEntity;
         var xp = local != null ? local._experience : null;
         if (xp == null) return; // keep it until our player is up
-        // Never on a dead (or, later, downed) player: AddExperience can open the level-up popup, which pins
-        // LevelUpTime at 0 and freezes both games through the synchronized pause. Held until it revives.
+        // Never on a dead (or downed) player: the level-up popup would pin LevelUpTime at 0 and freeze both games
+        // through the synchronized pause. Held until it revives.
         if ((local!._health != null && local._health.HasBeenKilled) || Life.CoopLife.LocalDowned) return;
         float amount = _shareIn;
         _shareIn = 0f;
-        try
-        {
-            ApplyingSharedXp = true;
-            xp.AddExperience(amount);
-            _shareAppliedSum += amount;
-        }
-        catch (Exception ex)
-        {
-            Plugin.StaticLog.LogError($"[SoulstoneCoop][loot] Applying shared XP {amount:F0}: {ex.Message}");
-        }
-        finally
-        {
-            ApplyingSharedXp = false;
-        }
+        // Straight into the bar's queue: the amount already holds the team bonus (AddExperience would add ours).
+        xp._experienceToAdd += amount;
+        _shareAppliedSum += amount;
     }
 
     // ---------------- client: replay ----------------
@@ -532,7 +620,7 @@ public static class LootSyncBossPortalPatch
     }
 }
 
-/// <summary>Both sides: team XP - whatever the local player collects is shared with the partner (XpShare).</summary>
+/// <summary>Both sides: team XP - whatever the local player collects goes to the host's pool (XpShare).</summary>
 [HarmonyPatch(typeof(ExperienceComponent), nameof(ExperienceComponent.AddExperience))]
 public static class LootSyncAddExperiencePatch
 {
@@ -541,5 +629,12 @@ public static class LootSyncAddExperiencePatch
     {
         try { return LootSync.OnLocalAddExperience(__instance, experienceAmount); }
         catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] LootSyncAddExperiencePatch: {ex.Message}"); return true; }
+    }
+
+    [HarmonyPostfix]
+    public static void Postfix(ExperienceComponent __instance, float experienceAmount)
+    {
+        try { LootSync.AfterLocalAddExperience(__instance, experienceAmount); }
+        catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] LootSyncAddExperiencePatch postfix: {ex.Message}"); }
     }
 }

@@ -1,8 +1,8 @@
 # Soulstone Coop
 
-> **This is a modified copy of [gskolber/soulstone-survivors-coop](https://github.com/gskolber/soulstone-survivors-coop).** It's the same mod by the same author, with new features and fixes made with the help of AI (Claude) so it supports more of the game: the Co-op panel restyled to match the game, Mastery and Titan Hunt in co-op, the guest's crowd control, chests and map tasks, boss statues, smoother enemies, more synced effects, tougher enemies in co-op, co-op options in the panel and Polish texts. It also includes the author's own 1.1.0 additions (party panel, upgrade panel above the HUD with gamepad support, guests seeing every enemy). All credit for the original mod goes to its author. What's new: [docs/releases/0.10.0.md](docs/releases/0.10.0.md).
+> **This is a modified copy of [gskolber/soulstone-survivors-coop](https://github.com/gskolber/soulstone-survivors-coop).** It's the same mod by the same author, with new features and fixes made with the help of AI (Claude) so it supports more of the game: the Co-op panel restyled to match the game, Mastery and Titan Hunt in co-op, the guest's crowd control, chests and map tasks, boss statues, smoother enemies, more synced effects, tougher enemies in co-op, one shared level for the group, a zoomed-out camera in co-op, co-op options in the panel and Polish texts. It also includes the author's own 1.1.0 additions (party panel, upgrade panel above the HUD with gamepad support, guests seeing every enemy). All credit for the original mod goes to its author. What's new: [docs/releases/0.11.0.md](docs/releases/0.11.0.md).
 >
-> **Download:** the [Releases](../../releases) page, file `SoulstoneCoop-0.10.0.zip` (unpack it into the game's folder; everyone in the group needs this same version).
+> **Download:** the [Releases](../../releases) page, file `SoulstoneCoop-0.11.0.zip` (unpack it into the game's folder; everyone in the group needs this same version).
 
 Online co-op for [Soulstone Survivors](https://store.steampowered.com/app/2066020/Soulstone_Survivors/): up to 8 players in the same run, invited through Steam.
 
@@ -45,7 +45,7 @@ Direct IP is also available (**Host by IP** / type the host's IP → **Join**, U
 | Combat | Both players damage the same enemies; enemies chase and hit whoever is closest; statuses (slow, stun) reach the guest |
 | Skills | Each player sees the other's skills (visual only; damage is synced separately), including rotating shields and the live aim of channels |
 | Chests | Every player sees the reward chests and can open them; the loot is shared as usual |
-| Progression | Team XP (whoever picks up an orb, both get it), loot and kill credit on the guest; each player keeps their own level and upgrades |
+| Progression | One shared XP pool: everyone levels up at the same moment, each player's XP bonus counts 1/N for the team; loot and kill credit on the guest; each player picks their own upgrades |
 | Pause | Anyone's pause freezes everyone and the host can unpause for all; upgrade choices pause the group until everyone has picked (or the compact panel, with `PauseOnLevelUp = false`) |
 | Death | Downed state (the partner lies down on your screen), any ally standing next to you revives you, the host included; defeat only when everyone is down. Heal orbs reach every player; guests dodge hits by dashing |
 | End of run | Victory, Home portal, Endless and challenge portals and Restart happen for everyone; the host surrendering ends the run for all |
@@ -76,7 +76,8 @@ The full list and design notes are in [`docs/roadmap.md`](docs/roadmap.md).
 | `[Coop] EnemyScalePerPlayer` | `0` | Extra enemies per additional player (try `0.25`) |
 | `[Coop] ReplicaCastRadius` | `60` | Don't draw skills of partners farther than this |
 | `[Coop] DashDodge` | `true` | Guests dodge a host-computed hit while dashing (or within their ping after) |
-| `[Coop] EnemyHealthBonus` | `50` | Enemy health +% per extra player (2 players: +50 %); 0 = off |
+| `[Coop] EnemyHealthBonus` | `100` | Enemy health +% per extra player (2 players: +100 %); 0 = off |
+| `[Coop] CameraZoomOut` | `25` | In co-op runs, the camera sits this many % farther (0 = the game's camera) |
 | `[Coop] PartyHud` | `true` | In a run, a panel at the top left with each partner's health, level, XP, revives left and state |
 | `[Coop] LevelUpPanelPosition` | `Top` | Where the compact upgrade panel sits: `Top` (above your character) or `Bottom` (just above the health bar) |
 | `[Coop] PauseOnLevelUp` | `true` | Upgrade choices pause everyone until all have picked (30 s cap); `false` = small panel, no pause |

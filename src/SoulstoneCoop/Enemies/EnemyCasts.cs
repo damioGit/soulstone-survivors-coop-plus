@@ -22,7 +22,10 @@ public static class EnemyCasts
 {
     private const byte TargetNone = 0, TargetSelf = 1, TargetEnemy = 2, TargetPlayer = 3; // phase 9: TargetPlayer carries the slot (0 = host)
     private const float MinIntervalPerEnemy = 0.1f; // s: cap at 10 casts/s per enemy (multicast bursts)
-    private const float ChannelReplaySeconds = 1.5f; // no channel-end message for enemies: keep the beam this long
+    // Continuous attacks (Slayer's Bladestorm, Avatar of Fire's flamethrower...): the host sends EnemyChannelEnd when
+    // the channel stops; the replay lasts until then, at most this long (a lost end, an enemy gone).
+    private const float ChannelMaxSeconds = 20f;
+    private const float ShortChannelSeconds = 1.5f; // other casts the AI hands its channel func to (melee swings...)
     private const float TelemetryInterval = 5f;
 
     private static readonly Dictionary<ushort, float> LastSent = new();
@@ -137,6 +140,14 @@ public static class EnemyCasts
         NetworkManager.Send(w, DeliveryMethod.ReliableUnordered);
         _sent++;
         _bytes += w.Length;
+        // Only real channeling skills: the AI hands its IsBeingChanneled func to melee and projectile casts too, and
+        // there it stays true long after the swing.
+        var channeling = (flags & CastMessage.FChannel) != 0 ? skill.TryCast<ChannelingSkill>() : null;
+        if (channeling != null)
+            HostChannels[(t.NetId, key)] = new HostChannel
+            {
+                NetId = t.NetId, Key = key, Func = p.IsBeingChanneled, Skill = channeling, Entity = e,
+            };
         if (LoggedKeys.Add(t.Key + "|" + key))
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][enemycasts] Host: first cast of '{key}' by '{t.Key}' (#{t.NetId}, flags={flags}, target={kind}, {skill.GetIl2CppType().Name}).");
     }
@@ -201,8 +212,16 @@ public static class EnemyCasts
             Vector3 groundPoint = (flags & CastMessage.FGround) != 0 ? ground : frontPoint;
             if ((flags & CastMessage.FChannel) != 0)
             {
-                float until = Time.time + ChannelReplaySeconds;
-                p.IsBeingChanneled = (Func<bool>)(() => Time.time < until);
+                if (skill.TryCast<ChannelingSkill>() != null)
+                {
+                    var ch = OpenReplay(netId, key);
+                    p.IsBeingChanneled = (Func<bool>)(() => !ch.Ended && Time.unscaledTime - ch.Started < ChannelMaxSeconds);
+                }
+                else
+                {
+                    float until = Time.time + ShortChannelSeconds;
+                    p.IsBeingChanneled = (Func<bool>)(() => Time.time < until);
+                }
             }
             // A charged attack's telegraph (SkillChargingTimeTraitLineArea, ...) asks for the aim point: always give one.
             bool charging = skill.ChargingTrait != null;
@@ -259,6 +278,100 @@ public static class EnemyCasts
         SkillsByPuppet.Clear();
         SummonSkill.Clear();
         LastSent.Clear();
+        HostChannels.Clear();
+        Replays.Clear();
+    }
+
+    // ---------------- continuous attacks: the channel's end ----------------
+
+    private sealed class HostChannel
+    {
+        public ushort NetId;
+        public string Key = "";
+        public Il2CppSystem.Func<bool>? Func;
+        public ChannelingSkill? Skill;
+        public Entity? Entity;
+        public bool SeenTrue;
+        public float Age;
+    }
+
+    private sealed class Replay
+    {
+        public float Started;
+        public bool Ended;
+    }
+
+    private static readonly Dictionary<(ushort, string), HostChannel> HostChannels = new();
+    private static readonly Dictionary<(ushort, string), Replay> Replays = new();
+    private static int _channelEndsSent, _channelEndsRecv;
+
+    /// <summary>Host: a channel ends when the func the skill polls says so, when the skill stopped channeling after
+    /// having started (the same test as CastSync.PollChannels), or when its enemy is gone.</summary>
+    private static void PollHostChannels(float dt)
+    {
+        if (HostChannels.Count == 0) return;
+        List<(ushort, string)>? ended = null;
+        foreach (var kv in HostChannels)
+        {
+            var ch = kv.Value;
+            ch.Age += dt;
+            bool on;
+            try
+            {
+                on = ch.Entity != null && ch.Entity._health != null && !ch.Entity._health.HasBeenKilled && ch.Age < ChannelMaxSeconds;
+                if (on && ch.Func != null) on = ch.Func.Invoke();
+                if (on && ch.Skill != null)
+                {
+                    if (ch.Skill.LastBeingChanneled) ch.SeenTrue = true;
+                    else if (ch.SeenTrue || ch.Age > 1f) on = false;
+                }
+            }
+            catch { on = false; }
+            if (!on) (ended ??= new List<(ushort, string)>()).Add(kv.Key);
+        }
+        if (ended == null) return;
+        foreach (var id in ended)
+        {
+            HostChannels.Remove(id);
+            if (!NetworkManager.HasPeer) continue;
+            var w = new NetDataWriter();
+            w.Put((byte)PacketType.EnemyChannelEnd);
+            w.Put(id.Item1);
+            w.Put(id.Item2);
+            NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
+            _channelEndsSent++;
+        }
+    }
+
+    /// <summary>Client: a replayed channel stays on until the host's end arrives. Cast and end travel on different
+    /// channels: an end that arrives first leaves an ended entry the cast then picks up.</summary>
+    private static Replay OpenReplay(ushort netId, string key)
+    {
+        if (Replays.TryGetValue((netId, key), out var r) && r.Ended && Time.unscaledTime - r.Started < 2f)
+        {
+            Replays.Remove((netId, key)); // its end came before this cast
+            return new Replay { Started = Time.unscaledTime, Ended = true };
+        }
+        r = new Replay { Started = Time.unscaledTime };
+        Replays[(netId, key)] = r;
+        return r;
+    }
+
+    /// <summary>Layout: netId u16 | skill key string.</summary>
+    public static void OnEnemyChannelEnd(NetDataReader r)
+    {
+        ushort netId = r.GetUShort();
+        string key = r.GetString();
+        if (!CoopRole.IsClientSide) return;
+        _channelEndsRecv++;
+        if (Replays.TryGetValue((netId, key), out var rep))
+        {
+            rep.Ended = true;
+            Replays.Remove((netId, key));
+            if (LoggedKeys.Add("end|" + key))
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][enemycasts] Client: '{key}' (#{netId}) ended by the host after {Time.unscaledTime - rep.Started:F1}s.");
+        }
+        else Replays[(netId, key)] = new Replay { Started = Time.unscaledTime, Ended = true };
     }
 
     public static void Tick(float unscaledDeltaTime)
@@ -266,8 +379,10 @@ public static class EnemyCasts
         if (NetworkManager.Role == NetRole.None) return;
         GodCasts.Tick(unscaledDeltaTime); // own try/catch
         ProxyStatusForward.Tick(unscaledDeltaTime); // own try/catch
-        if (!GameManagerUtil.HasGameManager && (SkillsByPuppet.Count > 0 || LastSent.Count > 0))
+        if (!GameManagerUtil.HasGameManager && (SkillsByPuppet.Count > 0 || LastSent.Count > 0 || HostChannels.Count > 0))
             ClearMatchCaches();
+        try { PollHostChannels(unscaledDeltaTime); }
+        catch (Exception ex) { if (_errors++ < 5) Plugin.StaticLog.LogError($"[SoulstoneCoop][enemycasts] Channel poll: {ex.Message}"); }
         _telemetryTimer += unscaledDeltaTime;
         if (_telemetryTimer < TelemetryInterval) return;
         _telemetryTimer = 0f;
@@ -276,7 +391,8 @@ public static class EnemyCasts
                 $"[SoulstoneCoop][enemycasts] {NetworkManager.Role}: sent={_sent} ({_bytes} B) throttled={_throttled} hostSkippedSummon={_hostSkippedSummon} " +
                 $"captureErrors={_captureErrors} recv={_recv} played={_played} noPuppet={_noPuppet} noSkill={_noSkill} inactive={_inactive} " +
                 $"rejected={_rejected} errors={_errors} skippedSummon={_skippedSummon} blockedDamage={_blockedDamage} blockedStatus={_blockedStatus} blockedPush={_blockedPush} blockedGodProxy={_blockedGodProxy} " +
-                $"regular={_regularSent} regularFar={_regularFar} regularOverBudget={_regularOverBudget}");
+                $"regular={_regularSent} regularFar={_regularFar} regularOverBudget={_regularOverBudget} " +
+                $"channelEnds={_channelEndsSent}/{_channelEndsRecv} openChannels={HostChannels.Count}/{Replays.Count}");
         _regularSent = _regularFar = _regularOverBudget = 0;
         _sent = _bytes = _throttled = _hostSkippedSummon = _captureErrors = 0;
         _recv = _played = _noPuppet = _noSkill = _inactive = _rejected = _errors = _skippedSummon = 0;

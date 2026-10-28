@@ -28,10 +28,14 @@ public sealed unsafe class SteamTransport : ITransport
 
     private const string ConnectionKey = "soulstonecoop-v2"; // phase 9: v1 builds speak the two-player format
     private const int ChannelMain = 0, ChannelSequenced = 1;
-    private const float HelloInterval = 1f, ConnectTimeout = 30f, PingInterval = 1f, SilenceTimeout = 15f;
+    private const float HelloInterval = 1f, ConnectTimeout = 30f, PingInterval = 1f, SilenceTimeout = 30f;
     /// <summary>Phase 8: our pings are sent from the game's main thread, which a scene load can freeze for a while:
     /// while either side is loading a run, allow a longer silence before calling the peer gone.</summary>
     private const float LoadingSilenceTimeout = 45f;
+    /// <summary>A Hello from someone the lobby doesn't list yet waits this long before the refusal: the host's member
+    /// list can arrive a moment after the joiner's first Hello (it resends one every second).</summary>
+    private const float NotMemberGrace = 10f;
+    private readonly Dictionary<ulong, float> _notMemberSince = new();
 
     private sealed class Peer
     {
@@ -145,11 +149,12 @@ public sealed unsafe class SteamTransport : ITransport
             {
                 p.SessionTimer = 0f;
                 int state = SessionState(p.Id);
-                if (state == SteamNative.ConnClosedByPeer || state == SteamNative.ConnProblemDetectedLocally)
+                if (state == SteamNative.ConnClosedByPeer)
                 {
                     _gone.Add(p);
-                    LastGoneReason = Ui.Loc.Msg(state == SteamNative.ConnClosedByPeer ? "net.peer_closed" : "net.lost_network");
+                    LastGoneReason = Ui.Loc.Msg("net.peer_closed");
                 }
+                else if (state == SteamNative.ConnProblemDetectedLocally) ResetSession(p);
             }
         }
         foreach (var p in _gone)
@@ -330,7 +335,18 @@ public sealed unsafe class SteamTransport : ITransport
         if (key != ConnectionKey) refuse = Ui.Loc.Msg("net.bad_key");
         else if (version != Plugin.HandshakeVersion) refuse = NetworkManager.VersionRefusal(version);
         else if (proto != SteamLobby.Proto) refuse = Ui.Loc.Msg("net.proto");
-        else if (!SteamLobby.IsMember(from)) refuse = Ui.Loc.Msg("net.not_member");
+        else if (!SteamLobby.IsMember(from))
+        {
+            if (!_notMemberSince.TryGetValue(from, out float since)) _notMemberSince[from] = since = Time.unscaledTime;
+            if (Time.unscaledTime - since < NotMemberGrace)
+            {
+                if (since == Time.unscaledTime)
+                    Plugin.StaticLog.LogInfo($"[SoulstoneCoop][steam] Hello from {from} ({SteamLobby.FriendName(from)}) before the lobby lists it: waiting for its next Hello.");
+                return;
+            }
+            refuse = Ui.Loc.Msg("net.not_member");
+        }
+        _notMemberSince.Remove(from);
 
         byte slot = Players.NoSlot;
         if (refuse == null)
@@ -468,7 +484,7 @@ public sealed unsafe class SteamTransport : ITransport
         SteamNative.MakeIdentity(id, to);
         int result;
         fixed (byte* p = data)
-            result = SteamNative.SteamAPI_ISteamNetworkingMessages_SendMessageToUser(_msgs, id, p, (uint)length, flags, channel);
+            result = SteamNative.SteamAPI_ISteamNetworkingMessages_SendMessageToUser(_msgs, id, p, (uint)length, flags | SteamNative.SendAutoRestartBrokenSession, channel);
         if (result != 1 && _sendErrors++ < 10)
             Plugin.StaticLog.LogWarning($"[SoulstoneCoop][steam] SendMessageToUser({length} B, ch {channel}) = EResult {result}.");
     }
@@ -486,6 +502,18 @@ public sealed unsafe class SteamTransport : ITransport
         byte* id = stackalloc byte[SteamNative.IdentitySize];
         SteamNative.MakeIdentity(id, who);
         SteamNative.SteamAPI_ISteamNetworkingMessages_CloseSessionWithUser(_msgs, id);
+    }
+
+    private int _sessionResets;
+
+    /// <summary>A failed Steam session to a peer we still count on: not closed (that would tell the other side we
+    /// quit); our next send carries AutoRestartBrokenSession and opens a fresh one, which the other side accepts as a
+    /// lobby member. The peer stays until SilenceTimeout.</summary>
+    private void ResetSession(Peer p)
+    {
+        if (_sessionResets++ < 20)
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][steam] Session with slot {p.Slot} failed: a new one opens with our next message " +
+                $"(silent for {Time.unscaledTime - p.LastHeard:F1}s).");
     }
 
     // ---------------- stop ----------------
@@ -530,7 +558,9 @@ public sealed unsafe class SteamTransport : ITransport
         Plugin.StaticLog.LogWarning($"[SoulstoneCoop][steam] Session with {who} failed.");
         var t = _current;
         if (t == null) return;
-        if (t._byId.TryGetValue(who, out var peer)) t.PeerGone(peer, Ui.Loc.Msg("net.lost_steam_session"));
+        // A known peer: Steam gives up on a session after ~10 s without an answer, e.g. while the other game hangs.
+        // Start a new one (our next message opens it) and leave the verdict to the silence timeout.
+        if (t._byId.TryGetValue(who, out var peer)) t.ResetSession(peer);
         else if (!t._isHost && who == t._hostId) t.Fail(NetStatus.Idle, Ui.Loc.Msg("net.steam_unreachable"));
     }
 

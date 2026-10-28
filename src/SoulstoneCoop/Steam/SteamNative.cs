@@ -35,6 +35,8 @@ internal static unsafe class SteamNative
     // Send flags
     public const int SendUnreliableNoNagle = 1;
     public const int SendReliable = 8;
+    /// <summary>k_nSteamNetworkingSend_AutoRestartBrokenSession: a send to a failed session opens a new one.</summary>
+    public const int SendAutoRestartBrokenSession = 32;
 
     // ESteamNetworkingConnectionState
     public const int ConnNone = 0, ConnConnecting = 1, ConnFindingRoute = 2, ConnConnected = 3,

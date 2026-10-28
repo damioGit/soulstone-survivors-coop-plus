@@ -21,7 +21,7 @@ public enum PacketType : byte
     SkillCast = 14,    // either way: the sender's local player cast a skill, replayed visual-only on the RemoteCaster (ReliableOrdered)
     SkillChannelEnd = 15, // either way: a channel started by SkillCast stopped (ReliableOrdered, same channel as SkillCast)
     LootDrop = 16,     // host -> client: one LootUtil.ProcessLoot call's arguments, replayed locally (ReliableOrdered, before EnemyDied)
-    XpShare = 17,      // either way: raw XP the sender's player collected (team XP: the receiver adds it too) (ReliableOrdered)
+    XpShare = 17,      // client -> host: raw XP the sender's player collected; the host turns it into XpGain for all (ReliableOrdered)
     CoopLife = 18,     // host -> client: hostDown u8 | clientDown u8 | revive progress f32, on change and 5 Hz while someone is down (ReliableOrdered)
     RunEnd = 19,       // host -> client: the run ends (Defeat / Victory / Surrender / PortalHome) for both (ReliableOrdered)
     RunEndRequest = 20, // client -> host: the client surrendered or took the Home portal (ReliableOrdered)
@@ -59,6 +59,9 @@ public enum PacketType : byte
     TaskStage = 126,   // host -> clients: map task id u16 | stage u8 (triggered / completed / failed) (ReliableOrdered)
     MasteryEvent = 127, // host -> clients: a Mastery event (the portal fired, ...) the clients replay (ReliableOrdered)
     CrusadeEvent = 128, // Titan Hunt: map choice, shared progress (keys, door, blood), portals (ReliableOrdered)
+    EnemyChannelEnd = 130, // host -> clients: an enemy's continuous attack stopped: netId u16 | skill key (ReliableOrdered)
+    XpGain = 131,      // host -> clients: shared XP: amount to add after the team's XP bonus, f32 (ReliableOrdered)
+    XpMultiplier = 132, // client -> host: the sender's own XP gain multiplier, f32 (ReliableOrdered)
     PartyStatus = 129, // party panel (the author's 1.1.0, issue #7): sender's level u16 | xp progress u8 (/255) | death guards u8, on change at <= 4 Hz + every 2 s (ReliableOrdered)
     ChestState = 122,  // host -> clients: chest id u16 | interaction % u8 | opened bool (ReliableOrdered, after its spawn)
 }
@@ -75,7 +78,7 @@ public static class PacketRouter
         // Who it is and where: every client builds the ghosts of the others from these.
         PacketType.Hello or PacketType.LobbyState => DeliveryMethod.ReliableOrdered,
         // What the others see of that player: its pause, health bar, spells (visual) and summons; and its XP (team XP).
-        PacketType.PauseState or PacketType.PartnerHealth or PacketType.XpShare or PacketType.DashState => DeliveryMethod.ReliableOrdered,
+        PacketType.PauseState or PacketType.PartnerHealth or PacketType.DashState => DeliveryMethod.ReliableOrdered,
         PacketType.SkillCast or PacketType.SkillChannelEnd => DeliveryMethod.ReliableOrdered, // an end never overtakes its start
         PacketType.SummonSpawn or PacketType.SummonDespawn => DeliveryMethod.ReliableOrdered,
         PacketType.SummonStates or PacketType.SkillChannelAim => DeliveryMethod.Sequenced,
@@ -179,6 +182,9 @@ public static class PacketRouter
             case PacketType.EnemyCast:
                 Enemies.EnemyCasts.OnEnemyCast(reader);
                 break;
+            case PacketType.EnemyChannelEnd:
+                Enemies.EnemyCasts.OnEnemyChannelEnd(reader);
+                break;
             case PacketType.ObjectiveSync:
                 Enemies.ObjectiveSync.OnObjectiveSync(reader);
                 break;
@@ -241,6 +247,12 @@ public static class PacketRouter
                 break;
             case PacketType.XpShare:
                 Loot.LootSync.OnXpShare(reader);
+                break;
+            case PacketType.XpGain:
+                Loot.LootSync.OnXpGain(reader);
+                break;
+            case PacketType.XpMultiplier:
+                Loot.LootSync.OnXpMultiplier(reader);
                 break;
             case PacketType.Hello:
                 Lobby.CoopSession.OnHello(reader);
