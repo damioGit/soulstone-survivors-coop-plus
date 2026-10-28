@@ -726,9 +726,9 @@ public static class CoopUi
         _optionsBox = box.gameObject;
         _optButtons.Clear();
         MakeSection(box, "ui.sec_host_opts");
-        foreach (var o in Options) if (o.HostOnly) AddOption(box, o);
+        AddOptions(box, Options.Where(o => o.HostOnly).ToList());
         MakeSection(box, "ui.sec_my_opts");
-        foreach (var o in Options) if (!o.HostOnly) AddOption(box, o);
+        AddOptions(box, Options.Where(o => !o.HostOnly).ToList());
         _optionsBox.SetActive(false);
         RefreshOptions();
 
@@ -796,9 +796,21 @@ public static class CoopUi
     private static GameObject? _optionsBox;
     private static readonly List<(TextMeshProUGUI label, Opt opt)> _optButtons = new();
 
-    private static void AddOption(RectTransform box, Opt o)
+    /// <summary>Two options per row, rows lower than the panel's main ones: the panel stays on screen.</summary>
+    private static void AddOptions(RectTransform box, List<Opt> opts)
     {
-        var row = MakeRow(box, "Opt-" + o.Key);
+        for (int i = 0; i < opts.Count; i += 2)
+        {
+            var row = MakeRow(box, "Opts-" + i);
+            var le = row.GetComponent<LayoutElement>();
+            if (le != null) le.preferredHeight = 46f;
+            AddOption(row, opts[i]);
+            if (i + 1 < opts.Count) AddOption(row, opts[i + 1]);
+        }
+    }
+
+    private static void AddOption(RectTransform row, Opt o)
+    {
         TextMeshProUGUI? label = null;
         var b = MakeButton(row, o.Key, "", () =>
         {
@@ -806,15 +818,16 @@ public static class CoopUi
             catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][ui] Option {o.Key}: {ex.Message}"); }
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Option {o.Key} -> {o.Value()}.");
             RefreshOptions();
-        }, 24f);
+        }, 20f);
         label = b.GetComponentInChildren<TextMeshProUGUI>(true);
+        if (label != null) { label.enableWordWrapping = true; label.fontSizeMin = 14f; label.enableAutoSizing = true; label.fontSizeMax = 20f; }
         if (label != null) _optButtons.Add((label, o));
     }
 
     private static void RefreshOptions()
     {
         foreach (var (label, o) in _optButtons)
-            if (label != null) label.text = $"{Loc.T(o.Key)}: <color=#f2cc73>{o.Value()}</color>";
+            if (label != null) label.text = $"{Loc.T(o.Key)}\n<color=#f2cc73>{o.Value()}</color>";
     }
 
     private static void OnToggleOptions()

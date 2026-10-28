@@ -159,6 +159,16 @@ public static class TestBridge
                 Commands["loadscene"] = Lobby.MasterySync.TestLoadScene;
                 Commands["crusade"] = Lobby.CrusadeSync.Test;
                 Commands["options"] = Ui.CoopUi.TestOptions;
+                Commands["char"] = a =>
+                {
+                    var prof = Global.PlayerProfile;
+                    if (prof?.SelectedCharacter == null) return "no profile";
+                    if (a.Length == 0) return prof.SelectedCharacter.CharacterIdAsEnum.ToString();
+                    var ct = (CharactersType)Enum.Parse(typeof(CharactersType), a[0], true);
+                    prof.SelectedCharacter.CharacterIdAsEnum = ct;
+                    prof.SelectedCharacter.CharacterId = CharactersTypeNames.GetStringId(ct);
+                    return "character " + ct; // CoopSession's poll sees the change and sends a new Hello
+                };
                 Commands["guestcc"] = Enemies.GuestEffects.TestApply;
                 Commands["enemycc"] = Enemies.GuestEffects.TestInspect;
                 Commands["levelup"] = _ => { var xp = GameState.LocalPlayerEntity?._experience; if (xp == null) return "no xp"; xp.LevelUpMultipleTimes(1); return "level " + xp.Level; };

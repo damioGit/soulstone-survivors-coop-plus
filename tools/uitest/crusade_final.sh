@@ -22,10 +22,14 @@ bash $D A shot f_panel >/dev/null
 bash $D A cmd crusade primo; sleep 22; info primo
 bash $D A shot f_primo >/dev/null; bash $D B shot f_primoB >/dev/null
 bash $D A cmd crusade runes
-for i in 0 1 2 3; do bash $D A cmd crusade goto rune$i >/dev/null; sleep 3; done
+R=${RUNNER:-A}  # RUNNER=B: the guest lights the runes and takes the Primordial Portal
+[ "$R" = B ] && bash $D A cmd tp -20 30 >/dev/null
+for i in 0 1 2 3; do bash $D $R cmd crusade goto rune$i >/dev/null; sleep 3; done
 bash $D A cmd crusade runes; info runes
 bash $D A shot f_runes >/dev/null
-bash $D A cmd crusade goto primordial; sleep 8; for w in A B; do bash $D $w cmd god >/dev/null; done; info primordial
+bash $D $R cmd crusade goto primordial; sleep 8; for w in A B; do bash $D $w cmd god >/dev/null; done; info primordial
+sleep 15; info "after primordial"
+[ -n "${STOP_AFTER_PRIMORDIAL:-}" ] && { echo "== host"; grep -E "crusade\]" "$G/LogOutput.log" | grep -v trace | cut -c40-200 | tail -8; echo "== client"; grep -E "crusade\]" "$G/LogOutput.1.log" | grep -v trace | cut -c40-200 | tail -8; exit 0; }
 sleep 15; for w in A B; do bash $D $w cmd god >/dev/null; done; info final
 bash $D A cmd crusade keys >/dev/null; sleep 5
 bash $D A cmd crusade goto door >/dev/null; sleep 10

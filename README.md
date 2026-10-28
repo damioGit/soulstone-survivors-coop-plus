@@ -33,6 +33,8 @@ Direct IP is also available (**Host by IP** / type the host's IP → **Join**, U
 |---|---|
 | Connection | Steam invite (P2P through Steam's relay, no port forwarding), invite code, direct IP; mod version check |
 | Lobby | Co-op tab in the menu; the host starts the run and the guest follows on the same map, mode, difficulty and curses |
+| Modes | Survivors (with Endless and challenge portals), Mastery (cycles, Lords, pillars, final boss and its arena) and Titan Hunt (titan choice, maps, key fragments, boss room, titan blood, sigils, Primordial Portal, Void King) |
+| Options | The Co-op panel's **Co-op options**: the host's (enemy health and numbers, joining mid-run, lobby type and size) and your own (pause on level-up, dash dodge, ending when the host leaves) |
 | Players | Up to 8 (1 host + 7 guests); the host relays each player to the others |
 | Partners | Shown with their own character, skin and weapon, Steam name, health bar, ally ring and minimap marker; smooth movement, dash and animations; their pets and summons (e.g. the Sentinel's panther) are visible |
 | Enemies | The host owns the world; the guest sees the same enemies, bosses, void hunters and specials, including boss area warnings |
@@ -48,7 +50,7 @@ Direct IP is also available (**Host by IP** / type the host's IP → **Join**, U
 ## Known limitations
 
 - Rejoining a run in progress keeps nothing (behind `[Coop] AllowRejoin`, off by default).
-- Crusade mode is not supported in co-op.
+- Titan Hunt: only the host picks the titan (the guest sees the same three on its own panel, and a press there is a proposal the host sees); the boss cutscenes play on the host's screen, the others wait with a banner.
 - Partners' mod skins, Ascension transformation and weapon companions are not shown on their character.
 
 The full list and design notes are in [`docs/roadmap.md`](docs/roadmap.md).
@@ -56,7 +58,6 @@ The full list and design notes are in [`docs/roadmap.md`](docs/roadmap.md).
 ## Roadmap
 
 - Full rejoin keeping level, skills and items.
-- Crusade mode.
 
 ## Settings
 
