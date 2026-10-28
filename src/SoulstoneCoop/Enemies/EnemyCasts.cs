@@ -170,6 +170,9 @@ public static class EnemyCasts
             if (skill == null || caster == null) { _noSkill++; return; }
             if (IsSummonSkill(skill)) { _skippedSummon++; return; }
             if (!skill.isActiveAndEnabled) { _inactive++; return; }
+            // A charged line attack's telegraph (SkillChargingTimeTraitLineArea) throws on a puppet (it needs what
+            // only the host's AI set up): no replay of those - the host's hit still lands.
+            if (skill.ChargingTrait != null && skill.GetComponentInChildren<SkillChargingTimeTraitLineArea>(true) != null) { _inactive++; return; }
 
             e.transform.rotation = Quaternion.Euler(0f, yaw, 0f); // front-of-caster skills aim with the caster's forward
 

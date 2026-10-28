@@ -713,6 +713,25 @@ public static class CoopUi
         _leaveRow = leaveRow.gameObject;
         _leaveButton = Track(MakeButton(leaveRow, "Leave", Loc.T("ui.disconnect"), OnLeave, ButtonFont), "ui.disconnect");
 
+        // Co-op options: the host's (they shape the run for everyone) and the player's own; folded by default.
+        var optRow = MakeRow(panel, "OptionsToggleRow");
+        _optionsButton = MakeButton(optRow, "Options", Loc.T("ui.options"), OnToggleOptions, ButtonFont);
+        var box = MakeRect(panel, "OptionsBox");
+        var bl = box.gameObject.AddComponent<VerticalLayoutGroup>();
+        bl.spacing = 8f;
+        bl.childControlWidth = true;
+        bl.childControlHeight = true;
+        bl.childForceExpandWidth = true;
+        bl.childForceExpandHeight = false;
+        _optionsBox = box.gameObject;
+        _optButtons.Clear();
+        MakeSection(box, "ui.sec_host_opts");
+        foreach (var o in Options) if (o.HostOnly) AddOption(box, o);
+        MakeSection(box, "ui.sec_my_opts");
+        foreach (var o in Options) if (!o.HostOnly) AddOption(box, o);
+        _optionsBox.SetActive(false);
+        RefreshOptions();
+
         var version = MakeText(panel, "Version", $"mod {Plugin.HandshakeVersion}", 18f, TextAlignmentOptions.Right);
         version.color = new Color(1f, 1f, 1f, 0.35f);
         version.gameObject.AddComponent<LayoutElement>().preferredHeight = 20f;
@@ -721,6 +740,101 @@ public static class CoopUi
         _lastStatus = "";
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Co-op panel built (frame={_frameSprite?.name ?? "-"}, title={_titleSprite?.name ?? "-"}, " +
             $"button={_buttonSprite?.name ?? "-"}/{_buttonHotSprite?.name ?? "-"}, input={_inputSprite?.name ?? "-"}, section={_sectionSprite?.name ?? "-"}).");
+    }
+
+    // ---- co-op options ----
+
+    private sealed class Opt
+    {
+        public string Key = "";
+        public bool HostOnly;
+        public Func<string> Value = () => "";
+        public Action Next = () => { };
+    }
+
+    private static string OnOff(bool v) => Loc.T(v ? "opt.on" : "opt.off");
+
+    private static T Cycle<T>(T[] values, T current) where T : IEquatable<T>
+    {
+        int i = Array.FindIndex(values, v => v.Equals(current));
+        return values[(i + 1) % values.Length];
+    }
+
+    private static readonly float[] HealthSteps = { 0f, 25f, 50f, 75f, 100f, 150f, 200f, 300f };
+    private static readonly float[] CrowdSteps = { 0f, 0.25f, 0.5f, 1f };
+
+    private static readonly Opt[] Options =
+    {
+        new() { Key = "opt.enemy_hp", HostOnly = true,
+            Value = () => $"+{Plugin.EnemyHealthBonus.Value:0}%",
+            Next = () => Plugin.EnemyHealthBonus.Value = Cycle(HealthSteps, Plugin.EnemyHealthBonus.Value) },
+        new() { Key = "opt.enemy_count", HostOnly = true,
+            Value = () => Plugin.EnemyScalePerPlayer.Value <= 0f ? Loc.T("opt.off") : $"+{Plugin.EnemyScalePerPlayer.Value * 100f:0}%",
+            Next = () => Plugin.EnemyScalePerPlayer.Value = Cycle(CrowdSteps, Plugin.EnemyScalePerPlayer.Value) },
+        new() { Key = "opt.rejoin", HostOnly = true,
+            Value = () => OnOff(Plugin.AllowRejoin.Value),
+            Next = () => Plugin.AllowRejoin.Value = !Plugin.AllowRejoin.Value },
+        new() { Key = "opt.max_players", HostOnly = true,
+            Value = () => Plugin.MaxPlayers.Value.ToString(),
+            Next = () => Plugin.MaxPlayers.Value = Plugin.MaxPlayers.Value >= 8 ? 2 : Plugin.MaxPlayers.Value + 1 },
+        new() { Key = "opt.lobby", HostOnly = true,
+            Value = () => Loc.T("opt.lobby_" + Plugin.LobbyType.Value.ToString().ToLowerInvariant()),
+            Next = () => Plugin.LobbyType.Value = Plugin.LobbyType.Value == Plugin.SteamLobbyType.FriendsOnly ? Plugin.SteamLobbyType.Public
+                : Plugin.LobbyType.Value == Plugin.SteamLobbyType.Public ? Plugin.SteamLobbyType.Private : Plugin.SteamLobbyType.FriendsOnly },
+        new() { Key = "opt.levelup_pause", HostOnly = false,
+            Value = () => OnOff(Net.LevelUpPolicy.PauseOnLevelUp.Value),
+            Next = () => Net.LevelUpPolicy.PauseOnLevelUp.Value = !Net.LevelUpPolicy.PauseOnLevelUp.Value },
+        new() { Key = "opt.dash_dodge", HostOnly = false,
+            Value = () => OnOff(Plugin.DashDodge.Value),
+            Next = () => Plugin.DashDodge.Value = !Plugin.DashDodge.Value },
+        new() { Key = "opt.end_host_left", HostOnly = false,
+            Value = () => OnOff(Plugin.EndRunWhenHostLeaves.Value),
+            Next = () => Plugin.EndRunWhenHostLeaves.Value = !Plugin.EndRunWhenHostLeaves.Value },
+    };
+
+    private static Button? _optionsButton;
+    private static GameObject? _optionsBox;
+    private static readonly List<(TextMeshProUGUI label, Opt opt)> _optButtons = new();
+
+    private static void AddOption(RectTransform box, Opt o)
+    {
+        var row = MakeRow(box, "Opt-" + o.Key);
+        TextMeshProUGUI? label = null;
+        var b = MakeButton(row, o.Key, "", () =>
+        {
+            try { o.Next(); }
+            catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][ui] Option {o.Key}: {ex.Message}"); }
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][ui] Option {o.Key} -> {o.Value()}.");
+            RefreshOptions();
+        }, 24f);
+        label = b.GetComponentInChildren<TextMeshProUGUI>(true);
+        if (label != null) _optButtons.Add((label, o));
+    }
+
+    private static void RefreshOptions()
+    {
+        foreach (var (label, o) in _optButtons)
+            if (label != null) label.text = $"{Loc.T(o.Key)}: <color=#f2cc73>{o.Value()}</color>";
+    }
+
+    private static void OnToggleOptions()
+    {
+        if (_optionsBox == null) return;
+        _optionsBox.SetActive(!_optionsBox.activeSelf);
+        RefreshOptions();
+    }
+
+    /// <summary>Test bridge: "cmd options [n]" opens the options and presses the n-th one.</summary>
+    internal static string TestOptions(string[] args)
+    {
+        if (_optionsBox == null) return "no panel";
+        if (!_optionsBox.activeSelf) OnToggleOptions();
+        if (args.Length > 0 && int.TryParse(args[0], out int n) && n >= 0 && n < _optButtons.Count)
+        {
+            _optButtons[n].opt.Next();
+            RefreshOptions();
+        }
+        return string.Join(" | ", _optButtons.Select(o => $"{o.opt.Key}={o.opt.Value()}"));
     }
 
     /// <summary>Section title on the gold fading line the game puts behind its skill list titles.</summary>
@@ -856,6 +970,8 @@ public static class CoopUi
             Loc.CheckGlyphs(_font, "co-op UI");
         }
         foreach (var (t, key) in _labels) if (t != null) t.text = Loc.T(key);
+        if (_optionsButton != null) { var ol = _optionsButton.GetComponentInChildren<TextMeshProUGUI>(true); if (ol != null) ol.text = Loc.T("ui.options"); }
+        RefreshOptions();
         _lastStatus = "";
     }
 

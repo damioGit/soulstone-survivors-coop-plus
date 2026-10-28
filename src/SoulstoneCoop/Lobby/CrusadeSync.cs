@@ -63,6 +63,7 @@ public static class CrusadeSync
 
     private static List<string>? _options;   // client: the host's titans on offer (null: no choice open)
     private static bool _optionsShown, _pressingForHost;
+    private static float _viewOpenedAt;
     private static float _lastSuggest;
 
     private static void OnOptions(NetDataReader r)
@@ -85,11 +86,13 @@ public static class CrusadeSync
     /// <summary>Client: show the host's titans on our own panel (read only: a press is a proposal).</summary>
     private static void TickOptionsView()
     {
-        if (_options == null || _optionsShown || _following != null) return;
+        if (_options == null || _following != null) return;
         var panel = Panel();
         if (panel == null) return;
         if (!panel.IsOpen)
         {
+            if (_optionsShown || Time.unscaledTime - _viewOpenedAt < 1f) return; // shown once; the guest may close it
+            _viewOpenedAt = Time.unscaledTime;
             _opening = true;
             try
             {
@@ -105,10 +108,13 @@ public static class CrusadeSync
             return; // filled next frame
         }
         if (panel.Items == null) return;
+        // Every frame while it's open: the panel may fill its own options again after we replaced them.
+        bool changed = false;
         for (int i = 0; i < panel.Items.Count && i < _options.Count; i++)
         {
             var item = panel.Items[i];
             if (item == null || item.MapId == _options[i]) continue;
+            changed = true;
             // The client's own bucket of options has the full MapOption of that map (a bare one throws in Setup).
             bool done = false;
             if (panel._mapOptionsBucket != null)
@@ -117,8 +123,8 @@ public static class CrusadeSync
             if (!done) item.MapTitleLabel?.SetLocalizedString(Pretty(_options[i]));
             item.MapId = _options[i];
         }
+        if (changed && !_optionsShown) Plugin.StaticLog.LogInfo($"[SoulstoneCoop][crusade] Client: the host's titans shown on our panel: {string.Join(", ", _options)}.");
         _optionsShown = true;
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][crusade] Client: the host's titans shown on our panel: {string.Join(", ", _options)}.");
     }
 
     /// <summary>Prefix of CrusadeMapSelectionItem.OnPressed. Client: a proposal to the host, not a choice.</summary>
@@ -168,7 +174,7 @@ public static class CrusadeSync
         {
             var m = Map();
             if (m?.GoblinPortalTrigger == null || !m.GoblinPortalTrigger.activeInHierarchy) return;
-            CoopSession.Notice(Ui.Loc.Msg("nt.titan_choice_by", ("name", who)), 4f);
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][crusade] Host: {who} takes everyone into the goblin cave.");
             m.OnPlayerGoblinCavePortal();
             return;
         }
@@ -200,7 +206,8 @@ public static class CrusadeSync
     {
         public int Keys, KeysTotal, Blood;
         public byte Door, BossRoom, Runes, Sigils;
-        public bool BloodTaken, Primordial, Portal, Home, FinalKilled;
+        public bool BloodTaken, Primordial, Portal, Home, FinalKilled, BloodOut;
+        public Vector3 BloodAt;
     }
     private static State _sent;
     private static float _stateTimer, _refreshTimer;
@@ -236,6 +243,8 @@ public static class CrusadeSync
             st.BossRoom = boss != null ? (byte)boss.State : (byte)255;
             st.Portal = map.EnabledPortal;
             st.FinalKilled = map._crusadeData != null && map._crusadeData.HasKilledFinalBoss;
+            foreach (var b in UnityEngine.Object.FindObjectsOfType<CollectableTitanBlood>())
+                if (b != null && b.gameObject.activeInHierarchy) { st.BloodOut = true; st.BloodAt = b.transform.position; break; }
             st.Home = map.HomePortalObject != null && map.HomePortalObject.activeInHierarchy;
             var sig = SigilTriggers();
             for (int i = 0; i < sig.Count && i < 8; i++)
@@ -269,6 +278,7 @@ public static class CrusadeSync
         w.Put(KindState);
         w.Put(st.Keys); w.Put(st.KeysTotal); w.Put(st.Blood); w.Put(st.Door); w.Put(st.BossRoom); w.Put(st.BloodTaken);
         w.Put(st.Runes); w.Put(st.Primordial); w.Put(st.Sigils); w.Put(st.Portal); w.Put(st.Home); w.Put(st.FinalKilled);
+        w.Put(st.BloodOut); w.Put(st.BloodAt.x); w.Put(st.BloodAt.y); w.Put(st.BloodAt.z);
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
     }
 
@@ -335,6 +345,8 @@ public static class CrusadeSync
         _host.Portal = r.GetBool();
         _host.Home = r.GetBool();
         _host.FinalKilled = r.GetBool();
+        _host.BloodOut = r.GetBool();
+        _host.BloodAt = new Vector3(r.GetFloat(), r.GetFloat(), r.GetFloat());
         _hostKnown = true;
     }
 
@@ -365,9 +377,9 @@ public static class CrusadeSync
         var (door, boss) = Triggers();
         if (_host.Door == (byte)InteractableTriggerState.Triggered && door != null && door.State != InteractableTriggerState.Triggered)
             Force(door, "door", UnityEngine.Object.FindObjectOfType<CrusadeDoorObject>());
-        if (_host.BossRoom == (byte)InteractableTriggerState.Triggered && boss != null && boss.State != InteractableTriggerState.Triggered)
+        if (_host.BossRoom == (byte)InteractableTriggerState.Triggered && boss != null && boss.State != InteractableTriggerState.Triggered
+            && (door == null || door.State == InteractableTriggerState.Triggered)) // the door first
         {
-            if (door != null && door.State != InteractableTriggerState.Triggered) return; // the door first
             var local = GameState.LocalPlayerEntity;
             if (local != null && !Near(local.transform.position, boss.transform.position, 12f))
             {
@@ -379,6 +391,7 @@ public static class CrusadeSync
             Force(boss, "boss room", null);
         }
         if (_host.BloodTaken && !map._hasCollectedTitanBlood) CollectBlood(map, "host state");
+        MirrorBloodItem();
         var sig = SigilTriggers();
         for (int i = 0; i < sig.Count && i < 8; i++)
         {
@@ -537,6 +550,51 @@ public static class CrusadeSync
         return true;
     }
 
+    private static GameObject? _bloodCopy;
+    private static float _bloodAskAt;
+
+    /// <summary>Client: the titan blood (or the crown) lies on the host's map - its boss died there, not here: a copy
+    /// at the same spot, so the guest sees it; walking onto it asks the host (who collects it for everyone).</summary>
+    private static void MirrorBloodItem()
+    {
+        if (!_host.BloodOut)
+        {
+            if (_bloodCopy != null) { UnityEngine.Object.Destroy(_bloodCopy); _bloodCopy = null; }
+            return;
+        }
+        var local = GameState.LocalPlayerEntity;
+        if (_bloodCopy == null)
+        {
+            CoopSession.Notice(Ui.Loc.Msg("nt.titan_blood_out"), 6f);
+            CollectableTitanBlood? src = null;
+            foreach (var b in Resources.FindObjectsOfTypeAll<CollectableTitanBlood>()) if (b != null) { src = b; if (b.gameObject.scene.IsValid()) break; }
+            if (src != null)
+            {
+                _bloodCopy = UnityEngine.Object.Instantiate(src.gameObject);
+                _bloodCopy.name = "SoulstoneCoop-TitanBlood";
+                // only the look: the copy's own pickup would run the client's titan blood code
+                foreach (var c in _bloodCopy.GetComponentsInChildren<CollectableTitanBlood>(true)) c.enabled = false;
+                foreach (var col in _bloodCopy.GetComponentsInChildren<Collider>(true)) col.enabled = false;
+                _bloodCopy.SetActive(true);
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][crusade] Client: the host's titan blood shown at {_host.BloodAt}.");
+            }
+            else
+            {
+                _bloodCopy = new GameObject("SoulstoneCoop-TitanBlood"); // nothing to copy: no look, the walk-on still works
+            }
+        }
+        _bloodCopy.transform.position = _host.BloodAt;
+        if (local != null && Near(local.transform.position, _host.BloodAt, 2.5f) && Time.unscaledTime - _bloodAskAt > 1.5f)
+        {
+            _bloodAskAt = Time.unscaledTime;
+            var w = new NetDataWriter();
+            w.Put((byte)PacketType.CrusadeEvent);
+            w.Put(KindBloodReq);
+            NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
+            Plugin.StaticLog.LogInfo("[SoulstoneCoop][crusade] Client: walked onto the titan blood - asking the host.");
+        }
+    }
+
     private static void HideBloodItems()
     {
         foreach (var b in UnityEngine.Object.FindObjectsOfType<CollectableTitanBlood>())
@@ -545,6 +603,7 @@ public static class CrusadeSync
 
     internal static void ResetForScene()
     {
+        if (_bloodCopy != null) { UnityEngine.Object.Destroy(_bloodCopy); _bloodCopy = null; }
         _clientWon = false;
         _hostKnown = false;
         _sent = default;
@@ -655,9 +714,11 @@ public static class CrusadeSync
         {
             if (NetworkManager.Role != NetRole.Host) return;
             var map = Map();
-            if (map == null || map._hasCollectedTitanBlood) return;
+            bool crown = map != null && map._hasCollectedTitanBlood && map.CollectVoidKingLoot != null && !map.CollectVoidKingLoot.Completed;
+            if (map == null || (map._hasCollectedTitanBlood && !crown)) return;
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][crusade] Host: slot {from} touched the titan blood.");
             map.OnTitanBloodCollected();
+            HideBloodItems();
             return;
         }
         if (NetworkManager.Role != NetRole.Client) return;
@@ -955,7 +1016,8 @@ public static class CrusadeSync
                 if (t == "sigil") foreach (var st2 in SigilTriggers()) if (st2 != null && st2.gameObject.activeInHierarchy && st2.State != InteractableTriggerState.Triggered) { at = st2.transform.position; break; }
                 if (t == "home" && Map()?.HomePortalObject != null) at = Map()!.HomePortalObject.transform.position;
                 if (t == "portal" && Map()?.TargetPortalTrigger != null) at = Map()!.TargetPortalTrigger.transform.position;
-                if (t == "blood") foreach (var b in UnityEngine.Object.FindObjectsOfType<CollectablePowerUpRequest>()) if (b != null && b.gameObject.activeInHierarchy) { at = b.transform.position; break; }
+                if (t == "blood" && NetworkManager.Role == NetRole.Client && _hostKnown && _host.BloodOut) at = _host.BloodAt;
+                if (t == "blood" && at == null) foreach (var b in UnityEngine.Object.FindObjectsOfType<CollectablePowerUpRequest>()) if (b != null && b.gameObject.activeInHierarchy) { at = b.transform.position; break; }
                 if (t.StartsWith("rune") && Lobby()?.TitanBloodRunes != null && int.TryParse(t.Substring(4), out var ri) && ri < Lobby()!.TitanBloodRunes.Length) at = Lobby()!.TitanBloodRunes[ri].transform.position;
                 if (t == "unstable" && Lobby()?.UnstablePortalTrigger != null) at = Lobby()!.UnstablePortalTrigger.transform.position;
                 if (t == "primordial" && Lobby()?.PrimordialPortalObject != null) at = Lobby()!.PrimordialPortalObject.transform.position;

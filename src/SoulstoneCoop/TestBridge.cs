@@ -158,6 +158,7 @@ public static class TestBridge
                 };
                 Commands["loadscene"] = Lobby.MasterySync.TestLoadScene;
                 Commands["crusade"] = Lobby.CrusadeSync.Test;
+                Commands["options"] = Ui.CoopUi.TestOptions;
                 Commands["guestcc"] = Enemies.GuestEffects.TestApply;
                 Commands["enemycc"] = Enemies.GuestEffects.TestInspect;
                 Commands["levelup"] = _ => { var xp = GameState.LocalPlayerEntity?._experience; if (xp == null) return "no xp"; xp.LevelUpMultipleTimes(1); return "level " + xp.Level; };
