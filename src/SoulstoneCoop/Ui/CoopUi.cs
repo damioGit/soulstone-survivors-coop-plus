@@ -802,6 +802,9 @@ public static class CoopUi
         new() { Key = "opt.end_host_left", HostOnly = false,
             Value = () => OnOff(Plugin.EndRunWhenHostLeaves.Value),
             Next = () => Plugin.EndRunWhenHostLeaves.Value = !Plugin.EndRunWhenHostLeaves.Value },
+        new() { Key = "opt.lobby_partners", HostOnly = false,
+            Value = () => OnOff(Lobby.LobbyPartners.Enabled.Value),
+            Next = () => Lobby.LobbyPartners.Enabled.Value = !Lobby.LobbyPartners.Enabled.Value },
     };
 
     private static Button? _optionsButton;

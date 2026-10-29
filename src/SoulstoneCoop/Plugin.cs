@@ -12,7 +12,7 @@ public class Plugin : BasePlugin
     public const string PluginGuid = "com.kolber.soulstonecoop";
     public const string PluginName = "Soulstone Coop";
     // Checked in the connection handshake (phase 6): host and client must match exactly.
-    public const string PluginVersion = "0.11.0";
+    public const string PluginVersion = "0.12.0";
 
     internal static ManualLogSource StaticLog = null!;
     internal static BepInEx.Configuration.ConfigEntry<bool> AutoHost = null!;
@@ -38,6 +38,7 @@ public class Plugin : BasePlugin
         Net.LevelUpPolicy.Bind(Config);
         Ui.PartyHud.Bind(Config); // party panel (the author's 1.1.0)
         Ui.CameraZoom.Bind(Config);
+        Lobby.LobbyPartners.Bind(Config);
         Ui.Loc.Init(Config); // docs/i18n-notas.md
 
         AutoHost = Config.Bind("Debug", "AutoHost", false,

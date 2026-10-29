@@ -56,7 +56,7 @@ case "${1:-}" in
   stop)
     for p in $(pids); do taskkill //PID $p //F >/dev/null; done
     rm -f "$G/steam_appid.txt"
-    reg import "I:\\soulstone-coop-backup2\\registry.reg" 2>&1 | tail -1
+    reg import "I:\\soulstone-coop-backup3\\registry.reg" 2>&1 | tail -1
     echo stopped
     ;;
   A|B) who=$1; shift; req $who "$@" ;;

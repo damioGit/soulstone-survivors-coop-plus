@@ -44,6 +44,8 @@ public static class EnemyCasts
     internal static void CountBlockedGodProxy() => _blockedGodProxy++;
     internal static void CountCaptureError() => _captureErrors++;
 
+    private static readonly HashSet<string> BrokenKeys = new();
+
     internal static void ForgetPuppet(IntPtr puppetPtr) => SkillsByPuppet.Remove(puppetPtr);
 
     /// <summary>Phase 8: every puppet dropped at once (host gone, new run): their pooled instances must not keep
@@ -61,7 +63,7 @@ public static class EnemyCasts
     // #9: regular enemies' attacks too, kept cheap: only near a client, at most one per enemy every 0.4 s and a
     // shared budget of ~40 casts/s (a few KB/s). Bosses, elites and specials keep the old rules.
     private const float RegularMinInterval = 0.4f;
-    private const float RegularRange = 30f;
+    private const float RegularRange = 45f; // the zoomed-out co-op camera sees ~35 m; lingering areas drift in
     private const float RegularBudgetPerSecond = 40f;
     private static float _regularBudget = RegularBudgetPerSecond;
     private static float _regularBudgetTime;
@@ -171,6 +173,7 @@ public static class EnemyCasts
         if (!CoopRole.IsClientSide) return;
         _recv++;
 
+        string? replaying = null;
         try
         {
             var puppet = ClientPuppets.TryGetLive(netId);
@@ -181,9 +184,11 @@ public static class EnemyCasts
             if (skill == null || caster == null) { _noSkill++; return; }
             if (IsSummonSkill(skill)) { _skippedSummon++; return; }
             if (!skill.isActiveAndEnabled) { _inactive++; return; }
-            // A charged line attack's telegraph (SkillChargingTimeTraitLineArea) throws on a puppet (it needs what
-            // only the host's AI set up): no replay of those - the host's hit still lands.
-            if (skill.ChargingTrait != null && skill.GetComponentInChildren<SkillChargingTimeTraitLineArea>(true) != null) { _inactive++; return; }
+            // A skill whose replay threw once isn't replayed again (the host's hit still lands). Charged line attacks
+            // (beams, flamethrowers, cleaves) used to be skipped as a group after one threw on a titan; with the aim
+            // point always given they replay fine.
+            if (BrokenKeys.Contains(key)) { _inactive++; return; }
+            replaying = key;
 
             e.transform.rotation = Quaternion.Euler(0f, yaw, 0f); // front-of-caster skills aim with the caster's forward
 
@@ -240,7 +245,9 @@ public static class EnemyCasts
         catch (Exception ex)
         {
             _errors++;
-            if (_errors <= 5) Plugin.StaticLog.LogError($"[SoulstoneCoop][enemycasts] Replaying '{key}' on #{netId}: {ex}");
+            if (replaying != null && BrokenKeys.Add(replaying))
+                Plugin.StaticLog.LogWarning($"[SoulstoneCoop][enemycasts] '{replaying}' threw on a puppet - not replayed any more this session: {ex.Message}");
+            else if (_errors <= 5) Plugin.StaticLog.LogError($"[SoulstoneCoop][enemycasts] Replaying '{key}' on #{netId}: {ex}");
         }
     }
 

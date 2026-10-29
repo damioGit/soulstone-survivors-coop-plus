@@ -10,7 +10,9 @@ namespace SoulstoneCoop.Ui;
 /// game places its camera each frame (PlayerCameraController.UpdateAll), the camera is pulled back along its view by
 /// [Coop] CameraZoomOut percent of its distance to the target, and put back before the next placement, so the game's
 /// own follow, lerps and shake never see (or compound) the offset. The far clip plane grows with it so the ground at
-/// the screen's top edge isn't cut. Local only.
+/// the screen's top edge isn't cut, and so does the fog: the maps' linear fog (RenderSettings, ~65-75 m) and their
+/// volumetric fog's max distance are measured from the camera, so the farther camera drowned the screen in fog.
+/// Local only.
 /// </summary>
 internal static class CameraZoom
 {
@@ -37,9 +39,48 @@ internal static class CameraZoom
         _moved = null;
     }
 
+    // The fog distances the scene set (re-read whenever they aren't the ones we wrote: a new scene, the game itself).
+    private static float _fogStart, _fogEnd, _fogWroteStart = float.NaN, _fogWroteEnd = float.NaN, _fogScale = 1f;
+    private static readonly Dictionary<IntPtr, (float baseMax, float wrote)> _volumeFog = new();
+    private static float _volumeTimer;
+
+    private static void ApplyFog(float scale)
+    {
+        if (RenderSettings.fog)
+        {
+            float s = RenderSettings.fogStartDistance, e = RenderSettings.fogEndDistance;
+            if (s != _fogWroteStart || e != _fogWroteEnd) { _fogStart = s; _fogEnd = e; }
+            _fogWroteStart = _fogStart * scale;
+            _fogWroteEnd = _fogEnd * scale;
+            if (s != _fogWroteStart) RenderSettings.fogStartDistance = _fogWroteStart;
+            if (e != _fogWroteEnd) RenderSettings.fogEndDistance = _fogWroteEnd;
+        }
+        // The volumetric fog's profile only needs a look now and then (and when the zoom changes).
+        _volumeTimer -= Time.unscaledDeltaTime;
+        if (_volumeTimer > 0f && scale == _fogScale) return;
+        _volumeTimer = 1f;
+        _fogScale = scale;
+        var fogs = VolumetricFogAndMist2.VolumetricFog.volumetricFogs;
+        if (fogs == null) return;
+        foreach (var vf in fogs)
+        {
+            var pr = vf != null ? vf.profile : null;
+            if (pr == null) continue;
+            float max = pr.maxDistance;
+            if (!_volumeFog.TryGetValue(pr.Pointer, out var known) || known.wrote != max) known = (max, max);
+            float want = known.baseMax * scale;
+            _volumeFog[pr.Pointer] = (known.baseMax, want);
+            if (max == want) continue;
+            pr.maxDistance = want;
+            vf.UpdateMaterialProperties();
+        }
+    }
+
     internal static void Apply()
     {
+        if (!GameManagerUtil.HasGameManager) return; // menus: no run camera (PlayerCamera throws)
         float extra = NetworkManager.HasPeer ? ZoomOut.Value / 100f : 0f;
+        ApplyFog(1f + extra);
         var ctrl = GameManagerUtil.PlayerCamera;
         var cam = ctrl != null ? ctrl.Camera : null;
         if (cam == null) return;
@@ -66,6 +107,8 @@ internal static class CameraZoom
 [HarmonyPatch(typeof(PlayerCameraController), nameof(PlayerCameraController.UpdateAll))]
 internal static class CameraZoomPatch
 {
+    private static int _errors;
+
     private static void Prefix()
     {
         try { CameraZoom.Restore(); } catch { }
@@ -74,6 +117,6 @@ internal static class CameraZoomPatch
     private static void Postfix()
     {
         try { CameraZoom.Apply(); }
-        catch (System.Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][ui] CameraZoom: {ex.Message}"); }
+        catch (System.Exception ex) { if (_errors++ < 3) Plugin.StaticLog.LogWarning($"[SoulstoneCoop][ui] CameraZoom: {ex.Message}"); }
     }
 }

@@ -75,6 +75,11 @@
       <HintPath>$(Interop)\UnityEngine.UI.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- the maps' volumetric fog (VolumetricFogAndMist2), pushed back with the co-op camera zoom (Ui/CameraZoom.cs) -->
+    <Reference Include="Unity.RenderPipelines.Universal.Runtime">
+      <HintPath>$(Interop)\Unity.RenderPipelines.Universal.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="UnityEngine.UIElementsModule">
       <HintPath>$(Interop)\UnityEngine.UIElementsModule.dll</HintPath>
       <Private>false</Private>

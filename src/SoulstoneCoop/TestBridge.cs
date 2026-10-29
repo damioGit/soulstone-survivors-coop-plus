@@ -207,6 +207,55 @@ public static class TestBridge
                             hits.Add($"{e.gameObject.name}@{e.transform.position:0} team={(e._team != null ? e._team.Team.ToString() : "-")} setup={e.HasBeenSetUp} tracked={Enemies.HostEnemySync.TryGetNetId(e, out var id)}#{id} icon={(e._health != null ? e._health.MinimapIconId : -9)} ignore={(e._health != null && e._health.IgnoreMinimapTracking)}");
                     return hits.Count + ": " + string.Join(" | ", hits.Take(8));
                 };
+                // "objs NAME_PART": active scene objects whose name contains it (lingering skill areas, VFX...).
+                Commands["objs"] = a =>
+                {
+                    if (a.Length == 0) return "usage: objs NAME_PART";
+                    var hits = new Dictionary<string, int>();
+                    foreach (var t in UnityEngine.Object.FindObjectsOfType<Transform>())
+                        if (t != null && t.gameObject.activeInHierarchy && t.name.IndexOf(a[0], StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            string k = t.name + (t.parent != null ? "<" + t.parent.name : "");
+                            hits[k] = hits.TryGetValue(k, out var c) ? c + 1 : 1;
+                        }
+                    return hits.Count + ": " + string.Join(" | ", hits.OrderBy(kv => kv.Key).Take(a.Length > 1 ? 1000 : 20).Select(kv => $"{kv.Key} x{kv.Value}"));
+                };
+                // "fog": the scene's fog settings and every component whose type or object looks like fog.
+                Commands["fog"] = _ =>
+                {
+                    var sb2 = new StringBuilder();
+                    sb2.Append($"rs fog={RenderSettings.fog} mode={RenderSettings.fogMode} start={RenderSettings.fogStartDistance:0.0} end={RenderSettings.fogEndDistance:0.0} density={RenderSettings.fogDensity:0.0000} color={RenderSettings.fogColor}");
+                    var cam = Camera.main;
+                    if (cam != null) sb2.Append($" | cam {cam.name} pos={cam.transform.position:0.0} far={cam.farClipPlane:0}");
+                    foreach (var vf in UnityEngine.Object.FindObjectsOfType<VolumetricFogAndMist2.VolumetricFog>())
+                    {
+                        var pr = vf != null ? vf.profile : null;
+                        if (pr == null) continue;
+                        sb2.Append($" | vfog {vf.name} density={pr.density:0.00} distance={pr.distance:0.0} fallOff={pr.distanceFallOff:0.00} max={pr.maxDistance:0} maxFallOff={pr.maxDistanceFallOff:0.00} distant={pr.distantFogStartDistance:0} instanced={vf.profileIsInstanced} fade={vf.enableFade}/{vf.fadeDistance:0}");
+                    }
+                    foreach (var c in UnityEngine.Object.FindObjectsOfType<Component>())
+                    {
+                        if (c == null) continue;
+                        string tn = c.GetIl2CppType().FullName;
+                        if (tn.IndexOf("fog", StringComparison.OrdinalIgnoreCase) < 0 && c.gameObject.name.IndexOf("fog", StringComparison.OrdinalIgnoreCase) < 0
+                            && tn.IndexOf("Volume", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        sb2.Append($" | {c.gameObject.name}:{tn} on={c.gameObject.activeInHierarchy} pos={c.transform.position:0} scale={c.transform.lossyScale:0.0}");
+                    }
+                    return sb2.ToString();
+                };
+                Commands["holders"] = _ => string.Join(" | ", UnityEngine.Object.FindObjectsOfType<CharacterModelHolder>().Where(h => h != null).Select(h =>
+                    $"{h.gameObject.name} on={h.isActiveAndEnabled} pos={h.transform.position:0.00} rot={h.transform.eulerAngles:0} place={(h.ModelPlaceholder != null ? h.ModelPlaceholder.position.ToString("0.00") + "/" + h.ModelPlaceholder.lossyScale.ToString("0.00") : "-")} " +
+                    $"spawned={(h.SpawnedCharacter != null ? h.SpawnedCharacter.name + "@" + h.SpawnedCharacter.transform.position.ToString("0.00") : "-")} cam={(Camera.main != null ? Camera.main.transform.position.ToString("0.0") : "-")}"));
+                // "lineskills": the live enemies' skills with a charged line telegraph.
+                Commands["lineskills"] = _ =>
+                {
+                    var hits = new HashSet<string>();
+                    foreach (var e in UnityEngine.Object.FindObjectsOfType<Entity>())
+                        if (e != null && !e.IsPlayer())
+                            foreach (var s in e.GetComponentsInChildren<Skill>(true))
+                                if (s != null && s.GetComponentInChildren<SkillChargingTimeTraitLineArea>(true) != null) hits.Add(e.gameObject.name + ":" + s.gameObject.name);
+                    return hits.Count + ": " + string.Join(" | ", hits);
+                };
                 Commands["mmicons"] = _ =>
                 {
                     var items = MinimapManager._items;
@@ -271,6 +320,17 @@ public static class TestBridge
                 Commands["god"] = _ => { _god = true; var h = GameState.LocalPlayerEntity?._health; if (h == null) return "no health (kept on)"; h.InvulnerabilityTime = 100000f; return "invulnerable"; };
                 Commands["panel"] = a => { Ui.CoopUi.TestOpen(a.Length == 0 || a[0] != "off"); return "panel toggled"; };
                 Commands["speeds"] = _ => PlayerSync.TestSpeeds();
+                Commands["autocast"] = _ =>
+                {
+                    var p = GameState.LocalPlayerEntity;
+                    var ac = p != null ? p._playerSkillAutoCast : null;
+                    if (ac == null) return "no autocast";
+                    var sc = p!._skillCaster;
+                    return $"combat={GameManagerUtil.CombatActive} forceStop={ac.ForceStopAutoCasting} enabled={ac.isActiveAndEnabled} trigger={(ac.TargetAreaTrigger != null ? ac.TargetAreaTrigger.isActiveAndEnabled.ToString() : "-")} " +
+                        $"busy={sc?.RemainingBusyTime:0.00} gcd={sc?.RemainingGlobalCooldown:0.00} skills={sc?.Skills?.Count} onCd={sc?.SkillsOnCooldown?.Count} casterOn={sc?.isActiveAndEnabled} " +
+                        $"targets={(ac.TargetAreaTrigger != null && ac.TargetAreaTrigger.AffectedEntities != null ? ac.TargetAreaTrigger.AffectedEntities.Count : -1)} " +
+                        string.Join(",", (sc?.Skills?.ToArray() ?? new Skill[0]).Where(s => s != null).Select(s => $"{s.name}:cd={s.RemainingCooldown:0.0}/{s.Cooldown:0.0}:set={s.IsSetUp}:charging={s.IsCharging}"));
+                };
                 StateProviders["affix"] = () => RunSync.LastRunAffixes.Replace(' ', ',');
                 Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] bridge '{Plugin.TestArg}' in {_dir}");
             }
@@ -601,3 +661,4 @@ public static class TestBridge
     /// <summary>Extra state fields registered by feature modules.</summary>
     internal static readonly Dictionary<string, Func<string>> StateProviders = new();
 }
+

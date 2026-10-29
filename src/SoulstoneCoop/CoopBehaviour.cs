@@ -144,6 +144,7 @@ public class CoopBehaviour : MonoBehaviour
             Ui.CoopUi.Tick();
             PlayerSync.Tick(Time.unscaledDeltaTime);
             GhostOverhead.Tick(Time.unscaledDeltaTime);
+            Lobby.LobbyPartners.Tick();
             Life.PartnerHealth.Tick(Time.unscaledDeltaTime);
             Summons.SummonSync.Tick(Time.unscaledDeltaTime);
             ClientSpawnBlock.Tick(Time.unscaledDeltaTime);

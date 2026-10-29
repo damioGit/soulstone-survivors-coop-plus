@@ -615,11 +615,25 @@ public static class SummonSync
                 if (found == null && m.SkillKey.Length > 0) found = FindInSkillPrefab(m.SkillKey, m.PrefabName);
                 found ??= FindLoadedEntityAsset(m.PrefabName);
                 if (found == null && m.Kind == Kind.Companion) found = ResourcesUtil.Load<Entity>("Companions/" + m.PrefabName)?.gameObject;
+                // Summons the skill lookup misses (power-up totems, golems: "Creeps/ShockwaveTotem-Summon") and companions
+                // in a folder of their kind ("Companions/Dog/WeaponHoundMaster-01-Dog"), as the game's catalog lists them.
+                if (found == null) found = TryLoad("Creeps/" + m.PrefabName);
+                if (found == null && m.Kind == Kind.Companion)
+                {
+                    int dash = m.PrefabName.LastIndexOf('-');
+                    if (dash >= 0 && dash < m.PrefabName.Length - 1) found = TryLoad($"Companions/{m.PrefabName.Substring(dash + 1)}/{m.PrefabName}");
+                }
             }
         }
         catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][summons] Resolving '{m.PrefabName}': {ex.Message}"); }
         TemplateCache[cacheKey] = found;
         return found;
+    }
+
+    private static GameObject? TryLoad(string path)
+    {
+        try { return ResourcesUtil.Load<Entity>(path)?.gameObject; }
+        catch { return null; }
     }
 
     /// <summary>The summoning skill's own prefab (same on both machines) and its SummonEntity*Effect.PossiblePrefabs.</summary>

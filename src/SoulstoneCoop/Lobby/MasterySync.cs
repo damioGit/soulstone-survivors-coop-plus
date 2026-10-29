@@ -477,6 +477,7 @@ public static class MasterySync
         ushort mainId = 0;
         if (gm._mainBossEntity != null) Enemies.HostEnemySync.TryGetNetId(gm._mainBossEntity, out mainId);
         w.Put(mainId);
+        w.Put(GameManagerUtil.CombatActive);
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
     }
 
@@ -496,6 +497,7 @@ public static class MasterySync
         for (int i = 0; i < nb; i++) bars.Add(r.GetUShort());
         var hostObjectives = ReadObjectives(r);
         ushort mainBossId = r.AvailableBytes >= 2 ? r.GetUShort() : (ushort)0;
+        bool? combat = r.AvailableBytes >= 1 ? r.GetBool() : null;
         if (NetworkManager.Role != NetRole.Client || !GameManagerUtil.HasGameManager) return;
         var gm = Manager();
         if (gm == null) return;
@@ -526,6 +528,13 @@ public static class MasterySync
         {
             var boss = Enemies.ClientPuppets.TryGetPuppetEntity(mainBossId);
             if (boss != null) SetMainBoss(gm, boss, mainBossId);
+        }
+        // The players' auto-cast only fires while combat is on; the game turns it on in the spawn routine that the
+        // client skips (the host spawns), so a guest never attacked in Mastery. The host's flag is the run's.
+        if (combat.HasValue && GameManagerUtil.CombatActive != combat.Value)
+        {
+            GameManagerUtil.CombatActive = combat.Value;
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: combat {(combat.Value ? "on" : "off")} (the host's).");
         }
         SyncPillars(gm, pillars);
         Enemies.ClientPuppets.ReconcileBossBars(bars);

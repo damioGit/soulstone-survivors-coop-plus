@@ -104,6 +104,33 @@ public static class VisualGhostFactory
         return cloneGo;
     }
 
+    /// <summary>Just the partner's character model (no entity clone around it, so no ground ring), stripped and active
+    /// under a root of its own: the lobby's stand-in (Lobby.LobbyPartners). Null + reason if it can't be built.</summary>
+    internal static GameObject? CreateModelOnly(PlayerInfo info, string name, Vector3 position, Quaternion rotation, out string what)
+    {
+        try
+        {
+            var model = TryBuildRemoteModel(info, out what, out var animator);
+            if (model == null) return null;
+            var root = new GameObject(name);
+            root.transform.SetPositionAndRotation(position, rotation);
+            model.transform.SetParent(root.transform, false);
+            model.SetActive(true);
+            if (animator != null) animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+            return root;
+        }
+        catch (Exception ex)
+        {
+            what = $"building the model threw: {ex.Message}";
+            return null;
+        }
+        finally
+        {
+            if (_buildHolder != null) UnityEngine.Object.Destroy(_buildHolder);
+            _buildHolder = null;
+        }
+    }
+
     /// <summary>The partner's model, stripped and still under the inactive build holder (null + reason if not possible).</summary>
     private static GameObject? TryBuildRemoteModel(PlayerInfo r, out string what, out Animator? modelAnimator)
     {
