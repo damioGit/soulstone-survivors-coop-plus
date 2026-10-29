@@ -95,7 +95,7 @@ public static class HostEnemySync
 
     private static readonly HashSet<string> LoggedUntracked = new();
 
-    /// <summary>Phase 4D: minerals / healing crystals (and maybe pillars) are not on the enemy team, so IsTrackable
+    /// <summary>Phase 4D: minerals / healing crystals (and maybe pillars, and the questline's altars) are not on the enemy team, so IsTrackable
     /// skips them (first test: the F7 mineral never reached the client). Track a non-allied, non-player entity when its
     /// prefab lives under Resources/Minerals or Resources/Pillars; log every other untracked name once.</summary>
     private static bool IsNeutralSpecial(Entity e)
@@ -106,8 +106,11 @@ public static class HostEnemySync
         if (team != null && ((int)team.Team & 3) != 0) return false; // Players | Summons
         if (e.EntityName == "EntityNameGod" || e == GameManagerUtil.GameData?.GodEntity) return false;
         string key = EnemyPrefabKeys.HostKeyFor(e, null);
+        // Questline entities too: the seasonal altars are on the Special team (Resources/Events/Entities).
         bool ok = key.StartsWith(EnemyPrefabKeys.ResPrefix + "Minerals/", StringComparison.OrdinalIgnoreCase)
-               || key.StartsWith(EnemyPrefabKeys.ResPrefix + "Pillars/", StringComparison.OrdinalIgnoreCase);
+               || key.StartsWith(EnemyPrefabKeys.ResPrefix + "Pillars/", StringComparison.OrdinalIgnoreCase)
+               || key.StartsWith(EnemyPrefabKeys.ResPrefix + "Events/", StringComparison.OrdinalIgnoreCase)
+               || key.StartsWith(EnemyPrefabKeys.QuestPrefix, StringComparison.Ordinal);
         string name = EnemyPrefabKeys.StripClone(e.gameObject.name);
         if (LoggedUntracked.Add(name))
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][enemies] Host: non-enemy-team entity '{name}' team={(team != null ? team.Team.ToString() : "none")} key={key} -> {(ok ? "tracked" : "not tracked")}");

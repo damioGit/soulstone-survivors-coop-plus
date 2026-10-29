@@ -13,6 +13,7 @@ public enum PortalKind : byte
     Endless = 0,
     BossRush = 1,
     Restart = 2, // end screen's Restart (RunSync): the run's parameters follow the map
+    Quest = 3,   // the questline's portal (UnlockPortalQuestlineReward: BossRunes -> IceCavern, CollectEggs -> MineCavern)
 }
 
 /// <summary>
@@ -41,6 +42,9 @@ public static class PortalSync
     private static PortalKind _pendingKind;
     private static string? _pendingMap;
     private static bool _pendingIsRequest;
+
+    // Host: the questline portal being entered (its OnSpecialPortalEntered is in progress) and where it leads.
+    internal static string? QuestMap;
 
     private static float _lastRequestTime = -10f;
     private static bool _prevF5;
@@ -80,10 +84,14 @@ public static class PortalSync
     {
         bool capturing = _capturing;
         _capturing = false;
-        string? map = kind == PortalKind.BossRush ? BossRushMap() : _drawnMap;
+        string? map = kind == PortalKind.BossRush ? BossRushMap() : kind == PortalKind.Quest ? QuestMap : _drawnMap;
         _drawnMap = null;
         var obj = GameManagerUtil.GameData?.EnterPortalObjective;
-        if (wasCompleted || obj == null || !obj.Completed) return; // the game didn't take anyone through
+        if (wasCompleted || obj == null || !obj.Completed)
+        {
+            if (kind == PortalKind.Quest) Plugin.StaticLog.LogWarning($"[SoulstoneCoop][portal] Quest portal to {map}: the game didn't complete the portal objective (was {wasCompleted}, obj {obj != null}).");
+            return; // the game didn't take anyone through
+        }
 
         if (NetworkManager.Role == NetRole.Host && capturing && !string.IsNullOrEmpty(map))
             RunSync.OnHostStageChanged(map!);
@@ -137,6 +145,13 @@ public static class PortalSync
     /// <summary>Runs the scene manager's own portal entry (the UnityEvent target), so our patches apply.</summary>
     internal static bool EnterPortal(PortalKind kind)
     {
+        if (kind == PortalKind.Quest)
+        {
+            // Host: the questline's own portal. Client following: the Endless portal's code carries the run (level,
+            // skills, items) to the next scene like the quest portal does; ClientFollow then loads the quest's map.
+            if (NetworkManager.Role != NetRole.Client) return Loot.QuestSync.EnterHostQuestPortal();
+            kind = PortalKind.Endless;
+        }
         var sgm = GameManagerUtil.GameData?.SurvivorsGameManager;
         if (sgm != null)
         {
@@ -171,7 +186,10 @@ public static class PortalSync
     }
 
     /// <summary>"Challenge portal" / "Endless portal", as a message (rendered in the language of whoever reads it).</summary>
-    private static string Label(PortalKind kind) => Ui.Loc.Msg(kind == PortalKind.BossRush ? "portal.challenge" : "portal.endless");
+    private static string Label(PortalKind kind) => Ui.Loc.Msg(kind == PortalKind.BossRush ? "portal.challenge" : kind == PortalKind.Quest ? "portal.quest" : "portal.endless");
+
+    /// <summary>Client: we stood in the (copied) quest portal for its TimeToEnter (Loot.QuestSync).</summary>
+    internal static void AskHostQuestPortal() => AskHost(PortalKind.Quest);
 
     // =====================================================================================
     // Client: asking the host / following it
@@ -215,7 +233,7 @@ public static class PortalSync
 
     private static void ClientFollow(PortalKind kind, string map, SimpleObjective obj)
     {
-        string? missing = MissingMap(map);
+        string? missing = MissingMap(map, kind);
         if (missing != null)
         {
             Plugin.StaticLog.LogWarning($"[SoulstoneCoop][portal] Client can't follow to {map}: {Ui.Loc.Plain(missing)}. Taking the Home portal.");
@@ -246,11 +264,12 @@ public static class PortalSync
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][portal] Client followed the host's {kind} portal: LoadNextScene({map}).");
     }
 
-    private static string? MissingMap(string map)
+    private static string? MissingMap(string map, PortalKind kind)
     {
         if (string.IsNullOrEmpty(map)) return Ui.Loc.Msg("why.unknown_map");
         var maps = Global.MapCollection;
-        if (maps != null && maps.GetMapById(map) == null) return Ui.Loc.Msg("why.no_map", ("map", map));
+        // The questline portals lead to the secret maps (IceCavern, MineCavern), which aren't in the map collection.
+        if (kind != PortalKind.Quest && maps != null && maps.GetMapById(map) == null) return Ui.Loc.Msg("why.no_map", ("map", map));
         if (!Application.CanStreamedLevelBeLoaded(map)) return Ui.Loc.Msg("why.no_scene", ("map", map));
         return null;
     }
@@ -263,7 +282,7 @@ public static class PortalSync
     {
         var kind = (PortalKind)r.GetByte();
         if (NetworkManager.Role != NetRole.Host) return;
-        if (kind != PortalKind.Endless && kind != PortalKind.BossRush) return;
+        if (kind != PortalKind.Endless && kind != PortalKind.BossRush && kind != PortalKind.Quest) return;
         if (!Life.CoopLife.InMatchNow || CoopSession.StageTransition || Life.CoopLife.LeftAlone)
         {
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][portal] Host: client asked for the {kind} portal - ignored (not in a match or already changing scene).");
@@ -504,6 +523,34 @@ public static class PortalBossRoomBossRushPatch
     {
         try { PortalSync.OnPortalPostfix(PortalKind.BossRush, __state); }
         catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] PortalBossRoomBossRushPatch.Postfix: {ex}"); }
+    }
+}
+
+/// <summary>The questline's portal (UnlockPortalQuestlineReward), opened with the stage's portals once its quest is done.</summary>
+[HarmonyPatch(typeof(UnlockPortalQuestlineReward), nameof(UnlockPortalQuestlineReward.OnSpecialPortalEntered))]
+public static class PortalQuestPatch
+{
+    [HarmonyPrefix]
+    public static bool Prefix(UnlockPortalQuestlineReward __instance, out bool __state)
+    {
+        __state = true;
+        try
+        {
+            PortalSync.QuestMap = __instance.TargetMapId;
+            return PortalSync.OnPortalPrefix(PortalKind.Quest, out __state);
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogError($"[SoulstoneCoop] PortalQuestPatch.Prefix: {ex}");
+            return !NetworkManager.HasPeer;
+        }
+    }
+
+    [HarmonyPostfix]
+    public static void Postfix(bool __state)
+    {
+        try { PortalSync.OnPortalPostfix(PortalKind.Quest, __state); }
+        catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] PortalQuestPatch.Postfix: {ex}"); }
     }
 }
 

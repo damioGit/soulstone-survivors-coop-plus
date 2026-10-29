@@ -539,6 +539,7 @@ public static class CoopUi
     private static void OnLeave()
     {
         Plugin.StaticLog.LogInfo("[SoulstoneCoop][ui] Disconnect pressed.");
+        Net.Reconnect.Cancel("Disconnect pressed");
         NetworkManager.Stop();
         Steam.SteamLobby.Leave(); // also cancels a lobby still being created or joined
 

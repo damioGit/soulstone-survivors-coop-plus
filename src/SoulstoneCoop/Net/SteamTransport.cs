@@ -57,12 +57,17 @@ public sealed unsafe class SteamTransport : ITransport
     public NetStatus Status { get; private set; }
     public string? LastError { get; private set; }
     public bool WantsStop { get; private set; }
+    public bool DropRecoverable { get; private set; }
+
+    /// <summary>Host: the Steam accounts that played in this run. One of them may come back (Net.Reconnect) after the
+    /// lobby dropped it, and the lobby is closed during runs: its Hello is taken anyway. Cleared out of runs.</summary>
+    private static readonly HashSet<ulong> RunPlayers = new();
 
     public int PingMs(byte slot) => _bySlot.TryGetValue(slot, out var p) ? p.PingMs : -1;
     public float SilenceSeconds(byte slot) => _bySlot.TryGetValue(slot, out var p) ? Time.unscaledTime - p.LastHeard : 0f;
 
     // Phase 8: simulated latency/loss on what we send (null = off). Handshake packets (40-43) skip it.
-    private readonly SimSendQueue? _sim;
+    private SimSendQueue? _sim;
     private readonly SimSendQueue.SendNow _sendNow;
 
     private readonly TransportCallbacks _cb;
@@ -124,11 +129,13 @@ public sealed unsafe class SteamTransport : ITransport
             if (_helloTimer >= HelloInterval) { _helloTimer = 0f; SendHello(); }
         }
 
+        if (_isHost && !Lobby.CoopSession.LocalInRun && RunPlayers.Count > 0) RunPlayers.Clear();
         if (_byId.Count == 0) return;
         bool localLoading = Lobby.CoopSession.LocalLoading;
         _gone.Clear();
         foreach (var p in _byId.Values)
         {
+            if (_isHost && Lobby.CoopSession.LocalInRun) RunPlayers.Add(p.Id);
             p.PingTimer += dt;
             if (p.PingTimer >= PingInterval)
             {
@@ -159,7 +166,7 @@ public sealed unsafe class SteamTransport : ITransport
         }
         foreach (var p in _gone)
         {
-            PeerGone(p, LastGoneReason ?? Ui.Loc.Msg("net.lost_timeout"));
+            PeerGone(p, LastGoneReason ?? Ui.Loc.Msg("net.lost_timeout"), recoverable: true);
             LastGoneReason = null;
             if (WantsStop) return;
         }
@@ -183,7 +190,7 @@ public sealed unsafe class SteamTransport : ITransport
                         byte* data = *(byte**)((byte*)m + SteamNative.MsgData);
                         int size = *(int*)((byte*)m + SteamNative.MsgSize);
                         ulong from = SteamNative.IdentitySteamId((byte*)m + SteamNative.MsgPeer);
-                        if (data != null && size > 0) OnMessage(from, channel, data, size);
+                        if (data != null && size > 0 && !NetSim.Blackout) OnMessage(from, channel, data, size);
                     }
                     catch (Exception ex)
                     {
@@ -335,7 +342,7 @@ public sealed unsafe class SteamTransport : ITransport
         if (key != ConnectionKey) refuse = Ui.Loc.Msg("net.bad_key");
         else if (version != Plugin.HandshakeVersion) refuse = NetworkManager.VersionRefusal(version);
         else if (proto != SteamLobby.Proto) refuse = Ui.Loc.Msg("net.proto");
-        else if (!SteamLobby.IsMember(from))
+        else if (!SteamLobby.IsMember(from) && !(Lobby.CoopSession.LocalInRun && RunPlayers.Contains(from)))
         {
             if (!_notMemberSince.TryGetValue(from, out float since)) _notMemberSince[from] = since = Time.unscaledTime;
             if (Time.unscaledTime - since < NotMemberGrace)
@@ -404,13 +411,15 @@ public sealed unsafe class SteamTransport : ITransport
     /// <summary>SteamLobby: a member left the lobby (or we were removed).</summary>
     internal void OnMemberLeft(ulong id)
     {
-        if (_byId.TryGetValue(id, out var p)) PeerGone(p, Ui.Loc.Msg(_isHost ? "net.partner_left_lobby" : "net.host_quit"));
+        // No Bye before it: the game crashed or its link went down (a quit says Bye first).
+        if (_byId.TryGetValue(id, out var p)) PeerGone(p, Ui.Loc.Msg(_isHost ? "net.partner_left_lobby" : "net.host_quit"), recoverable: true);
         else if (!_isHost && id == _hostId) Fail(NetStatus.Idle, Ui.Loc.Msg("net.host_left_lobby"));
     }
 
-    private void PeerGone(Peer p, string reason)
+    private void PeerGone(Peer p, string reason, bool recoverable = false)
     {
         if (!_byId.ContainsKey(p.Id)) return;
+        DropRecoverable = recoverable;
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][steam] Peer {p.Id} (slot {p.Slot}) gone: {Ui.Loc.Plain(reason)}.");
         RemovePeer(p);
         if (_isHost)
@@ -469,7 +478,8 @@ public sealed unsafe class SteamTransport : ITransport
     /// <summary>Game traffic and pings: through the simulation queue when it is on (it copies the bytes).</summary>
     private void Out(ulong to, byte[] data, int length, int flags, int channel)
     {
-        if (_sim != null) _sim.Enqueue(to, data, length, flags, channel, reliable: flags == SteamNative.SendReliable);
+        if (_sim == null && NetSim.Enabled) _sim = new SimSendQueue(); // switched on live (test bridge)
+        if (_sim != null && (NetSim.Enabled || _sim.Queued > 0)) _sim.Enqueue(to, data, length, flags, channel, reliable: flags == SteamNative.SendReliable);
         else SendRaw(to, data, length, flags, channel);
     }
 
@@ -534,7 +544,8 @@ public sealed unsafe class SteamTransport : ITransport
         _bySlot.Clear();
         _slots.Clear();
         if (_current == this) _current = null;
-        SteamLobby.Leave();
+        // Net.Reconnect: still a member while we try to get back (the lobby is closed for joining during the run).
+        if (!Reconnect.Active) SteamLobby.Leave();
         Plugin.StaticLog.LogInfo("[SoulstoneCoop][steam] Steam transport stopped.");
     }
 

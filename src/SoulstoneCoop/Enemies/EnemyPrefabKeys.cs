@@ -13,6 +13,9 @@ namespace SoulstoneCoop.Enemies;
 ///                               ResourcesUtil.Load&lt;Entity&gt; on the client.
 ///   "sum:&lt;ownerNetId&gt;:Name"  - phase 4D: a summon whose prefab is a direct reference in the owner's skill
 ///                               (SummonEntity*Effect.PossiblePrefabs), not a Resources path.
+///   "qst:QuestlinePath|Name"  - an entity of the map's questline whose prefab is a direct reference in the
+///                               questline prefab (KillEntityInTimeQuestAction.EntityPrefab, e.g. the seasonal altar
+///                               trigger); the client loads that questline prefab and takes the reference from it.
 ///   "@PrefabName"             - last resort (name lookup in the lists and in loaded assets).
 /// See docs/fase4d-investigacao.md, section 6.
 /// </summary>
@@ -21,6 +24,7 @@ public static class EnemyPrefabKeys
     public const string NamePrefix = "@";
     public const string ResPrefix = "res:";
     public const string SumPrefix = "sum:";
+    public const string QuestPrefix = "qst:";
 
     // Where the game keeps the non-list prefabs (docs/fase4d-investigacao.md, section 2).
     private static readonly string[] ProbeFolders = { "Creeps/", "Bosses/", "Bosses/Ethereals/", "Minerals/", "Pillars/" };
@@ -96,14 +100,14 @@ public static class EnemyPrefabKeys
                 return cached.StartsWith(NamePrefix, StringComparison.Ordinal) && summonOwnerNetId != 0
                     ? SumKey(summonOwnerNetId, cached.Substring(NamePrefix.Length)) : cached;
             string pname = StripClone(prefab.name);
-            string? key = FindAddressByLoadedPrefab(prefab) ?? FindAddressByName(pname) ?? FindResPath(pname, prefab);
+            string? key = FindAddressByLoadedPrefab(prefab) ?? FindAddressByName(pname) ?? FindResPath(pname, prefab) ?? FindQuestKey(pname);
             key ??= NamePrefix + pname;
             HostKeyByPrefabPtr[prefab.Pointer] = key;
             return key.StartsWith(NamePrefix, StringComparison.Ordinal) && summonOwnerNetId != 0 ? SumKey(summonOwnerNetId, pname) : key;
         }
 
         string name = StripClone(instance.gameObject.name);
-        string? k = FindAddressByName(name) ?? FindResPath(name, null);
+        string? k = FindAddressByName(name) ?? FindResPath(name, null) ?? FindQuestKey(name);
         if (k != null) return k;
         return summonOwnerNetId != 0 ? SumKey(summonOwnerNetId, name) : NamePrefix + name;
     }
@@ -233,6 +237,57 @@ public static class EnemyPrefabKeys
         return null;
     }
 
+    /// <summary>Host: the active questline's entities. Spawned by address (EliminateEntities...: "Events/Entities/..."
+    /// is outside the probed folders) or a direct prefab reference (KillEntityInTime: the altar trigger).</summary>
+    private static string? FindQuestKey(string name)
+    {
+        try
+        {
+            foreach (var qm in UnityEngine.Object.FindObjectsOfType<QuestManager>())
+            {
+                var ql = qm != null ? qm.ActiveQuestline : null;
+                if (ql?.Quests == null) continue;
+                foreach (var q in ql.Quests)
+                {
+                    if (q?.QuestActions == null) continue;
+                    foreach (var act in q.QuestActions)
+                    {
+                        var se = act?.TryCast<SpawnEntitiesOverProgressionQuestAction>();
+                        if (se != null && !string.IsNullOrEmpty(se.EntityPrefabAddress) && LastSegment(se.EntityPrefabAddress) == name)
+                            return ResPrefix + se.EntityPrefabAddress;
+                        var kt = act?.TryCast<KillEntityInTimeQuestAction>();
+                        if (kt?.EntityPrefab != null && StripClone(kt.EntityPrefab.name) == name)
+                        {
+                            string? path = QuestlinePath(StripClone(ql.name));
+                            if (path != null) return QuestPrefix + path + "|" + name;
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][enemies] Host: questline key for '{name}': {ex.Message}");
+        }
+        return null;
+    }
+
+    /// <summary>The Resources path of a questline prefab, from the loaded QuestlineCollectionSO.</summary>
+    internal static string? QuestlinePath(string questlineName)
+    {
+        foreach (var o in Resources.FindObjectsOfTypeAll(Il2CppType.Of<QuestlineCollectionSO>()))
+        {
+            var lines = o?.TryCast<QuestlineCollectionSO>()?.Questlines;
+            if (lines == null) continue;
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string? path = lines[i]?.QuestLinePath;
+                if (!string.IsNullOrEmpty(path) && LastSegment(path!) == questlineName) return path;
+            }
+        }
+        return null;
+    }
+
     // ---------------- client ----------------
 
     /// <summary>Issue #6: tier-list keys this client had to load itself, because the host rolled a variant we didn't.</summary>
@@ -256,6 +311,8 @@ public static class EnemyPrefabKeys
             r = ResolveSummon(key.Substring(SumPrefix.Length));
             if (r == null) return null; // the owner may not be a puppet yet: don't cache the miss
         }
+        else if (key.StartsWith(QuestPrefix, StringComparison.Ordinal))
+            r = ResolveQuest(key.Substring(QuestPrefix.Length));
         else if (key.StartsWith(NamePrefix, StringComparison.Ordinal))
             r = ResolveByName(key.Substring(NamePrefix.Length));
         else
@@ -309,6 +366,29 @@ public static class EnemyPrefabKeys
                 if (p != null) return new Resolved { Prefab = p };
             }
         }
+        return ResolveByName(name);
+    }
+
+    /// <summary>"QuestlinePath|Name": the entity prefab referenced by that questline prefab (the client runs no
+    /// questline, so it isn't loaded here).</summary>
+    private static Resolved? ResolveQuest(string rest)
+    {
+        int bar = rest.IndexOf('|');
+        if (bar <= 0) return null;
+        string name = rest.Substring(bar + 1);
+        Questline? ql = null;
+        try { ql = ResourcesUtil.Load<Questline>(rest.Substring(0, bar)); } catch { }
+        if (ql?.Quests != null)
+            foreach (var q in ql.Quests)
+            {
+                if (q?.QuestActions == null) continue;
+                foreach (var act in q.QuestActions)
+                {
+                    var kt = act?.TryCast<KillEntityInTimeQuestAction>();
+                    if (kt?.EntityPrefab != null && StripClone(kt.EntityPrefab.name) == name) return new Resolved { Prefab = kt.EntityPrefab };
+                }
+            }
+        Plugin.StaticLog.LogWarning($"[SoulstoneCoop][puppets] Questline entity '{rest}': {(ql == null ? "questline not loaded" : "not in it")}.");
         return ResolveByName(name);
     }
 

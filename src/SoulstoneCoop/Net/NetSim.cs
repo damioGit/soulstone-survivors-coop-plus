@@ -17,6 +17,26 @@ public static class NetSim
 
     public static bool Enabled => LatencyMs > 0 || JitterMs > 0 || LossPercent > 0;
 
+    /// <summary>Bumped on every change, so a live transport re-applies the settings (test bridge "netsim").</summary>
+    public static int Revision { get; private set; }
+
+    private static double _blackoutUntil, _blackoutStart;
+
+    /// <summary>How long the current blackout has lasted (0 when there is none).</summary>
+    public static float BlackoutSeconds => Blackout ? (float)(NowSeconds - _blackoutStart) : 0f;
+
+    /// <summary>Test: everything this game receives is thrown away (pings too), like the Steam drops where the host
+    /// went completely silent. LiteNetLib then times the link out after 10 s, Steam after SilenceTimeout.</summary>
+    public static bool Blackout => NowSeconds < _blackoutUntil;
+
+    internal static void StartBlackout(double seconds)
+    {
+        _blackoutStart = NowSeconds;
+        _blackoutUntil = NowSeconds + Math.Max(0.0, seconds);
+        Revision++;
+        Plugin.StaticLog.LogWarning($"[SoulstoneCoop][netsim] Blackout: dropping everything received for {seconds:0.0}s.");
+    }
+
     /// <summary>Short description: English for the logs, the player's language for the panel.</summary>
     public static string Describe(bool local = false)
     {
@@ -28,7 +48,8 @@ public static class NetSim
     {
         LatencyMs = Math.Clamp(latencyMs, 0, 2000);
         JitterMs = Math.Clamp(jitterMs, 0, 1000);
-        LossPercent = Math.Clamp(lossPercent, 0, 50);
+        LossPercent = Math.Clamp(lossPercent, 0, lossPercent > 50 ? 100 : 50);
+        Revision++;
     }
 
     /// <summary>Loud on purpose: a simulation left on by mistake would look like a real network problem.</summary>

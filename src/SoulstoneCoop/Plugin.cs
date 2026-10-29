@@ -12,7 +12,7 @@ public class Plugin : BasePlugin
     public const string PluginGuid = "com.kolber.soulstonecoop";
     public const string PluginName = "Soulstone Coop";
     // Checked in the connection handshake (phase 6): host and client must match exactly.
-    public const string PluginVersion = "0.12.0";
+    public const string PluginVersion = "0.13.0";
 
     internal static ManualLogSource StaticLog = null!;
     internal static BepInEx.Configuration.ConfigEntry<bool> AutoHost = null!;
@@ -166,6 +166,7 @@ public class Plugin : BasePlugin
             else if (args[i] == "--coop-fake-version" && i + 1 < args.Length) FakeVersionArg = args[i + 1];
             else if (args[i] == "--coop-name" && i + 1 < args.Length) NameArg = args[i + 1];
             else if (args[i] == "--coop-test" && i + 1 < args.Length) TestArg = args[i + 1];
+            else if (args[i] == "--coop-test-save" && i + 1 < args.Length) TestSave.UseRealSave = args[i + 1] == "real";
             // Phase 8: network simulation per instance (two games on one PC share the .cfg).
             else if (args[i] == "--coop-sim-latency" && i + 1 < args.Length && int.TryParse(args[i + 1], out var lat)) _simLatency = lat;
             else if (args[i] == "--coop-sim-jitter" && i + 1 < args.Length && int.TryParse(args[i + 1], out var jit)) _simJitter = jit;

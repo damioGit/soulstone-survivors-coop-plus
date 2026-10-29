@@ -19,10 +19,11 @@ public sealed class LiteNetTransport : ITransport
     public NetStatus Status { get; private set; } = NetStatus.Idle;
     public string? LastError { get; private set; }
     public bool WantsStop { get; private set; }
+    public bool DropRecoverable { get; private set; }
 
     // LiteNetLib's Ping is half the (averaged) round trip; the interface, the panel and Steam show the whole trip.
-    public int PingMs(byte slot) => _bySlot.TryGetValue(slot, out var p) ? p.Ping * 2 : -1;
-    public float SilenceSeconds(byte slot) => _bySlot.TryGetValue(slot, out var p) ? p.TimeSinceLastPacket / 1000f : 0f; // LiteNetLib counts in ms
+    public int PingMs(byte slot) => _bySlot.TryGetValue(slot, out var p) ? p.Ping * 2 + NetSim.LatencyMs : -1; // + our own simulated delay
+    public float SilenceSeconds(byte slot) => _bySlot.TryGetValue(slot, out var p) ? Math.Max(p.TimeSinceLastPacket / 1000f, NetSim.BlackoutSeconds) : 0f; // LiteNetLib counts in ms
 
     /// <summary>Phase 8: LiteNetLib's default is 5 s, which a Wi-Fi hiccup on a real network can exceed. Its pings
     /// run on its own thread, so a frozen game (scene load) doesn't count as silence.</summary>
@@ -42,26 +43,17 @@ public sealed class LiteNetTransport : ITransport
         _isHost = isHost;
         _manager = new NetManager(_listener) { DisconnectTimeout = DisconnectTimeoutMs };
         _listener.NetworkReceiveEvent += OnReceive;
-        ApplySimulation(_manager);
+        LogSimulation();
     }
 
-    /// <summary>Phase 8: LiteNetLib's own simulation (compiled into the 1.3.1 release build), applied to what this
-    /// game RECEIVES: every UDP packet, acks and pings included, so reliable messages really get resent.</summary>
-    private static void ApplySimulation(NetManager m)
+    /// <summary>Phase 8, IP: what this game RECEIVES waits in a SimSendQueue for the simulated latency (unreliable
+    /// packets may be lost). LiteNetLib's own SimulateLatency/SimulatePacketLoss turned out to do nothing in the 1.3.1
+    /// NuGet build (measured: ping unchanged at +150 ms), so the delay is ours, on the app's packets only.</summary>
+    private SimSendQueue? _simIn;
+
+    private static void LogSimulation()
     {
-        if (!NetSim.Enabled) return;
-        if (NetSim.LatencyMs > 0 || NetSim.JitterMs > 0)
-        {
-            m.SimulateLatency = true;
-            m.SimulationMinLatency = Math.Max(0, NetSim.LatencyMs - NetSim.JitterMs);
-            m.SimulationMaxLatency = NetSim.LatencyMs + NetSim.JitterMs;
-        }
-        if (NetSim.LossPercent > 0)
-        {
-            m.SimulatePacketLoss = true;
-            m.SimulationPacketLossChance = NetSim.LossPercent;
-        }
-        Plugin.StaticLog.LogWarning($"[SoulstoneCoop][netsim] IP transport: simulating {NetSim.Describe()} on incoming packets.");
+        if (NetSim.Enabled) Plugin.StaticLog.LogWarning($"[SoulstoneCoop][netsim] IP transport: simulating {NetSim.Describe()} on incoming packets.");
     }
 
     /// <summary>Listen on the port. Returns null (with the error in <paramref name="error"/>) if it is taken.</summary>
@@ -150,6 +142,8 @@ public sealed class LiteNetTransport : ITransport
 
         t._listener.PeerConnectedEvent += peer =>
         {
+            // Test blackout past the timeout: the host can't be heard, so a new connection can't really come up.
+            if (NetSim.BlackoutSeconds * 1000f > DisconnectTimeoutMs) { t._manager.DisconnectPeerForce(peer); return; }
             t._bySlot[Players.HostSlot] = peer;
             t._slotByPeerId[peer.Id] = Players.HostSlot;
             t._slots.MarkConnected(Players.HostSlot);
@@ -186,6 +180,7 @@ public sealed class LiteNetTransport : ITransport
 
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop] Disconnected from host: {info.Reason}");
             t.LastError = info.Reason == DisconnectReason.RemoteConnectionClose ? Ui.Loc.Msg("net.host_left") : Ui.Loc.Msg("net.lost", ("why", info.Reason));
+            t.DropRecoverable = hadPeer && info.Reason != DisconnectReason.RemoteConnectionClose;
             t.ForgetHost();
             t.Status = NetStatus.Idle;
             t.WantsStop = true; // back to idle: the role must not stay Client (it blocks solo spawns)
@@ -213,7 +208,24 @@ public sealed class LiteNetTransport : ITransport
         return w;
     }
 
-    public void Poll() => _manager.PollEvents();
+    private int _simRevision = NetSim.Revision;
+
+    public void Poll()
+    {
+        if (_simRevision != NetSim.Revision)
+        {
+            _simRevision = NetSim.Revision;
+            LogSimulation();
+        }
+        _manager.PollEvents();
+        _simIn?.Pump(DeliverDelayed);
+        // Test blackout: LiteNetLib still hears the pings, so its own timeout never fires; do it the same way.
+        if (NetSim.BlackoutSeconds * 1000f > DisconnectTimeoutMs && _bySlot.Count > 0)
+        {
+            Plugin.StaticLog.LogWarning($"[SoulstoneCoop][netsim] Blackout longer than {DisconnectTimeoutMs / 1000}s: timing the link out.");
+            foreach (var p in _bySlot.Values.ToList()) _manager.DisconnectPeerForce(p);
+        }
+    }
 
     private int _oversizeWarnings;
 
@@ -242,8 +254,22 @@ public sealed class LiteNetTransport : ITransport
     {
         try
         {
-            if (_slotByPeerId.TryGetValue(peer.Id, out byte slot)) _cb.Data(reader, slot);
+            if (NetSim.Blackout || !_slotByPeerId.TryGetValue(peer.Id, out byte slot)) return;
+            if (NetSim.Enabled || (_simIn != null && _simIn.Queued > 0))
+            {
+                _simIn ??= new SimSendQueue();
+                var bytes = reader.GetRemainingBytes();
+                _simIn.Enqueue(slot, bytes, bytes.Length, 0, 0, reliable: method != DeliveryMethod.Unreliable && method != DeliveryMethod.Sequenced);
+                return;
+            }
+            _cb.Data(reader, slot);
         }
         finally { reader.Recycle(); }
+    }
+
+    private void DeliverDelayed(ulong slot, byte[] data, int length, int flags, int channel)
+    {
+        if (!_bySlot.ContainsKey((byte)slot)) return; // gone while it waited
+        _cb.Data(new NetDataReader(data, 0, length), (byte)slot);
     }
 }

@@ -37,6 +37,10 @@ public interface ITransport
     /// after Poll (stopping from inside a LiteNetLib event is not safe).</summary>
     bool WantsStop { get; }
 
+    /// <summary>Client: the last drop was the link failing (silence, a failed session), not the host quitting or
+    /// refusing us. Net.Reconnect only tries again after those.</summary>
+    bool DropRecoverable { get; }
+
     /// <summary>Pump events once per frame.</summary>
     void Poll();
 

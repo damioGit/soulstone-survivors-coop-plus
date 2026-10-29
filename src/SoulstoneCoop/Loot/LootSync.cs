@@ -197,6 +197,11 @@ public static class LootSync
     private static int _dropsToClient, _dropsKept;
     private static double _shareAppliedSum, _shareDiscardedSum;
 
+    // 0.13.0, catch-up: the pool's gain over this run. Host: everything it handed out; client: everything that reached
+    // it. A guest back after a drop (Net.Reconnect), or one that joined mid-run, gets the difference (XpTotal).
+    private static double _runGainTotal;
+    internal static double CatchUpApplied;
+
     // The XP multiplier: ours (measured on our pickups), the others' (host: from XpMultiplier).
     private static float _ownMultiplier = 1f, _sentMultiplier = -1f, _multiplierTimer;
     private static readonly Dictionary<byte, float> Multipliers = new();
@@ -292,6 +297,7 @@ public static class LootSync
     private static void HostAddRaw(float raw)
     {
         float gain = raw * TeamMultiplier();
+        _runGainTotal += gain;
         _shareIn += gain;
         _gainOut += gain;
         ApplyShareIn();
@@ -314,9 +320,37 @@ public static class LootSync
         if (amount <= 0f || !CoopRole.IsClientSide) return;
         _shareRecvPackets++;
         _shareRecvSum += amount;
+        _runGainTotal += amount;
         _shareIn += amount;
         ApplyShareIn();
     }
+
+    /// <summary>Host: tell a player that just entered (or came back into) our run how much the pool has given.</summary>
+    internal static void SendXpTotal(byte slot)
+    {
+        if (!CoopRole.IsHostSide || _runGainTotal <= 0.0) return;
+        var w = new NetDataWriter();
+        w.Put((byte)PacketType.XpTotal);
+        w.Put(_runGainTotal - _gainOut); // what is still buffered goes out as XpGain right after
+        NetworkManager.SendTo(slot, w, DeliveryMethod.ReliableOrdered);
+    }
+
+    /// <summary>Client, layout: type u8 | total f64. What we missed while away comes as one gain.</summary>
+    public static void OnXpTotal(NetDataReader r)
+    {
+        double total = r.GetDouble();
+        if (!CoopRole.IsClientSide || !Lobby.CoopSession.LocalInRun) return;
+        double missing = total - _runGainTotal;
+        if (missing <= 1.0) return;
+        _runGainTotal = total;
+        CatchUpApplied += missing;
+        _shareIn += (float)missing;
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][loot] Client: {missing:F0} XP from the shared pool missed while away - applied.");
+        ApplyShareIn();
+    }
+
+    /// <summary>A new run starts its pool at zero (CoopSession: the local run ended).</summary>
+    internal static void ResetRunGain() => _runGainTotal = 0.0;
 
     /// <summary>Host, layout: type u8 | multiplier f32 (the sender's own XP multiplier).</summary>
     public static void OnXpMultiplier(NetDataReader r)

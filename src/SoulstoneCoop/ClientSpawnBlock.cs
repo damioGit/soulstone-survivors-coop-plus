@@ -194,6 +194,29 @@ public static class ClientSpawnEtherealPatch
     }
 }
 
+/// <summary>The map's questline (seasonal altars, eggs to deliver, boss runes...) is drawn at random on each side, and
+/// its entities are enemies the host owns: the guest got its own copy (or another quest) next to the host's puppet.
+/// The client runs no questline; the host's quest entities come as puppets and damage on them goes to the host.</summary>
+[HarmonyPatch(typeof(QuestManager), nameof(QuestManager.Setup))]
+public static class ClientQuestManagerPatch
+{
+    [HarmonyPrefix]
+    public static bool Prefix()
+    {
+        try
+        {
+            if (!CoopRole.IsClientSide) return true;
+            Plugin.StaticLog.LogInfo("[SoulstoneCoop][spawn] Client: blocked QuestManager.Setup() (the host's quest entities come as puppets).");
+            return false;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.StaticLog.LogError($"[SoulstoneCoop] ClientQuestManagerPatch: {ex}");
+            return true;
+        }
+    }
+}
+
 /// <summary>Diagnostic: any enemy-team Entity set up on the client that the network didn't create is
 /// a spawn path we haven't blocked yet.</summary>
 [HarmonyPatch(typeof(Entity), nameof(Entity.Setup))]

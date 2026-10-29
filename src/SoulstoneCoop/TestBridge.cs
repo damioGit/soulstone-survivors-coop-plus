@@ -18,6 +18,8 @@ public static class TestBridge
     private static float _poll;
     private static int _fightStep;
     private static GameModes _fightMode = GameModes.Survivor;
+    private static string? _fightMap;
+    private static int _fightMapTries;
     private static float _fightTimer;
 
     /// <summary>Extra commands registered by feature modules: name -> handler(args) returning the reply.</summary>
@@ -47,6 +49,7 @@ public static class TestBridge
     {
         if (Plugin.TestArg == null) return;
         try { TickGod(dt); } catch { _godTimer = 5f; }
+        SaveMerge.Tick();
         try
         {
             if (_dir == null)
@@ -159,16 +162,36 @@ public static class TestBridge
                 Commands["loadscene"] = Lobby.MasterySync.TestLoadScene;
                 Commands["crusade"] = Lobby.CrusadeSync.Test;
                 Commands["options"] = Ui.CoopUi.TestOptions;
-                Commands["char"] = a =>
+                Commands["char"] = SelectCharacter;
+                Commands["maps"] = _ =>
                 {
-                    var prof = Global.PlayerProfile;
-                    if (prof?.SelectedCharacter == null) return "no profile";
-                    if (a.Length == 0) return prof.SelectedCharacter.CharacterIdAsEnum.ToString();
-                    var ct = (CharactersType)Enum.Parse(typeof(CharactersType), a[0], true);
-                    prof.SelectedCharacter.CharacterIdAsEnum = ct;
-                    prof.SelectedCharacter.CharacterId = CharactersTypeNames.GetStringId(ct);
-                    return "character " + ct; // CoopSession's poll sees the change and sends a new Hello
+                    var mod = UnityEngine.Object.FindObjectOfType<MapSelectionScreenPanel>()?.SurvivorsScreenPanel?.LevelSelectionModule;
+                    if (mod?.MapItems == null) return "open the map screen first (run does)";
+                    return string.Join(", ", mod.MapItems.ToArray().Where(m => m != null).Select(m => m.MapId + (m == mod.SelectedMapItem ? "*" : "")));
                 };
+                // "run [MODE] [MAP_PART]": Fight from the hub with that mode (survivor|mastery|crusade) and Survivors map.
+                Commands["run"] = a =>
+                {
+                    _fightMode = a.Length > 0 && a[0] == "mastery" ? GameModes.Mastery : a.Length > 0 && a[0] == "crusade" ? GameModes.Crusade : GameModes.Survivor;
+                    _fightMap = a.Length > 1 ? a[1] : null;
+                    _fightStep = 1;
+                    _fightTimer = 0f;
+                    return $"run {_fightMode} map={_fightMap ?? "(profile's)"}";
+                };
+                Commands["savepath"] = TestSave.Info;
+                // "netsim LAT JIT LOSS": this game's simulated network, live (0 0 0 = off). "netdrop SECONDS": hear nothing.
+                Commands["netsim"] = a =>
+                {
+                    if (a.Length >= 3) Net.NetSim.Configure(int.Parse(a[0]), int.Parse(a[1]), int.Parse(a[2]));
+                    return $"{Net.NetSim.Describe()} blackout={Net.NetSim.Blackout} ping={NetworkManager.PingMs} silence={NetworkManager.SilenceSeconds:F1}s";
+                };
+                Commands["netdrop"] = a =>
+                {
+                    double secs = a.Length > 0 ? double.Parse(a[0], System.Globalization.CultureInfo.InvariantCulture) : 15.0;
+                    Net.NetSim.StartBlackout(secs);
+                    return $"blackout {secs:0.0}s";
+                };
+                Commands["snap"] = Snapshot;
                 Commands["guestcc"] = Enemies.GuestEffects.TestApply;
                 Commands["enemycc"] = Enemies.GuestEffects.TestInspect;
                 Commands["levelup"] = _ => { var xp = GameState.LocalPlayerEntity?._experience; if (xp == null) return "no xp"; xp.LevelUpMultipleTimes(1); return "level " + xp.Level; };
@@ -202,10 +225,178 @@ public static class TestBridge
                 {
                     if (a.Length == 0) return "usage: find NAME_PART";
                     var hits = new List<string>();
+                    if (a[0] == "specialhealth")
+                    {
+                        // Who carries a ChangeSpecialHealthEffect (live objects and assets), and each target's special health.
+                        foreach (var o in Resources.FindObjectsOfTypeAll(Il2CppInterop.Runtime.Il2CppType.Of<ChangeSpecialHealthEffect>()))
+                        {
+                            var fx = o?.TryCast<ChangeSpecialHealthEffect>();
+                            if (fx == null) continue;
+                            var root = fx.transform.root;
+                            hits.Add($"{root.name}/{fx.gameObject.name} scene={fx.gameObject.scene.IsValid()} on={fx.isActiveAndEnabled} type={fx.HealthChange.HealthType} value={fx.HealthChange.HealthValue:0}");
+                        }
+                        foreach (var sh in UnityEngine.Object.FindObjectsOfType<SpecialHealthComponent>())
+                            if (sh?.CurrentSpecialHealths != null)
+                                hits.Add($"target {sh.gameObject.name}: {string.Join(",", sh.CurrentSpecialHealths.Select(h => h.HealthType + "=" + h.HealthValue.ToString("0")))}");
+                        return hits.Count + ": " + string.Join(" | ", hits.Distinct().Take(30));
+                    }
                     foreach (var e in UnityEngine.Object.FindObjectsOfType<Entity>())
                         if (e != null && e.gameObject.name.IndexOf(a[0], StringComparison.OrdinalIgnoreCase) >= 0)
-                            hits.Add($"{e.gameObject.name}@{e.transform.position:0} team={(e._team != null ? e._team.Team.ToString() : "-")} setup={e.HasBeenSetUp} tracked={Enemies.HostEnemySync.TryGetNetId(e, out var id)}#{id} icon={(e._health != null ? e._health.MinimapIconId : -9)} ignore={(e._health != null && e._health.IgnoreMinimapTracking)}");
+                            hits.Add($"{e.gameObject.name}@{e.transform.position:0} team={(e._team != null ? e._team.Team.ToString() : "-")} setup={e.HasBeenSetUp} tracked={Enemies.HostEnemySync.TryGetNetId(e, out var id)}#{id} icon={(e._health != null ? e._health.MinimapIconId : -9)} ignore={(e._health != null && e._health.IgnoreMinimapTracking)} hp={(e._health != null ? e._health.CurrentHealth : -1):0}");
                     return hits.Count + ": " + string.Join(" | ", hits.Take(8));
+                };
+                // "comps NAME_PART": the components and parent chain of the active objects whose name contains it.
+                Commands["comps"] = a =>
+                {
+                    if (a.Length == 0) return "usage: comps NAME_PART";
+                    var rows = new List<string>();
+                    foreach (var t in UnityEngine.Object.FindObjectsOfType<Transform>())
+                    {
+                        if (t == null || t.name.IndexOf(a[0], StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        var chain = new List<string>();
+                        for (var p = t.parent; p != null; p = p.parent) chain.Add(p.name);
+                        var comps = t.GetComponents<Component>().Where(c => c != null).Select(c => c.GetIl2CppType().Name);
+                        rows.Add($"{t.name}@{t.position:0.0} id={t.gameObject.GetInstanceID()} parents=[{string.Join("<", chain)}] comps=[{string.Join(",", comps)}]");
+                    }
+                    return rows.Count + ": " + string.Join(" || ", rows.Take(10));
+                };
+                // "questlines": every questline of the game, its requirements' map and its rewards.
+                Commands["questlines"] = _ =>
+                {
+                    var rows = new List<string>();
+                    foreach (var o in Resources.FindObjectsOfTypeAll(Il2CppInterop.Runtime.Il2CppType.Of<QuestlineCollectionSO>()))
+                    {
+                        var lines = o?.TryCast<QuestlineCollectionSO>()?.Questlines;
+                        if (lines == null) continue;
+                        foreach (var so in lines)
+                        {
+                            if (so == null) continue;
+                            Questline? ql = null;
+                            try { ql = ResourcesUtil.Load<Questline>(so.QuestLinePath); } catch { }
+                            var rewards = ql?.Rewards == null ? "not loaded" : string.Join(",", ql.Rewards.ToArray().Where(r => r != null).Select(r =>
+                            {
+                                var d = r.TryCast<GrantDestroyObjectAchievementQuestlineReward>();
+                                if (d != null) return $"DestroyAchv({d.EliminatedEntityName} x{d.EliminatedAmount})";
+                                var p = r.TryCast<UnlockPortalQuestlineReward>();
+                                if (p != null) return $"Portal({p.TargetMapId})";
+                                return r.GetIl2CppType().Name;
+                            }));
+                            var maps = so.Requirements == null ? "" : string.Join(",", so.Requirements.ToArray().Select(q => q?.TryCast<MapQuestRequirement>()?.RequiredMapId).Where(m => m != null));
+                            rows.Add($"{so.Id} path={so.QuestLinePath} maps=[{maps}] rewards=[{rewards}]");
+                        }
+                    }
+                    return rows.Count + ": " + string.Join(" | ", rows);
+                };
+                // "achv PART": this profile's achievement progress whose id contains PART, and the matching destroy-object achievements.
+                Commands["achv"] = a =>
+                {
+                    string part = a.Length > 0 ? a[0] : "";
+                    var rows = new List<string>();
+                    var list = Global.PlayerProfile?.AchievementProgression?.Achievements;
+                    if (list != null)
+                        foreach (var d in list)
+                            if (d != null && d.AchievementId.IndexOf(part, StringComparison.OrdinalIgnoreCase) >= 0)
+                                rows.Add($"{d.AchievementId}={d.Progression:0.###}{(d.UnlockDateAsTicks != 0 ? " unlocked" : "")}");
+                    foreach (var o in Resources.FindObjectsOfTypeAll(Il2CppInterop.Runtime.Il2CppType.Of<AchievementDestroyObjectsWithCurseIntensitySO>()))
+                    {
+                        var s = o?.TryCast<AchievementDestroyObjectsWithCurseIntensitySO>();
+                        if (s != null && (s.Id.IndexOf(part, StringComparison.OrdinalIgnoreCase) >= 0 || s.ObjectName.IndexOf(part, StringComparison.OrdinalIgnoreCase) >= 0))
+                            rows.Add($"def {s.Id}: {s.ObjectName} x{s.ObjectQuantity} curse>={s.MinCurseIntensity} reward={s.RewardType}:{s.RewardId}");
+                    }
+                    return rows.Count + ": " + string.Join(" | ", rows);
+                };
+                // "achvdel ID": forget one achievement in this profile (test saves only), to watch a reward come back.
+                Commands["achvdel"] = a =>
+                {
+                    if (TestSave.Folder == null) return "refused: not on a test save";
+                    var prog = Global.PlayerProfile?.AchievementProgression;
+                    var d = prog?.Achievements?.ToArray().FirstOrDefault(x => x != null && a.Length > 0 && x.AchievementId == a[0]);
+                    if (d == null) return "not found";
+                    prog!.RemoveAchievement(d);
+                    AchievementUtil.Unlocked?.Remove(d.AchievementId.GetHashCode());
+                    return "removed " + a[0];
+                };
+                // "questreward PATH": grant that questline's rewards here as if the host had sent them.
+                Commands["questreward"] = a =>
+                {
+                    if (TestSave.Folder == null) return "refused: not on a test save";
+                    var w = new LiteNetLib.Utils.NetDataWriter();
+                    w.Put(a.Length > 0 ? a[0] : "Quests/ValentinesSeasonalQuestline");
+                    Loot.QuestSync.OnQuestReward(new LiteNetLib.Utils.NetDataReader(w.CopyData()));
+                    return $"granted={Loot.QuestSync.Granted} skipped={Loot.QuestSync.Skipped}";
+                };
+                // "runes [N]": the boss runes' expected soulstones; with N, activate rune N the way QuestSync does for a guest.
+                Commands["runes"] = a =>
+                {
+                    var br = ActivateBossRunesQuestAction.Instance;
+                    if (br?.Runes == null) return "no rune quest";
+                    if (a.Length > 0) Loot.QuestSync.ActivateRune(br, int.Parse(a[0]));
+                    return string.Join(" | ", br.Runes.Select((r, i) =>
+                    {
+                        var v = r.ExpectedValue;
+                        return $"{i}:{r.name} active={r.Activated} vis={(r.RuneActiveVisual != null && r.RuneActiveVisual.activeSelf)} want=minor{v.MinorSoulstones:0}/c{v.CorruptedSoulstones}/v{v.VileSoulstones}/w{v.WickedSoulstones}/h{v.HatefulSoulstones}/r{v.RogueSoulstones}";
+                    })) + $" | state={br.State}";
+                };
+                Commands["questsync"] = _ => Loot.QuestSync.TestInfo();
+                Commands["reconnect"] = _ => Net.Reconnect.TestInfo();
+                Commands["victory"] = _ => { Life.CoopLife.DebugVictory(); return "main objective forced"; };
+                // "fakesoul RUNE": as if we had just collected a soulstone of that rune's colour where we stand.
+                Commands["fakesoul"] = a =>
+                {
+                    var item = Resources.FindObjectsOfTypeAll(Il2CppInterop.Runtime.Il2CppType.Of<SoulstoneItem>()).Select(o => o.TryCast<SoulstoneItem>()).FirstOrDefault(x => x != null);
+                    var rune = Loot.QuestSync.TestRune(a.Length > 0 ? int.Parse(a[0]) : 0);
+                    if (item == null || rune == null) return $"item={item != null} rune={rune != null}";
+                    var keep = item.SoulstoneValue;
+                    item.SoulstoneValue = rune.ExpectedValue;
+                    try { Loot.QuestSync.AfterSoulstoneCollected(item); } finally { item.SoulstoneValue = keep; }
+                    return $"collected a {rune.name} soulstone at {GameState.LocalPlayerEntity?.transform.position:0}";
+                };
+                Commands["questgrant"] = _ =>
+                {
+                    foreach (var qm in UnityEngine.Object.FindObjectsOfType<QuestManager>())
+                        if (qm?.ActiveQuestline != null) { qm.ActiveQuestline.GrantRewards(); return "granted " + qm.ActiveQuestline.name; }
+                    return "no questline";
+                };
+                Commands["quest"] = _ =>
+                {
+                    var rows = new List<string>();
+                    foreach (var qm in UnityEngine.Object.FindObjectsOfType<QuestManager>())
+                    {
+                        var ql = qm != null ? qm.ActiveQuestline : null;
+                        if (ql == null) { rows.Add("manager without questline"); continue; }
+                        rows.Add($"{ql.name} state={ql._questlineState} index={ql._currentQuestIndex}");
+                        foreach (var q in ql.Quests)
+                            foreach (var act in q.QuestActions)
+                            {
+                                if (act == null) continue;
+                                string extra = "";
+                                var se = act.TryCast<SpawnEntitiesOverProgressionQuestAction>();
+                                if (se != null)
+                                {
+                                    Entity? loaded = null;
+                                    try { loaded = ResourcesUtil.Load<Entity>(se.EntityPrefabAddress); } catch { }
+                                    extra = $" address={se.EntityPrefabAddress} perTier={se.AdjustEntityAddressPerTier} loads={(loaded != null ? loaded.name : "no")}";
+                                }
+                                var kt = act.TryCast<KillEntityInTimeQuestAction>();
+                                if (kt != null) extra = $" prefab={(kt.EntityPrefab != null ? kt.EntityPrefab.name : "-")}";
+                                var sc = act.TryCast<SpawnCollectablesOverProgressionQuestAction>();
+                                if (sc != null)
+                                {
+                                    var live = sc.ActiveCollectables?.ToArray().Where(c => c != null).Select(c => $"{c.name}@{c.transform.position:0}{(c.HasBeenCollected ? "*" : "")}") ?? new string[0];
+                                    extra = $" prefab={(sc.CollectablePrefab != null ? sc.CollectablePrefab.name : "-")} active=[{string.Join(",", live)}]";
+                                    var cd = act.TryCast<CollectAndDeliverCollectablesOverProgressionQuestAction>();
+                                    if (cd != null) extra += $" delivered={cd.QuantityDelivered}/{cd.QuantityToDeliverForCompletion} carried={cd.CurrentCarriedItemsQuantity} receiver={(cd.Receiver != null ? cd.Receiver.name + "@" + cd.Receiver.transform.position.ToString("0") : "-")} receiverPrefab={(cd.ReceiverEntity != null ? cd.ReceiverEntity.name : "-")}" +
+                                        $" maxCarry={cd.MaxObjectsPlayerCanCarry} slow={cd.PlayerSpeedDecreasePercentageModifier}/{cd.PlayerMaxPercentageSpeedDecrease} playerChar={(cd.PlayerCharacter != null ? cd.PlayerCharacter.name : "-")}" +
+                                        $" ownSpeed={(GameState.LocalPlayerEntity?._character != null ? GameState.LocalPlayerEntity._character.GetMaxSpeed() : -1):0.00}" +
+                                        $" egg={(sc.CollectablePrefab?.TryCast<CollectableSecretObject>() is { } eg ? $"time={eg.TimeToCollect} cd={eg.InitialCooldown}" : "-")}";
+                                }
+                                var br = act.TryCast<ActivateBossRunesQuestAction>();
+                                if (br?.Runes != null)
+                                    extra = $" range={br.RuneRange} runes=[{string.Join(",", br.Runes.Select(r => r == null ? "-" : $"{r.name}@{r.transform.position:0}{(r.Activated ? "*" : "")} root={r.transform.root.name}"))}]";
+                                rows.Add($"  {act.GetIl2CppType().Name} {act.State}{extra}");
+                            }
+                    }
+                    return string.Join(" | ", rows);
                 };
                 // "objs NAME_PART": active scene objects whose name contains it (lingering skill areas, VFX...).
                 Commands["objs"] = a =>
@@ -246,6 +437,31 @@ public static class TestBridge
                 Commands["holders"] = _ => string.Join(" | ", UnityEngine.Object.FindObjectsOfType<CharacterModelHolder>().Where(h => h != null).Select(h =>
                     $"{h.gameObject.name} on={h.isActiveAndEnabled} pos={h.transform.position:0.00} rot={h.transform.eulerAngles:0} place={(h.ModelPlaceholder != null ? h.ModelPlaceholder.position.ToString("0.00") + "/" + h.ModelPlaceholder.lossyScale.ToString("0.00") : "-")} " +
                     $"spawned={(h.SpawnedCharacter != null ? h.SpawnedCharacter.name + "@" + h.SpawnedCharacter.transform.position.ToString("0.00") : "-")} cam={(Camera.main != null ? Camera.main.transform.position.ToString("0.0") : "-")}"));
+                // "ui": the active clickable texts on screen; "uiclick TEXT [N]": click the N-th one (0) whose text contains TEXT.
+                Commands["ui"] = _ => string.Join(" | ", ClickableTexts().Select((t, i) => $"{i}:{t.text.Trim().Replace("\n", " ")}").Take(80));
+                Commands["uiclick"] = a =>
+                {
+                    if (a.Length == 0) return "usage: uiclick TEXT [N]";
+                    int nth = a.Length > 1 && int.TryParse(a[a.Length - 1], out var n) ? n : 0;
+                    string want = string.Join(" ", nth > 0 || (a.Length > 1 && int.TryParse(a[a.Length - 1], out _)) ? a.Take(a.Length - 1) : a);
+                    var hits = ClickableTexts().Where(t => t.text.IndexOf(want, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+                    if (nth >= hits.Count) return $"no '{want}' #{nth} ({hits.Count} found)";
+                    var go = ClickTarget(hits[nth])!;
+                    ExecuteEvents.Execute(go, new PointerEventData(EventSystem.current), ExecuteEvents.pointerClickHandler);
+                    return $"clicked '{hits[nth].text.Trim()}' ({go.name})";
+                };
+                // "buttons [PART]": active buttons by object name; "uiobj NAME": click the first active button named so.
+                Commands["buttons"] = a => string.Join(" | ", UnityEngine.Object.FindObjectsOfType<UnityEngine.UI.Selectable>()
+                    .Where(b => b != null && b.isActiveAndEnabled && (a.Length == 0 || b.name.IndexOf(a[0], StringComparison.OrdinalIgnoreCase) >= 0))
+                    .Select(b => b.name).Distinct().Take(120));
+                Commands["uiobj"] = a =>
+                {
+                    if (a.Length == 0) return "usage: uiobj NAME";
+                    var b = UnityEngine.Object.FindObjectsOfType<UnityEngine.UI.Selectable>().FirstOrDefault(s => s != null && s.isActiveAndEnabled && s.name == a[0]);
+                    if (b == null) return "no button " + a[0];
+                    ExecuteEvents.Execute(b.gameObject, new PointerEventData(EventSystem.current), ExecuteEvents.pointerClickHandler);
+                    return "clicked " + b.name;
+                };
                 // "lineskills": the live enemies' skills with a charged line telegraph.
                 Commands["lineskills"] = _ =>
                 {
@@ -320,6 +536,9 @@ public static class TestBridge
                 Commands["god"] = _ => { _god = true; var h = GameState.LocalPlayerEntity?._health; if (h == null) return "no health (kept on)"; h.InvulnerabilityTime = 100000f; return "invulnerable"; };
                 Commands["panel"] = a => { Ui.CoopUi.TestOpen(a.Length == 0 || a[0] != "off"); return "panel toggled"; };
                 Commands["speeds"] = _ => PlayerSync.TestSpeeds();
+                Commands["savemerge"] = SaveMerge.Run;
+                Commands["slotcheck"] = SaveMerge.Check;
+                Commands["treediff"] = SaveMerge.TreeDiff;
                 Commands["autocast"] = _ =>
                 {
                     var p = GameState.LocalPlayerEntity;
@@ -413,6 +632,25 @@ public static class TestBridge
             var map = UnityEngine.Object.FindObjectOfType<MapSelectionScreenPanel>();
             if (map == null) { Plugin.StaticLog.LogWarning("[SoulstoneCoop][test] fight: no MapSelectionScreenPanel"); _fightStep = 0; return; }
             if (map.CurrentSelectedGameMode != _fightMode) { map.SelectGameMode(_fightMode); _fightTimer = 2f; Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] fight: mode -> {_fightMode}"); return; }
+            if (_fightMap != null && _fightMode == GameModes.Survivor)
+            {
+                var mod = map.SurvivorsScreenPanel?.LevelSelectionModule;
+                var item = mod?.MapItems?.ToArray().FirstOrDefault(m => m != null && m.MapId.IndexOf(_fightMap, StringComparison.OrdinalIgnoreCase) >= 0);
+                if (item == null || mod!.SelectedMapItem == item || ++_fightMapTries > 3)
+                {
+                    if (item == null || mod!.SelectedMapItem != item) Plugin.StaticLog.LogWarning($"[SoulstoneCoop][test] fight: map '{_fightMap}' not selected, staying on {mod?.SelectedMapItem?.MapId}");
+                    _fightMap = null;
+                    _fightMapTries = 0;
+                }
+                else
+                {
+                    // The map button's own handler: the module picks SelectPressed up in its OnUpdate.
+                    item.OnSelectPressed();
+                    _fightTimer = 1.5f;
+                    Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] fight: map -> {item.MapId}");
+                    return;
+                }
+            }
             map.OnFightPressed();
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] fight: map screen Fight pressed (mode {map.CurrentSelectedGameMode}).");
             _fightStep = 0;
@@ -445,6 +683,78 @@ public static class TestBridge
             catch (Exception ex) { sb.Append(' ').Append(kv.Key).Append("=err:").Append(ex.Message); }
         }
         return sb.ToString();
+    }
+
+    /// <summary>"cmd char [NAME]": select that character with its saved weapon and skins, like the character screen
+    /// (the hub's model is rebuilt, and CoopSession's poll sends a new Hello).</summary>
+    private static string SelectCharacter(string[] a)
+    {
+        var prof = Global.PlayerProfile;
+        if (prof?.SelectedCharacter == null) return "no profile";
+        if (a.Length == 0) return prof.SelectedCharacter.CharacterIdAsEnum.ToString();
+        var ct = (CharactersType)Enum.Parse(typeof(CharactersType), a[0], true);
+        prof.SelectedCharacter.CharacterIdAsEnum = ct;
+        prof.SelectedCharacter.CharacterId = CharactersTypeNames.GetStringId(ct);
+        string model = "no hub model";
+        var holder = UnityEngine.Object.FindObjectsOfType<CharacterModelHolder>().FirstOrDefault(h => h != null && h.isActiveAndEnabled);
+        var def = Global.CharacterCollection?.GetCharacterDefinitionById(ct);
+        if (holder != null && def != null)
+        {
+            WeaponDefinition? weapon = null;
+            var weapons = Global.WeaponCollection;
+            string wid = prof.SelectedWeaponPerCharacter?.GetWeaponIdByCharacterId(ct) ?? "";
+            if (weapons != null && !(wid.Length > 0 && weapons.TryGetWeaponDefinitionById(wid, out weapon, out _) && weapon != null))
+                weapon = weapons.GetDefaultWeaponDefinitionByCharacterId(ct);
+            var skins = prof.SelectedSkinPerCharacter;
+            holder.SpawnCharacterAndWeapon(def, weapon, false, false, false,
+                skins?.GetCharacterSkinIdByCharacterId(ct) ?? "", skins?.GetWeaponSkinIdByCharacterId(ct) ?? "", false);
+            model = "hub model rebuilt";
+        }
+        return $"character {ct} ({model})";
+    }
+
+    /// <summary>"cmd snap": one line per fact, sorted, for diffing the host against a guest (tools/uitest/duo.sh diff).
+    /// Counts and rounded values only: positions and timers differ by latency anyway.</summary>
+    private static string Snapshot(string[] args)
+    {
+        var rows = new List<string>();
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        rows.Add("scene " + UnityEngine.SceneManagement.SceneManager.GetActiveScene().name);
+        if (!GameManagerUtil.HasGameManager) return string.Join("\n", rows);
+        rows.Add("combat " + GameManagerUtil.CombatActive);
+        var enemies = new Dictionary<string, int>();
+        int players = 0;
+        foreach (var e in UnityEngine.Object.FindObjectsOfType<Entity>())
+        {
+            if (e == null || e._health == null || e._health.HasBeenKilled || !e.gameObject.activeInHierarchy) continue;
+            if (e.IsPlayer()) { players++; continue; }
+            if (e._team == null || (e._team.Team & Team.Monsters) == 0) continue;
+            string k = e.gameObject.name.Replace("(Clone)", "").Trim();
+            enemies[k] = enemies.TryGetValue(k, out var c) ? c + 1 : 1;
+        }
+        rows.Add("players " + players);
+        rows.Add("enemies " + enemies.Values.Sum());
+        foreach (var kv in enemies) rows.Add($"enemy {kv.Key} x{kv.Value}");
+        var bosses = GameManagerUtil.BossEntities;
+        if (bosses != null)
+            foreach (var b in bosses)
+                if (b != null && b._health != null && !b._health.HasBeenKilled)
+                    rows.Add($"boss {b.gameObject.name.Replace("(Clone)", "").Trim()} hp {(b._health.CurrentHealth / Mathf.Max(1f, b._stats != null ? b._stats.GetMaxHealth() : 1f) * 100f).ToString("0", ci)}%");
+        var xp = GameState.LocalPlayerEntity?._experience;
+        if (xp != null) rows.Add("level " + xp._level);
+        // The same lines on every side: us and each partner by name.
+        rows.Add($"player {Plugin.NameArg ?? "-"}");
+        foreach (var r in CoopSession.Remotes) rows.Add($"player {r.Name}{(r.Ghost != null ? "" : " (no ghost)")}");
+        var areas = new Dictionary<string, int>();
+        foreach (var sa in UnityEngine.Object.FindObjectsOfType<SkillAreaEffect>())
+            if (sa != null && sa.isActiveAndEnabled)
+            {
+                string k = sa.gameObject.name.Replace("(Clone)", "").Trim();
+                areas[k] = areas.TryGetValue(k, out var c) ? c + 1 : 1;
+            }
+        foreach (var kv in areas) rows.Add($"area {kv.Key} x{kv.Value}");
+        rows.Sort(StringComparer.Ordinal);
+        return string.Join("\n", rows);
     }
 
     /// <summary>"cmd hurt N": take N off the local player's health directly (no hit, no death below 1).</summary>
@@ -657,6 +967,19 @@ public static class TestBridge
         if (rb != null) rb.position = pos;
         return "at " + local.transform.position.ToString("0.0");
     }
+
+    /// <summary>The object a click on this text reaches: the nearest parent with a pointer-click handler.</summary>
+    private static GameObject? ClickTarget(TMPro.TMP_Text t)
+    {
+        for (var tr = t.transform; tr != null; tr = tr.parent)
+            if (tr.GetComponent<UnityEngine.UI.Selectable>() != null || ExecuteEvents.CanHandleEvent<IPointerClickHandler>(tr.gameObject)) return tr.gameObject;
+        return null;
+    }
+
+    private static List<TMPro.TMP_Text> ClickableTexts() =>
+        UnityEngine.Object.FindObjectsOfType<TMPro.TMP_Text>()
+            .Where(t => t != null && t.isActiveAndEnabled && !string.IsNullOrWhiteSpace(t.text) && ClickTarget(t) != null)
+            .OrderBy(t => -t.transform.position.y).ThenBy(t => t.transform.position.x).ToList();
 
     /// <summary>Extra state fields registered by feature modules.</summary>
     internal static readonly Dictionary<string, Func<string>> StateProviders = new();

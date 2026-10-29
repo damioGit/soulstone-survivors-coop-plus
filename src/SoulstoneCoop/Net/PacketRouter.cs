@@ -64,6 +64,10 @@ public enum PacketType : byte
     XpMultiplier = 132, // client -> host: the sender's own XP gain multiplier, f32 (ReliableOrdered)
     PartyStatus = 129, // party panel (the author's 1.1.0, issue #7): sender's level u16 | xp progress u8 (/255) | death guards u8, on change at <= 4 Hz + every 2 s (ReliableOrdered)
     ChestState = 122,  // host -> clients: chest id u16 | interaction % u8 | opened bool (ReliableOrdered, after its spawn)
+    QuestState = 134,  // host -> each guest, 2 Hz: the questline's path and pose, its eggs, deliveries, that guest's carry, lit runes (ReliableOrdered)
+    QuestAction = 135, // guest -> host: collect egg id / deliver / light rune index (ReliableOrdered)
+    XpTotal = 136,     // host -> a guest entering its run: the shared XP pool's total this run, f64 (catch-up after a drop) (ReliableOrdered)
+    QuestReward = 133, // host -> clients: the map's questline was completed: its Resources path; each guest grants its own rewards (ReliableOrdered)
 }
 
 public static class PacketRouter
@@ -211,6 +215,18 @@ public static class PacketRouter
                 break;
             case PacketType.StatueSync:
                 Enemies.StatueSync.OnStatueSync(reader);
+                break;
+            case PacketType.QuestReward:
+                Loot.QuestSync.OnQuestReward(reader);
+                break;
+            case PacketType.XpTotal:
+                Loot.LootSync.OnXpTotal(reader);
+                break;
+            case PacketType.QuestState:
+                Loot.QuestSync.OnQuestState(reader);
+                break;
+            case PacketType.QuestAction:
+                Loot.QuestSync.OnQuestAction(reader);
                 break;
             case PacketType.GuestEffect:
                 Enemies.GuestEffects.OnGuestEffect(reader);

@@ -838,7 +838,8 @@ public static class CoopLife
             // Alone now: solo rules. A downed player has nobody to revive it (the host keeps going while a client is left).
             if (LocalDowned && InMatch && !NetworkManager.HasPeer) FinalDeathLocal("everyone else disconnected");
             // Phase 8: the client's run can't go on without the host (no enemies, no spawns): end it cleanly.
-            if (CoopRole.IsClientSide && InMatch && !RunEnding) BeginHostLost();
+            // Since 0.13.0 a dropped link is first tried again (Net.Reconnect); the run ends only if that fails.
+            if (CoopRole.IsClientSide && InMatch && !RunEnding && !Net.Reconnect.TryBegin()) BeginHostLost();
         }
         catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop][life] OnPeerDisconnected: {ex}"); }
     }
@@ -852,6 +853,12 @@ public static class CoopLife
     private static bool _hostLost;
     private static float _hostLostTimer;
     private static bool _hostLostWaitingLogged;
+
+    /// <summary>Net.Reconnect gave up: the host is gone for good.</summary>
+    internal static void HostLostNow()
+    {
+        if (CoopRole.IsClientSide && InMatch && !RunEnding) BeginHostLost();
+    }
 
     private static void BeginHostLost()
     {
@@ -959,7 +966,7 @@ public static class CoopLife
         UnitUtil.ChangeEntityHealth(null!, local, -(h.CurrentHealth + 1e9f), false, out _, out _, out _);
     }
 
-    private static void DebugVictory()
+    internal static void DebugVictory()
     {
         var data = GameManagerUtil.GameData;
         var obj = data != null && data.SurvivorsGameManager != null ? data.SurvivorsGameManager.MainObjective : null;

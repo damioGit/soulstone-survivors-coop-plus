@@ -2,7 +2,11 @@
 # Two game instances on this PC for co-op tests: A hosts (direct IP), B joins 127.0.0.1. Both run the TestBridge.
 #   duo.sh start      build, deploy, launch A and B windowed, press Play, wait for B connected
 #   duo.sh stop       kill both, remove steam_appid.txt, restore the screen settings from the backup
+#   duo.sh start fresh   same, but both test saves start again from the template
 #   duo.sh A "state"  send one bridge command to an instance and print the reply (shots are also shrunk to *_s.jpg)
+#   duo.sh diff       "cmd snap" on both, then what differs between the host (A) and the guest (B)
+# Saves: each instance plays on its own copy in $OUT/saves/A|B (TestSave.cs), seeded from $OUT/save-template,
+# which is filled once from the user's save backup. The real save in LocalLow is never opened.
 set -u
 G="/i/SteamLibrary/steamapps/common/Soulstone Survivors"
 OUT="$USERPROFILE/soulstone-uitest"
@@ -31,6 +35,10 @@ case "${1:-}" in
     for p in $(pids); do taskkill //PID $p //F >/dev/null; done; sleep 3
     cp src/SoulstoneCoop/bin/Release/net6.0/SoulstoneCoop.dll "$G/BepInEx/plugins/SoulstoneCoop/" || exit 1
     rm -f "$USERPROFILE/.soulstone-uitest"
+    if [ ! -d "$OUT/save-template" ]; then
+      mkdir -p "$OUT/save-template" && cp /i/soulstone-coop-backup3/LocalLow-SoulstoneSurvivors/playerProfile-* "$OUT/save-template/" || exit 1
+    fi
+    [ "${2:-}" = "fresh" ] && rm -rf "$OUT/saves"
     echo 2066020 > "$G/steam_appid.txt"
     # silent tests: master volume 0 (duo.sh stop restores the registry from the backup)
     reg add "HKCU\Software\Game Smithing\Soulstone Survivors" //v masterVolume_h3359004273 //t REG_DWORD //d 0 //f >/dev/null
@@ -48,7 +56,11 @@ case "${1:-}" in
       for w in A B; do for i in $(seq 1 12); do r=$(req $w play); case "$r" in *pressed*) ok=$((ok+1)); break;; esac; sleep 2; done; done
       sleep 8
       sa=$(req A state); sb=$(req B state)
-      case "$sb" in *Connected*) echo "$sa"; echo "$sb"; exit 0;; esac
+      case "$sb" in *Connected*)
+        echo "$sa"; echo "$sb"
+        for w in A B; do sp=$(req $w cmd savepath); case "$sp" in *"provider=$(cygpath -w "$OUT")"*) ;; *) echo "SAVE NOT REDIRECTED on $w: $sp"; for p in $(pids); do taskkill //PID $p //F >/dev/null; done; exit 1;; esac; done
+        exit 0;;
+      esac
       echo "attempt $attempt failed (A: ${sa:0:60} | B: ${sb:0:60}), restarting"
     done
     exit 1
@@ -60,5 +72,10 @@ case "${1:-}" in
     echo stopped
     ;;
   A|B) who=$1; shift; req $who "$@" ;;
-  *) echo "usage: duo.sh start|stop|A cmd|B cmd" ;;
+  diff)
+    req A cmd snap > "$OUT/snapA.txt"; req B cmd snap > "$OUT/snapB.txt"
+    diff --label host "$OUT/snapA.txt" --label guest "$OUT/snapB.txt" -U0 | grep -v '^@@' && true
+    echo "(host $(grep -c . "$OUT/snapA.txt") lines, guest $(grep -c . "$OUT/snapB.txt") lines)"
+    ;;
+  *) echo "usage: duo.sh start [fresh]|stop|diff|A cmd|B cmd" ;;
 esac

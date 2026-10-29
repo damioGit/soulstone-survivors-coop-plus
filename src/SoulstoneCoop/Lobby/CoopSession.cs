@@ -305,6 +305,7 @@ public static class CoopSession
         ClientRunLatched = false;
         GameState.LocalPlayerEntity = null;
         RunSync.OnLocalRunLeft();
+        if (!StageTransition) Loot.LootSync.ResetRunGain();
         Plugin.StaticLog.LogInfo(StageTransition
             ? $"[SoulstoneCoop][session] Left the run's scene (stage transition, loading the next). connected={Connected}"
             : $"[SoulstoneCoop][session] Local run over (back to menu). connected={Connected}");
@@ -446,7 +447,10 @@ public static class CoopSession
         // Not while our own old scene is still up (portal taken): those enemies are about to be gone.
         if (place == LobbyPlace.InRun) RunSync.NoteInRun(p.Slot);
         if (place == LobbyPlace.InRun && LocalInRun && !StageTransition && NetworkManager.Role == NetRole.Host)
+        {
             Enemies.HostEnemySync.ResyncToPeer(p.Slot, "player entered the run");
+            Loot.LootSync.SendXpTotal(p.Slot);
+        }
 
         // Client: the host's old scene is gone. Everything it sent from that scene came before this packet (same
         // ordered channel), so spawns/loot still around are stale (portal or Restart inside the run).
