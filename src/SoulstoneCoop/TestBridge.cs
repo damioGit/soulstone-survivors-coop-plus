@@ -179,6 +179,71 @@ public static class TestBridge
                     return $"run {_fightMode} map={_fightMap ?? "(profile's)"}";
                 };
                 Commands["savepath"] = TestSave.Info;
+                Commands["perf"] = _ => Perf.LastReport;
+                Commands["bossvissync"] = _ => Enemies.BossVisualSync.TestInfo();
+                // "prestige [LEVEL]": this side's character prestige (and set it, test saves only), and the partners'.
+                Commands["prestige"] = a =>
+                {
+                    var prof = Global.PlayerProfile;
+                    var ct = prof?.SelectedCharacter?.CharacterIdAsEnum;
+                    PlayerProfileCharacterProgressionData? mine = null;
+                    if (prof?.CharacterProgression?.Progress != null && ct != null)
+                        foreach (var c in prof.CharacterProgression.Progress) if (c != null && c.CharacterIdAsEnum == ct) { mine = c; break; }
+                    if (a.Length > 0 && mine != null && TestSave.Folder != null) mine.CharacterPrestigeLevel = int.Parse(a[0]); // the menu refresh resends the Hello
+                    PrestigeConfigSO? cfg = null;
+                    foreach (var o in Resources.FindObjectsOfTypeAll<PrestigeConfigSO>()) if (o != null) { cfg = o; break; }
+                    string stars = cfg == null ? "no config" : string.Join(",", new[] { 0, 1, 3, 5, 10, 20, 40, 84, 150 }.Select(l => $"{l}:{cfg.GetStarCountPerLevel(l)}/{cfg.GetStarSpritePerLevel(l)?.name ?? "-"}"));
+                    return $"{ct} prestige={mine?.CharacterPrestigeLevel ?? -1} sent={CoopSession.Local.Prestige} stars[{stars}] partners=" +
+                        string.Join(",", CoopSession.Remotes.Select(r => $"{r.Slot}:{r.Info.CharacterName}/p{r.Info.Prestige}"));
+                };
+                // "portal endless|bossrush": take that portal (once the run's portals are open, e.g. after "victory").
+                Commands["portal"] = a => Lobby.PortalSync.EnterPortal(a.Length > 0 && a[0] == "bossrush" ? Lobby.PortalKind.BossRush : Lobby.PortalKind.Endless) ? "entered" : "not entered";
+                Commands["endless"] = _ => $"level={GameManagerUtil.CurrentEndlessLevel} data={GameManagerUtil.InitialEndlessData?.GetEndlessLevel() ?? -1} type={GameManagerUtil.InitialEndlessData?.EndlessType.ToString() ?? "-"} label={UnityEngine.Object.FindObjectOfType<TimeAlivePanelReferences>()?.EndlessLabel?.text ?? "-"}";
+                Commands["puppet"] = a => Enemies.ClientPuppets.TestPuppet(ushort.Parse(a[0]));
+                // "masterytier Silver 5": this side's Mastery difficulty before a run (Global and the character's profile entry).
+                Commands["masterytier"] = a =>
+                {
+                    var tier = (DifficultyTierType)Enum.Parse(typeof(DifficultyTierType), a[0]);
+                    int lvl = int.Parse(a[1]);
+                    Global.MasteryDifficultyTier = tier;
+                    Global.MasteryDynamicLevel = lvl;
+                    int n = 0;
+                    var prof = Global.PlayerProfile;
+                    var list = prof?.MasteryProgression?.Progress;
+                    if (list != null) foreach (var m in list) if (m != null) { m.CharacterMasteryDifficultyTier = tier; m.CharacterMasteryDynamicLevel = lvl; n++; }
+                    return $"mastery {tier}/{lvl} (profile entries {n})";
+                };
+                // "vis": what the camera draws, by root object (clone suffix and numbers dropped) - diffed host vs guest.
+                Commands["vis"] = _ =>
+                {
+                    var counts = new SortedDictionary<string, int>();
+                    foreach (var rd in UnityEngine.Object.FindObjectsOfType<Renderer>())
+                    {
+                        if (rd == null || !rd.isVisible || !rd.enabled) continue;
+                        if (rd.TryCast<ParticleSystemRenderer>() != null) continue;
+                        string n = Enemies.EnemyPrefabKeys.StripClone(rd.transform.root.name);
+                        if (n.StartsWith("SoulstoneCoop")) continue;
+                        counts[n] = (counts.TryGetValue(n, out var c) ? c : 0) + 1;
+                    }
+                    return string.Join(" | ", counts.Select(kv => $"{kv.Key} x{kv.Value}"));
+                };
+                // "dmgstats [reset]": this side's own damage stats (what the end screen shows) and what crossed the link.
+                Commands["dmgstats"] = a =>
+                {
+                    if (a.Length > 0 && a[0] == "reset") { Enemies.HostEnemySync.ClientDamageTotal = 0; Enemies.ClientPuppets.DamageSentTotal = 0; _dmgBase.Clear(); }
+                    var gs = GameManagerUtil.GameStats;
+                    if (gs == null) return "no game stats";
+                    var eff = new Dictionary<string, double>(); var tot = new Dictionary<string, double>();
+                    var arr = gs.DamageDonePerSkillIdNew;
+                    for (int i = 0; i < gs.DamageDonePerSkillIdNewCount && arr != null && i < arr.Length; i++) { var d = arr[i]; if (d.DamageOrHealType.ToString().Contains("Heal")) continue; eff[d.Id ?? "?"] = (eff.TryGetValue(d.Id ?? "?", out var v) ? v : 0) + d.FloatValue; }
+                    var arr2 = gs.TotalDamageDonePerSkillIdNew;
+                    for (int i = 0; i < gs.TotalDamageDonePerSkillIdNewCount && arr2 != null && i < arr2.Length; i++) { var d = arr2[i]; if (d.DamageOrHealType.ToString().Contains("Heal")) continue; tot[d.Id ?? "?"] = (tot.TryGetValue(d.Id ?? "?", out var v) ? v : 0) + d.FloatValue; }
+                    // (no per-skill baseline: the game rebuilds these arrays as it goes)
+                    double E(string k) => eff[k] - (_dmgBase.TryGetValue("e" + k, out var b) ? b : 0);
+                    double T(string k) => (tot.TryGetValue(k, out var t) ? t : 0) - (_dmgBase.TryGetValue("t" + k, out var b) ? b : 0);
+                    return $"effective={eff.Keys.Sum(E):0} total={tot.Keys.Sum(T):0} sentToHost={Enemies.ClientPuppets.DamageSentTotal:0} fromGuests={Enemies.HostEnemySync.ClientDamageTotal:0} | " +
+                        string.Join(", ", eff.Keys.OrderByDescending(E).Take(8).Select(k => $"{k}={E(k):0}/{T(k):0}"));
+                };
                 // "netsim LAT JIT LOSS": this game's simulated network, live (0 0 0 = off). "netdrop SECONDS": hear nothing.
                 Commands["netsim"] = a =>
                 {
@@ -242,7 +307,7 @@ public static class TestBridge
                     }
                     foreach (var e in UnityEngine.Object.FindObjectsOfType<Entity>())
                         if (e != null && e.gameObject.name.IndexOf(a[0], StringComparison.OrdinalIgnoreCase) >= 0)
-                            hits.Add($"{e.gameObject.name}@{e.transform.position:0} team={(e._team != null ? e._team.Team.ToString() : "-")} setup={e.HasBeenSetUp} tracked={Enemies.HostEnemySync.TryGetNetId(e, out var id)}#{id} icon={(e._health != null ? e._health.MinimapIconId : -9)} ignore={(e._health != null && e._health.IgnoreMinimapTracking)} hp={(e._health != null ? e._health.CurrentHealth : -1):0}");
+                            hits.Add($"{e.gameObject.name}@{e.transform.position:0} team={(e._team != null ? e._team.Team.ToString() : "-")} setup={e.HasBeenSetUp} tracked={Enemies.HostEnemySync.TryGetNetId(e, out var id)}#{id} icon={(e._health != null ? e._health.MinimapIconId : -9)} ignore={(e._health != null && e._health.IgnoreMinimapTracking)} hp={(e._health != null ? e._health.CurrentHealth : -1):0} noSearch={e.IgnoredByEntitySearchQueries} unitLimit={e.IgnoredByUnitLimit} thr={(e._health?.HealthThresholds == null ? "-" : string.Join(",", e._health.HealthThresholds.ToArray().Select(t => $"{t.Min:0.###}-{t.Max:0.###}")))} idx={(e._health != null ? e._health.CurrentThresholdIndex : -1)}");
                     return hits.Count + ": " + string.Join(" | ", hits.Take(8));
                 };
                 // "comps NAME_PART": the components and parent chain of the active objects whose name contains it.
@@ -462,6 +527,39 @@ public static class TestBridge
                     ExecuteEvents.Execute(b.gameObject, new PointerEventData(EventSystem.current), ExecuteEvents.pointerClickHandler);
                     return "clicked " + b.name;
                 };
+                // "uiat X Y": the UI under a screen point (from the top-left, as in a shot), each hit with its parent chain and components.
+                Commands["uiat"] = a =>
+                {
+                    if (a.Length < 2 || EventSystem.current == null) return "usage: uiat X Y";
+                    var ped = new PointerEventData(EventSystem.current) { position = new Vector2(float.Parse(a[0]), Screen.height - float.Parse(a[1])) };
+                    var res = new Il2CppSystem.Collections.Generic.List<RaycastResult>();
+                    EventSystem.current.RaycastAll(ped, res);
+                    var hits = new List<string>();
+                    foreach (var r in res)
+                    {
+                        var go = r.gameObject;
+                        if (go == null) continue;
+                        var chain = new List<string>();
+                        for (var t = go.transform; t != null && chain.Count < 6; t = t.parent) chain.Add(t.name);
+                        var comps = go.GetComponents<Component>().Select(c => c.GetIl2CppType().Name);
+                        var parentComps = go.transform.parent != null ? go.transform.parent.GetComponents<Component>().Select(c => c.GetIl2CppType().Name) : Enumerable.Empty<string>();
+                        hits.Add($"{string.Join("<", chain)} [{string.Join(",", comps)}] parent[{string.Join(",", parentComps)}]");
+                    }
+                    return hits.Count + ": " + string.Join(" | ", hits.Take(6));
+                };
+                // "hover X Y [off]": pointer enter (or exit) on the UI under a screen point, for tooltips.
+                Commands["hover"] = a =>
+                {
+                    if (a.Length < 2 || EventSystem.current == null) return "usage: hover X Y [off]";
+                    var ped = new PointerEventData(EventSystem.current) { position = new Vector2(float.Parse(a[0]), Screen.height - float.Parse(a[1])) };
+                    var res = new Il2CppSystem.Collections.Generic.List<RaycastResult>();
+                    EventSystem.current.RaycastAll(ped, res);
+                    if (res.Count == 0) return "nothing there";
+                    var go = res[0].gameObject;
+                    if (a.Length > 2 && a[2] == "off") ExecuteEvents.Execute(go, ped, ExecuteEvents.pointerExitHandler);
+                    else ExecuteEvents.Execute(go, ped, ExecuteEvents.pointerEnterHandler);
+                    return "hover " + go.name;
+                };
                 // "lineskills": the live enemies' skills with a charged line telegraph.
                 Commands["lineskills"] = _ =>
                 {
@@ -650,6 +748,15 @@ public static class TestBridge
                     Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] fight: map -> {item.MapId}");
                     return;
                 }
+            }
+            if (_fightMode == GameModes.Crusade)
+            {
+                // Crusade has its own Fight (the map screen's does nothing for it).
+                var cp = UnityEngine.Object.FindObjectOfType<MapSelectionCrusadeScreenPanel>();
+                bool ok = cp != null && cp.OnFightPressed();
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] fight: crusade Fight pressed: {(cp == null ? "no panel" : ok.ToString())} (available {cp?.GetIsAvailableAndUpdateAchievementLabel()}).");
+                _fightStep = 0;
+                return;
             }
             map.OnFightPressed();
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][test] fight: map screen Fight pressed (mode {map.CurrentSelectedGameMode}).");
@@ -898,9 +1005,20 @@ public static class TestBridge
     {
         var gm = UnityEngine.Object.FindObjectOfType<MasteryGameManager>();
         if (gm == null) return "no MasteryGameManager";
+        if (args.Length > 0 && args[0] == "next") { gm.AdvanceCycle(); return $"advanced to cycle {gm.CurrentMasteryCycle}"; }
+        if (args.Length > 0 && args[0] == "finale") { gm.ActivateSpecialBossRoutine(); return "finale started"; }
+        if (args.Length > 1 && args[0] == "hp" && gm._mainBossEntity != null)
+        {
+            // "mastery hp 0.6": the main boss down to that share of its health (phase changes come with thresholds).
+            var boss = gm._mainBossEntity; var h = boss._health;
+            float target = float.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture) * boss._stats.GetMaxHealth();
+            h.InvulnerabilityTime = 0f;
+            UnitUtil.ChangeEntityHealth(GameState.LocalPlayerEntity!, boss, -(h.CurrentHealth - target), true, out _, out _, out _);
+            return $"boss health {h.CurrentHealth:0}/{boss._stats.GetMaxHealth():0}";
+        }
         var parts = new List<string>
         {
-            $"special={gm.BossSpawnDetails?.SpecialBossInfo?.Entity?.gameObject.name ?? "-"} tracker={(gm._mainBossTrackerComponentReference != null)} cycle={gm.CurrentMasteryCycle}/{gm.TotalCyclesAmount} setUp={gm.IsSetUp} spawnTriggered={gm._bossSpawnTriggered} spawnFinished={gm._bossSpawnFinished} lords={gm._lordsKilled} mainBoss={(gm._mainBossEntity != null ? gm._mainBossEntity.gameObject.name : "-")} mainId={gm._mainBossId}",
+            $"special={gm.BossSpawnDetails?.SpecialBossInfo?.Entity?.gameObject.name ?? "-"} tracker={(gm._mainBossTrackerComponentReference != null)} cycle={gm.CurrentMasteryCycle}/{gm.TotalCyclesAmount} setUp={gm.IsSetUp} spawnTriggered={gm._bossSpawnTriggered} spawnFinished={gm._bossSpawnFinished} lords={gm._lordsKilled} mainBoss={(gm._mainBossEntity != null ? gm._mainBossEntity.gameObject.name : "-")} mainId={gm._mainBossId} endless={GameManagerUtil.CurrentEndlessLevel} dataEndless={GameManagerUtil.InitialEndlessData?.GetEndlessLevel() ?? -1} dataType={GameManagerUtil.InitialEndlessData?.EndlessType.ToString() ?? "-"} label={UnityEngine.Object.FindObjectOfType<TimeAlivePanelReferences>()?.EndlessLabel?.text ?? "-"}",
         };
         var dp = gm.DisruptThePillarsObjective;
         if (dp != null) parts.Add($"pillarsObj={dp.GetCurrentProgressPercent():0.00} done={dp.IsComplete()}");
@@ -915,6 +1033,7 @@ public static class TestBridge
         return string.Join(" | ", parts);
     }
 
+    private static readonly Dictionary<string, double> _dmgBase = new();
     private static bool _autoPick;
     private static float _autoPickTimer;
 

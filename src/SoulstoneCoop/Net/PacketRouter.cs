@@ -66,6 +66,8 @@ public enum PacketType : byte
     ChestState = 122,  // host -> clients: chest id u16 | interaction % u8 | opened bool (ReliableOrdered, after its spawn)
     QuestState = 134,  // host -> each guest, 2 Hz: the questline's path and pose, its eggs, deliveries, that guest's carry, lit runes (ReliableOrdered)
     QuestAction = 135, // guest -> host: collect egg id / deliver / light rune index (ReliableOrdered)
+    BossVisual = 138,  // host -> client: a boss's parts on/off and animator params (Enemies.BossVisualSync) (ReliableOrdered)
+    EnemyFlags = 137,  // host -> client: netId u16 | noSearch bool, an enemy left/entered the target searches (ReliableOrdered)
     XpTotal = 136,     // host -> a guest entering its run: the shared XP pool's total this run, f64 (catch-up after a drop) (ReliableOrdered)
     QuestReward = 133, // host -> clients: the map's questline was completed: its Resources path; each guest grants its own rewards (ReliableOrdered)
 }
@@ -218,6 +220,12 @@ public static class PacketRouter
                 break;
             case PacketType.QuestReward:
                 Loot.QuestSync.OnQuestReward(reader);
+                break;
+            case PacketType.BossVisual:
+                Enemies.BossVisualSync.OnBossVisual(reader);
+                break;
+            case PacketType.EnemyFlags:
+                Enemies.ClientPuppets.OnEnemyFlags(reader);
                 break;
             case PacketType.XpTotal:
                 Loot.LootSync.OnXpTotal(reader);

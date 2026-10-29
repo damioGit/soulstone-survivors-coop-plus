@@ -47,20 +47,32 @@ public static class MasterySync
             w.Put((byte)PacketType.MasteryEvent);
             w.Put(KindLoadScene);
             w.Put(name);
+            // 0.14.0: and where it comes from (an Addressables scene: its asset path is its key)
+            var sc = UnityEngine.SceneManagement.SceneManager.GetSceneByName(name);
+            w.Put(sc.IsValid() ? sc.path ?? "" : "");
             NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Host: scene '{name}' loaded - clients load it too.");
         }
     }
 
-    private static void LoadSceneFromHost(string name)
+    private static void LoadSceneFromHost(string name, string path = "")
     {
         if (LoadedScenes().Contains(name) || !_scenesLoading.Add(name)) return;
         _loadingBefore = LoadingScreenManager._loadingRequests;
-        // the game's own loader, as ChangeSceneAction uses (the type isn't public in the interop assembly)
-        var m = HarmonyLib.AccessTools.Method(typeof(CrusadeGameManager).Assembly.GetType("SceneCommands"), "LoadSceneAsync",
-            new[] { typeof(string), typeof(UnityEngine.SceneManagement.LoadSceneMode) });
-        if (m == null) { Plugin.StaticLog.LogWarning("[SoulstoneCoop][mastery] Client: no SceneCommands.LoadSceneAsync."); return; }
-        m.Invoke(null, new object[] { name, UnityEngine.SceneManagement.LoadSceneMode.Additive });
+        // 0.14.0: this went through the debug console's SceneCommands by reflection, under a name that doesn't
+        // resolve (it lives in IngameDebugConsole.Commands), so the guest never loaded the arena: black, no floor,
+        // no boss. The arena is in the build's scene list; an Addressables key is the fallback.
+        if (Application.CanStreamedLevelBeLoaded(name))
+        {
+            UnityEngine.SceneManagement.SceneManager.LoadSceneAsync(name, UnityEngine.SceneManagement.LoadSceneMode.Additive);
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: scene '{name}' requested from the build list.");
+        }
+        else
+        {
+            string key = !string.IsNullOrEmpty(path) ? path : "_Scenes/" + name;
+            UnityEngine.AddressableAssets.Addressables.LoadSceneAsync(key, UnityEngine.SceneManagement.LoadSceneMode.Additive, true, 100);
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: Addressables scene '{key}' requested.");
+        }
         _sceneAwaited = name;
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: loading the host's scene '{name}'.");
     }
@@ -106,13 +118,14 @@ public static class MasterySync
 
     /// <summary>Every object of the active scene that isn't spawned at runtime (no "(Clone)" on its path, none of
     /// ours), keyed by its hierarchy path with sibling indexes, with its activeSelf.</summary>
-    private static Dictionary<string, GameObject> SceneObjects(bool clones = false)
+    private static Dictionary<string, GameObject> SceneObjects(bool clones = false, bool ui = true)
     {
         var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
         var map = new Dictionary<string, GameObject>();
         foreach (var t in Resources.FindObjectsOfTypeAll<Transform>())
         {
             if (t == null) continue;
+            if (!ui && t.TryCast<RectTransform>() != null) continue;
             var go = t.gameObject;
             if (!go.scene.IsValid() || go.scene.handle != scene.handle) continue;
             string path = PathOf(t);
@@ -135,7 +148,9 @@ public static class MasterySync
         // Paths are worked out once; after that only activeSelf is read, so this can run for the whole finale (the
         // arena turns on when the boss pulls the players in, on a phase change long after the finale started).
         _sceneBefore = new List<(GameObject, string, bool)>();
-        foreach (var kv in SceneObjects()) _sceneBefore.Add((kv.Value, kv.Key, kv.Value.activeSelf));
+        // Not the HUD: each player has its own (the host's damage flash, its upgrade highlights and minimap were
+        // mirrored on the guests). The boss's own UI comes with the phase targets.
+        foreach (var kv in SceneObjects(ui: false)) _sceneBefore.Add((kv.Value, kv.Key, kv.Value.activeSelf));
         _sceneSent.Clear();
         _sceneDiffTimer = 1f;
         _sceneDiffUntil = float.MaxValue;
@@ -226,12 +241,15 @@ public static class MasterySync
         var list = new List<(string, bool)>();
         for (int i = 0; i < n; i++) list.Add((r.GetString(), r.GetBool()));
         if (NetworkManager.Role != NetRole.Client) return;
-        var objs = SceneObjects();
+        // 0.14.0: the map is built once per scene (it walked every transform of the game for each packet).
+        var active = UnityEngine.SceneManagement.SceneManager.GetActiveScene().handle;
+        if (_clientObjs == null || _clientObjsScene != active) { _clientObjs = SceneObjects(); _clientObjsScene = active; }
+        var objs = _clientObjs;
         Dictionary<string, GameObject>? all = null;
         int applied = 0, missing = 0;
         foreach (var (path, on) in list)
         {
-            if (!objs.TryGetValue(path, out var go))
+            if (!objs.TryGetValue(path, out var go) || go == null)
             {
                 all ??= SceneObjects(true);
                 if (!all.TryGetValue(path, out go)) { missing++; Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: no '{path}'."); continue; }
@@ -241,6 +259,8 @@ public static class MasterySync
         _arenaReadyAt = Time.unscaledTime;
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: finale scene changes applied {applied}/{list.Count} (missing {missing}).");
     }
+    private static Dictionary<string, GameObject>? _clientObjs;
+    private static int _clientObjsScene;
     private static bool _finaleFromHost;
     private static float _finaleUntil, _hostStillSince;
     private static Vector3 _hostStill, _hostLast;
@@ -319,6 +339,8 @@ public static class MasterySync
         var moved = host - _hostStill;
         if (moved.sqrMagnitude > 0.3f * 0.3f) { _hostStill = host; _hostStillSince = Time.unscaledTime; return; }
         if (Time.unscaledTime - _hostStillSince < 1f) return;
+        // The host's arena is still loading here: wait for it rather than land in the void.
+        if (_sceneAwaited != null && _sceneInAt <= 0f && Time.unscaledTime - _hostStillSince < 15f) return;
         _followPending = false;
         var away = local.transform.position - host; away.y = 0f;
         if (away.sqrMagnitude < 15f * 15f) return; // already there
@@ -343,9 +365,19 @@ public static class MasterySync
     private static float _proxyTimer;
     private static int _triggers, _proxyTriggers, _clientTriggers;
 
+    // 0.14.0: both were looked up with FindObjectsOfType every frame, 5.8 ms of a 10 ms frame on the host in the
+    // Cathedral. Kept until destroyed; a miss is looked up again at most twice a second.
+    private static MasteryBossSpawner? _spawnerCache;
+    private static MasteryGameManager? _managerCache;
+    private static float _spawnerMissAt = -10f, _managerMissAt = -10f;
+
     private static MasteryBossSpawner? Spawner()
     {
-        foreach (var s in UnityEngine.Object.FindObjectsOfType<MasteryBossSpawner>()) if (s != null) return s;
+        if (_spawnerCache != null && _spawnerCache.Pointer != IntPtr.Zero && _spawnerCache) return _spawnerCache;
+        _spawnerCache = null;
+        if (Time.unscaledTime - _spawnerMissAt < 0.5f) return null;
+        foreach (var s in UnityEngine.Object.FindObjectsOfType<MasteryBossSpawner>()) if (s != null) return _spawnerCache = s;
+        _spawnerMissAt = Time.unscaledTime;
         return null;
     }
 
@@ -435,7 +467,11 @@ public static class MasterySync
 
     private static MasteryGameManager? Manager()
     {
-        foreach (var g in UnityEngine.Object.FindObjectsOfType<MasteryGameManager>()) if (g != null) return g;
+        if (_managerCache != null && _managerCache.Pointer != IntPtr.Zero && _managerCache) return _managerCache;
+        _managerCache = null;
+        if (Time.unscaledTime - _managerMissAt < 0.5f) return null;
+        foreach (var g in UnityEngine.Object.FindObjectsOfType<MasteryGameManager>()) if (g != null) return _managerCache = g;
+        _managerMissAt = Time.unscaledTime;
         return null;
     }
 
@@ -703,6 +739,7 @@ public static class MasterySync
         _pillarCopies.Clear();
         _clientObjectives = false;
         _scenesLoading.Clear();
+        _clientObjs = null;
         DropFloor();
     }
 
@@ -718,8 +755,10 @@ public static class MasterySync
         if (kind == KindLoadScene)
         {
             string name = r.GetString();
+            string path = r.AvailableBytes > 0 ? r.GetString() : "";
             if (NetworkManager.Role != NetRole.Client) return;
-            try { LoadSceneFromHost(name); }
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][mastery] Client: the host loaded '{name}' ({(path == "" ? "no path" : path)}).");
+            try { LoadSceneFromHost(name, path); }
             catch (Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop][mastery] Client scene '{name}': {ex.Message}"); }
             return;
         }

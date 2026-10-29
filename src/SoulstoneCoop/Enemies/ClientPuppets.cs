@@ -131,6 +131,35 @@ public static class ClientPuppets
     internal static Entity? TryGetPuppetEntity(ushort netId) =>
         netId != 0 && ByNetId.TryGetValue(netId, out var p) && p.Entity != null ? p.Entity : null;
 
+    // 0.14.0: puppets the host's game keeps out of every target search (HostEnemySync.SendFlags).
+    private static readonly HashSet<ushort> NoSearch = new();
+
+    public static void OnEnemyFlags(NetDataReader r)
+    {
+        ushort id = r.GetUShort();
+        bool ns = r.GetBool();
+        float max = r.AvailableBytes >= 4 ? r.GetFloat() : 0f;
+        if (!CoopRole.IsClientSide) return;
+        if (ns) NoSearch.Add(id); else NoSearch.Remove(id);
+        var e = TryGetPuppetEntity(id);
+        if (e != null) e.IgnoredByEntitySearchQueries = ns;
+        if (e != null && max > 0f && ByNetId.TryGetValue(id, out var pp))
+        {
+            var stats = e._stats;
+            var mult = stats != null ? stats.MultiplicativeStats : null;
+            float local = stats != null ? stats.GetMaxHealth() : 0f;
+            if (mult != null && local > 0f && Mathf.Abs(local - max) > max * 0.01f)
+            {
+                mult.MaxHealth *= max / local;
+                pp.HostMaxHealth = max;
+                pp.HealthDirty = true;
+                ApplyHealth(pp);
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][puppets] #{id} max health {local:0} -> {stats!.GetMaxHealth():0} (host).");
+            }
+        }
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][puppets] #{id} {(ns ? "not targetable" : "targetable")} (host){(e == null ? " - puppet not built yet" : "")}.");
+    }
+
     internal static Entity? TryGetLivePuppet(ushort netId) =>
         ByNetId.TryGetValue(netId, out var p) && !p.Dead && p.Entity != null ? p.Entity : null;
 
@@ -146,6 +175,7 @@ public static class ClientPuppets
     internal static void ResetForNewRun()
     {
         DespawnAll("new run");
+        NoSearch.Clear();
         _matchStarted = false;
         Unresolved.Clear();
     }
@@ -341,9 +371,32 @@ public static class ClientPuppets
         var stats = p.Entity._stats;
         if (health == null || stats == null || health.HasBeenKilled) return;
         float max = stats.GetMaxHealth();
+        float target = Mathf.Max(1f, p.HealthPercent * max);
+        MatchThreshold(p, health, target);
         // Never write 0: only the host's Died message kills a puppet.
-        health.CurrentHealth = Mathf.Max(1f, p.HealthPercent * max);
+        health.CurrentHealth = target;
         p.HealthDirty = false;
+    }
+
+    /// <summary>0.14.0: a boss's health is held inside its phase's threshold (HealthThresholds: Min/Max health) until
+    /// its phase changes; the puppet's phases never run, so the guests' boss bar stopped at the first threshold (60%
+    /// of Mh'thaeus) for the rest of the fight. Put the puppet in the threshold the host's health falls in.</summary>
+    private static void MatchThreshold(Puppet p, HealthComponent health, float target)
+    {
+        var th = health.HealthThresholds;
+        if (th == null || th.Count == 0) return;
+        for (int i = 0; i < th.Count; i++)
+        {
+            var t = th[i];
+            float lo = Mathf.Min(t.Min, t.Max), hi = Mathf.Max(t.Min, t.Max);
+            if (target < lo || target > hi) continue;
+            if (health.CurrentThresholdIndex != i)
+            {
+                Plugin.StaticLog.LogInfo($"[SoulstoneCoop][puppets] #{p.NetId} ({p.Key}) health threshold {health.CurrentThresholdIndex} -> {i} ({lo:0}-{hi:0}, host at {target:0}).");
+                health.CurrentThresholdIndex = i;
+            }
+            return;
+        }
     }
 
     private static void DriveMovement(Puppet p, float now)
@@ -478,6 +531,7 @@ public static class ClientPuppets
             inst.IgnoredByUnitLimit = true;
 
             inst.Setup();
+            if (NoSearch.Contains(msg.NetId)) inst.IgnoredByEntitySearchQueries = true;
             DisableAI(inst);
             if (!fromTierLists) MatchHostMaxHealth(inst, msg);
 
@@ -829,6 +883,18 @@ public static class ClientPuppets
 
     internal static void CountClampedHit() => _clampedHits++;
 
+    internal static string TestPuppet(ushort id)
+    {
+        if (!ByNetId.TryGetValue(id, out var p)) return "no puppet #" + id;
+        var e = p.Entity; var h = e != null ? e._health : null;
+        return $"#{id} {p.Key} pct={p.HealthPercent:0.000} dirty={p.HealthDirty} dead={p.Dead} seq={p.LastSeq} sample={p.HasSample} latest={p.LatestPos} " +
+            $"hp={(h != null ? h.CurrentHealth : -1):0} killed={(h != null && h.HasBeenKilled)} max={(e?._stats != null ? e._stats.GetMaxHealth() : -1):0} active={(e != null && e.gameObject.activeInHierarchy)} " +
+            $"thresholds={(h?.HealthThresholds == null ? "-" : string.Join(",", h.HealthThresholds.ToArray().Select(t => $"{t.Min:0.###}-{t.Max:0.###}")))} idx={(h != null ? h.CurrentThresholdIndex : -1)} changed={(h != null && h.ThresholdChanged)}";
+    }
+
+    /// <summary>Everything sent to the host as damage this run (tests).</summary>
+    internal static double DamageSentTotal;
+
     /// <summary>ChangeEntityHealth prefix, BEFORE the clamp: the full (already calculated) damage goes to the host.
     /// Hits from enemy-team attackers (puppets hitting each other, the map's God-Entity) are skipped: the host
     /// simulates those on its own enemies already.</summary>
@@ -840,6 +906,7 @@ public static class ClientPuppets
         DamageOut[p.NetId] = sum - healthChange;
         _dmgHits++;
         _dmgSum -= healthChange;
+        DamageSentTotal -= healthChange;
     }
 
     /// <summary>Layout: type u8 | count u8 | count * (netId u16 | damage f32). Damage is positive.</summary>

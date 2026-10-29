@@ -39,6 +39,7 @@ public static class GodCasts
     internal static bool IsGodCaster(SkillCasterComponent caster) =>
         _godPtr != IntPtr.Zero && caster != null && caster.Entity != null && caster.Entity.Pointer == _godPtr;
     private static readonly Dictionary<string, Skill?> GodSkillsByKey = new();
+    private static readonly Dictionary<string, float> MissedAt = new();
     internal static void CountCaptureError() => _captureErrors++;
 
     /// <summary>Both sides: find this scene's God-Entity meteor skill (the host to filter its casts, the client as the
@@ -85,6 +86,7 @@ public static class GodCasts
         _lookups++;
         _godPtr = god.Pointer;
         GodSkillsByKey.Clear();
+        MissedAt.Clear();
         // Throws while the God-Entity is still being set up on a loading client: just try again next second.
         try { _meteor = GameManagerUtil.GetGodSkillById(god, MeteorSkillId); }
         catch { _meteor = null; return; }
@@ -175,15 +177,23 @@ public static class GodCasts
     /// <summary>#15, client: the skill with that key under our own God-Entity (the scenes are the same).</summary>
     private static Skill? FindLocalGodSkill(string key)
     {
-        if (GodSkillsByKey.TryGetValue(key, out var cached)) return cached;
+        if (GodSkillsByKey.TryGetValue(key, out var cached) && cached != null) return cached;
+        if (MissedAt.TryGetValue(key, out var at) && Time.unscaledTime - at < 2f) return null;
         var god = GameManagerUtil.HasGameManager ? GameManagerUtil.GameData?.GodEntity : null;
         Skill? found = null;
         if (god != null)
             foreach (var s in god.GetComponentsInChildren<Skill>(true))
                 if (s != null && KeyOf(s) == key) { found = s; break; }
-        GodSkillsByKey[key] = found;
-        if (found == null) Plugin.StaticLog.LogInfo($"[SoulstoneCoop][godcasts] Client: no God-Entity skill '{key}' here.");
-        return found;
+        // 0.14.0: skills a boss hands the God-Entity during its fight (AddAdditionalGodSkill: Mh'thaeus' rotating rays)
+        // aren't on the client's God-Entity, which runs no boss phases. The same skill object is in the loaded scenes
+        // (the boss's arena, its prefab instance): take it from there.
+        if (found == null)
+            foreach (var s in Resources.FindObjectsOfTypeAll<Skill>())
+                if (s != null && s.gameObject.scene.IsValid() && KeyOf(s) == key) { found = s; break; }
+        if (found != null) { GodSkillsByKey[key] = found; MissedAt.Remove(key); return found; }
+        if (!MissedAt.ContainsKey(key)) Plugin.StaticLog.LogInfo($"[SoulstoneCoop][godcasts] Client: no God-Entity skill '{key}' here (yet).");
+        MissedAt[key] = Time.unscaledTime;
+        return null;
     }
 
     private static void PutV3(NetDataWriter w, Vector3 v) { w.Put(v.x); w.Put(v.y); w.Put(v.z); }

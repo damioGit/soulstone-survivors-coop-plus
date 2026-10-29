@@ -133,50 +133,94 @@ public class CoopBehaviour : MonoBehaviour
             // The game may flip this back off (or pause via timeScale) when its window loses focus.
             Application.runInBackground = true;
 
+            Perf.Begin();
             NetworkManager.PollEvents();
+            Perf.Lap("NetworkManager.PollEvents");
             try { Steam.SteamLobby.Tick(Time.unscaledDeltaTime); }
             catch (System.Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] SteamLobby.Tick: {ex}"); }
+            Perf.Lap("SteamLobby");
             try { Lobby.CoopSession.Tick(Time.unscaledDeltaTime); }
             catch (System.Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] CoopSession.Tick: {ex}"); }
+            Perf.Lap("CoopSession");
             UpdateGhostLifecycle();
+            Perf.Lap("UpdateGhostLifecycle");
             try { Ui.Loc.Tick(); }
             catch (System.Exception ex) { Plugin.StaticLog.LogError($"[SoulstoneCoop] Loc.Tick: {ex}"); }
+            Perf.Lap("Loc");
             Ui.CoopUi.Tick();
+            Perf.Lap("CoopUi");
             PlayerSync.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("PlayerSync");
             GhostOverhead.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("GhostOverhead");
             Lobby.LobbyPartners.Tick();
+            Perf.Lap("LobbyPartners");
             Life.PartnerHealth.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("PartnerHealth");
             Summons.SummonSync.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("SummonSync");
             ClientSpawnBlock.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("ClientSpawnBlock");
             WorldTelemetry.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("WorldTelemetry");
             Enemies.HostEnemySync.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("HostEnemySync");
             Enemies.ClientPuppets.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("ClientPuppets");
             Enemies.RemoteProxy.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("RemoteProxy");
             Enemies.ClientIncomingDamage.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("ClientIncomingDamage");
             Skills.CastSync.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("CastSync");
             Loot.LootSync.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("LootSync");
             Loot.ChestSync.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("ChestSync");
             Loot.QuestSync.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("QuestSync");
             Net.Reconnect.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("Reconnect");
             Life.CoopLife.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("CoopLife");
             Life.HealOrbs.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("HealOrbs");
             Life.GhostDowned.Tick();
+            Perf.Lap("GhostDowned");
             Lobby.PortalSync.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("PortalSync");
             Lobby.MasterySync.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("MasterySync");
             Lobby.CrusadeSync.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("CrusadeSync");
             Life.PartyStatus.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("PartyStatus");
             Ui.PartyHud.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("PartyHud");
             Enemies.EnemyCasts.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("EnemyCasts");
             Enemies.GuestEffects.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("GuestEffects");
             Enemies.StatueSync.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("StatueSync");
             Enemies.EnemyHealthBonus.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("EnemyHealthBonus");
             Enemies.SpecialsDebug.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("SpecialsDebug");
             Enemies.ObjectiveSync.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("ObjectiveSync");
             Enemies.EnemyScaling.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("EnemyScaling");
+            Enemies.BossVisualSync.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("BossVisualSync");
             RebuildGhostIfModelInactive();
+            Perf.Lap("RebuildGhostIfModelInactive");
             HandleDebugHotkeys();
+            Perf.Lap("HandleDebugHotkeys");
             TestBridge.Tick(Time.unscaledDeltaTime);
+            Perf.Lap("TestBridge");
             LogSyncStats();
+            Perf.End(Time.unscaledDeltaTime);
         }
         catch (System.Exception ex)
         {

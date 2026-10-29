@@ -17,7 +17,7 @@ namespace SoulstoneCoop.Enemies;
 public static class StatueSync
 {
     private const byte KindSpawn = 0, KindGone = 1;
-    private const float ScanInterval = 0.25f;
+    private const float ScanInterval = 1f; // 0.14.0: was 0.25 s, a 3 ms FindObjectsOfType four times a second
     private const float MaxSeconds = 12f; // the game breaks its statues after a few seconds
 
     private static readonly Dictionary<IntPtr, ushort> _hostIds = new();
@@ -113,7 +113,9 @@ public static class StatueSync
             var copy = UnityEngine.Object.Instantiate(prefab.gameObject, pos, Quaternion.Euler(0f, yaw, 0f));
             copy.name = $"SoulstoneCoop_{name}_{id}";
             copy.SetActive(true);
-            UnityEngine.Object.Destroy(copy, MaxSeconds); // a lost "gone" never leaves a statue standing
+            // A lost "gone" never leaves a statue standing. 0.14.0: not in Mastery, whose lord statues stand the whole
+            // cycle (the guests lost them after 12 s); the host's "gone" and the scene change take them down there.
+            if (Global.SelectedGameMode != GameModes.Mastery) UnityEngine.Object.Destroy(copy, MaxSeconds);
             _copies[id] = copy;
             _shown++;
             Plugin.StaticLog.LogInfo($"[SoulstoneCoop][statues] Client: '{name}' #{id} shown at {pos}.");

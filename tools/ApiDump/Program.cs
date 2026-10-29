@@ -58,7 +58,7 @@ var matched = module.Types
 foreach (var t in matched)
 {
     string baseType = t.BaseType != null && t.BaseType.Name != "Object" ? $" : {TypeName(t.BaseType)}" : "";
-    Console.WriteLine($"\nclass {t.Name}{baseType}");
+    Console.WriteLine($"\nclass {(string.IsNullOrEmpty(t.Namespace) ? "" : t.Namespace + ".")}{t.Name}{baseType}");
 
     foreach (var f in t.Fields.Where(f => (f.IsPublic || f.IsFamily) && !IsBoilerplateMember(f.Name)))
     {

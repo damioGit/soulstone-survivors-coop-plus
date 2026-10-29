@@ -61,6 +61,7 @@ internal static class PartyHud
         public int Level, Revives;
         public float Xp, Progress;
         public bool Unstable;
+        public int Prestige = -1;
     }
 
     private sealed class Row
@@ -70,6 +71,9 @@ internal static class PartyHud
         public Image Strip = null!, Icon = null!, HpBg = null!, HpFill = null!, XpFill = null!, RevIcon = null!;
         public RectTransform HpFillRt = null!, ReviveFillRt = null!, XpFillRt = null!;
         public TextMeshProUGUI Name = null!, Level = null!, Revives = null!, BarText = null!;
+        public Image Frame = null!;
+        public readonly List<Image> Stars = new();
+        public int ShownPrestige = -2;
         public string Key = "";
     }
 
@@ -134,6 +138,7 @@ internal static class PartyHud
 
         var frame = GameLook.Img(row.Rt, "Icon-Frame", "Skill_Tree_Character_BGFrame", Image.Type.Simple, new Color(0f, 0f, 0f, 0.6f));
         GameLook.TopLeft(frame.rectTransform, 9f, 3f, 48f, 48f);
+        row.Frame = frame;
         row.Icon = GameLook.Img(frame.rectTransform, "Icon", "-", Image.Type.Simple, Color.white);
         row.Icon.preserveAspect = true;
         GameLook.Stretch(row.Icon.rectTransform, 3f, 3f, 3f, 3f);
@@ -179,8 +184,59 @@ internal static class PartyHud
         row.XpFillRt = row.XpFill.rectTransform;
         Fill(row.XpFillRt, 0f);
 
+        // 0.14.0: the partner's prestige, as the game's own stars along the bottom of the portrait.
+        for (int s = 0; s < MaxStars; s++)
+        {
+            var star = GameLook.Img(row.Rt, $"Prestige-Star-{s + 1}", "-", Image.Type.Simple, Color.white);
+            star.preserveAspect = true;
+            star.gameObject.SetActive(false);
+            row.Stars.Add(star);
+        }
+
         row.Rt.gameObject.SetActive(false);
         return row;
+    }
+
+    private const int MaxStars = 5;
+    private const float StarSize = 13f;
+    private static PrestigeConfigSO? _prestige;
+    private static float _prestigeLookAt = -100f;
+
+    private static PrestigeConfigSO? PrestigeConfig()
+    {
+        if (_prestige != null) return _prestige;
+        if (Time.unscaledTime - _prestigeLookAt < 5f) return null;
+        _prestigeLookAt = Time.unscaledTime;
+        foreach (var o in Resources.FindObjectsOfTypeAll<PrestigeConfigSO>()) if (o != null) { _prestige = o; break; }
+        if (_prestige != null) Plugin.StaticLog.LogInfo("[SoulstoneCoop][party] Prestige stars from the game's PrestigeConfigSO.");
+        return _prestige;
+    }
+
+    /// <summary>Stars (count and sprite per prestige level, as the game's prestige bar) centered under the portrait.</summary>
+    private static void SetPrestige(Row row, int level)
+    {
+        if (row.ShownPrestige == level) return;
+        var cfg = level >= 0 ? PrestigeConfig() : null;
+        if (level >= 0 && cfg == null) return; // retried on a later refresh
+        row.ShownPrestige = level;
+        int n = 0;
+        Sprite? sprite = null;
+        if (cfg != null)
+        {
+            try { n = Mathf.Clamp(cfg.GetStarCountPerLevel(level), 0, MaxStars); sprite = cfg.GetStarSpritePerLevel(level); }
+            catch (Exception ex) { Plugin.StaticLog.LogWarning($"[SoulstoneCoop][party] Prestige {level}: {ex.Message}"); n = 0; }
+        }
+        if (sprite == null) n = 0;
+        float x0 = 9f + 24f - n * StarSize * 0.5f;
+        for (int s = 0; s < row.Stars.Count; s++)
+        {
+            var star = row.Stars[s];
+            bool on = s < n;
+            star.gameObject.SetActive(on);
+            if (!on) continue;
+            star.sprite = sprite;
+            GameLook.TopLeft(star.rectTransform, x0 + s * StarSize, RowH - StarSize - 1f, StarSize, StarSize);
+        }
     }
 
     private static readonly Dictionary<string, Sprite> Icons = new();
@@ -297,7 +353,7 @@ internal static class PartyHud
 
         foreach (var r in CoopSession.Remotes)
         {
-            var d = new RowData { Slot = r.Slot, Name = r.Name, CharName = r.Info.CharacterName, Unstable = NetworkManager.IsUnstable(r.Slot) };
+            var d = new RowData { Slot = r.Slot, Name = r.Name, CharName = r.Info.CharacterName, Unstable = NetworkManager.IsUnstable(r.Slot), Prestige = r.Info.Prestige };
             if (r.InRun) LastInRun[r.Slot] = now;
             if (!r.InRun)
             {
@@ -374,6 +430,8 @@ internal static class PartyHud
                 _ => d.HpKnown ? $"{Mathf.CeilToInt(d.Hp)} / {Mathf.RoundToInt(d.MaxHp)}" : "-",
             };
         }
+
+        SetPrestige(row, d.State == State.Gone ? -1 : d.Prestige);
 
         // Bars every refresh (cheap): health, revive progress over it, XP.
         float hpFrac = d.State == State.Alive && d.HpKnown && d.MaxHp > 0f ? d.Hp / d.MaxHp : 0f;

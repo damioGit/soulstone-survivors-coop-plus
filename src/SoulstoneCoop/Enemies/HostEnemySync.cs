@@ -37,6 +37,9 @@ public static class HostEnemySync
         public bool HasPrefabType;
         public int PrefabType;
         public bool DataIsElite, DataIsEndless;
+        // 0.14.0: the game's "nobody targets it" flag (Mastery's main boss sleeps with it until the finale).
+        public bool NoSearch;
+        public float SentMax; // bosses: the max health the clients last got (phases change it)
     }
 
     // Phase 4D: captured right before Entity.Setup by the patches at the end of this file.
@@ -56,6 +59,7 @@ public static class HostEnemySync
 
     private static readonly Dictionary<IntPtr, Tracked> ByPtr = new();
     private static readonly List<Tracked> All = new();
+    internal static IReadOnlyList<Tracked> AllTracked => All;
     private static readonly Dictionary<ushort, Tracked> ByNetId = new();
     private static ushort _nextNetId = 1;
     private static ushort _snapshotSeq;
@@ -283,6 +287,52 @@ public static class HostEnemySync
         if (to != Net.Players.NoSlot) { NetworkManager.SendTo(to, w, DeliveryMethod.ReliableOrdered); _spawnsSent++; return; }
         NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
         _spawnsSent++;
+        if (t.NoSearch) SendFlags(t, to);
+    }
+
+    /// <summary>Layout: type u8 | netId u16 | noSearch bool | maxHealth f32 (0 = unchanged). After the spawn on the
+    /// same channel, so it lands on it.</summary>
+    private static void SendFlags(Tracked t, byte to = Net.Players.NoSlot)
+    {
+        var w = new NetDataWriter();
+        w.Put((byte)PacketType.EnemyFlags);
+        w.Put(t.NetId);
+        w.Put(t.NoSearch);
+        w.Put(t.SentMax);
+        if (to != Net.Players.NoSlot) NetworkManager.SendTo(to, w, DeliveryMethod.ReliableOrdered);
+        else NetworkManager.Send(w, DeliveryMethod.ReliableOrdered);
+    }
+
+    private static float _flagsTimer;
+
+    /// <summary>Twice a second: a tracked enemy that became (un)targetable. Guests' summons and auto-aim read the
+    /// flag on their puppets; without it they all went for Mastery's sleeping main boss.</summary>
+    private static void CheckFlags(float dt)
+    {
+        _flagsTimer -= dt;
+        if (_flagsTimer > 0f) return;
+        _flagsTimer = 0.5f;
+        for (int i = 0; i < All.Count; i++)
+        {
+            var t = All[i];
+            if (t.DiedSent || t.Entity == null) continue;
+            bool ns = t.Entity.IgnoredByEntitySearchQueries;
+            // 0.14.0: a boss's phase can raise its max health (Mh'thaeus' second bar); the clients' puppets kept the
+            // spawn's, so their health bar showed the wrong share of it.
+            float max = 0f;
+            if (t.IsBoss && t.Entity._stats != null)
+            {
+                float m = t.Entity._stats.GetMaxHealth();
+                if (t.SentMax <= 0f) t.SentMax = m;
+                else if (m > 0f && Mathf.Abs(m - t.SentMax) > t.SentMax * 0.01f) max = m;
+            }
+            if (ns == t.NoSearch && max <= 0f) continue;
+            t.NoSearch = ns;
+            if (max > 0f) t.SentMax = max;
+            if (!NetworkManager.HasPeer) continue;
+            SendFlags(t);
+            Plugin.StaticLog.LogInfo($"[SoulstoneCoop][enemies] Host: #{t.NetId} '{t.Key}' {(ns ? "not targetable" : "targetable")}, max health {t.SentMax:0}.");
+        }
     }
 
     /// <summary>Phase 6: the connection is made in the menu, so "the client entered my run" is now CoopSession's
@@ -291,6 +341,7 @@ public static class HostEnemySync
     {
         Plugin.StaticLog.LogInfo($"[SoulstoneCoop][enemies] Host: resync to slot {slot} ({why}).");
         OnPeerConnected(slot);
+        BossVisualSync.ResendTo(slot);
     }
 
     private static void OnPeerConnected(byte slot)
@@ -367,6 +418,9 @@ public static class HostEnemySync
     /// <summary>Phase 3a: damage the client's skills dealt to our enemies' puppets. Applied through the game's
     /// own funnel with attacker = null (no on-kill procs for the host) and yieldLoot = true, so the kill, the
     /// stats and the loot/XP happen here as usual; the death goes back to the client as EnemyDied.</summary>
+    /// <summary>All the guests' damage this run (tests: compared with their own stats).</summary>
+    internal static double ClientDamageTotal;
+
     public static void OnClientDamage(NetDataReader reader)
     {
         int count = reader.GetByte();
@@ -378,6 +432,7 @@ public static class HostEnemySync
             float damage = reader.GetFloat();
             _clientDmgEntries++;
             _clientDmgSum += damage;
+            ClientDamageTotal += damage;
             if (damage <= 0f || float.IsNaN(damage)) continue;
             try
             {
@@ -434,6 +489,7 @@ public static class HostEnemySync
             _snapshotTimer = 0f;
             if (NetworkManager.HasPeer) SendSnapshot();
         }
+        CheckFlags(unscaledDeltaTime);
 
         _telemetryTimer += unscaledDeltaTime;
         if (_telemetryTimer >= TelemetryInterval)

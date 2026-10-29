@@ -38,10 +38,19 @@ public static class QuestSync
     private static string? _hostPath;
     private static float _stateTimer;
 
+    // 0.14.0: the manager is kept (FindObjectsOfType twice a second gave the host 5-7 ms spikes); a miss looks again
+    // at most every 2 s.
+    private static QuestManager? _manager;
+    private static float _managerLookAt = -10f;
+
     private static Questline? ActiveQuestline()
     {
+        if (_manager != null && _manager.ActiveQuestline != null) return _manager.ActiveQuestline;
+        if (Time.unscaledTime - _managerLookAt < 2f) return null;
+        _managerLookAt = Time.unscaledTime;
+        _manager = null;
         foreach (var qm in UnityEngine.Object.FindObjectsOfType<QuestManager>())
-            if (qm != null && qm.ActiveQuestline != null) return qm.ActiveQuestline;
+            if (qm != null && qm.ActiveQuestline != null) { _manager = qm; return qm.ActiveQuestline; }
         return null;
     }
 

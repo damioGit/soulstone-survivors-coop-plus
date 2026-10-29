@@ -24,7 +24,9 @@ namespace SoulstoneCoop.Loot;
 /// </summary>
 public static class ChestSync
 {
-    private const float ScanInterval = 0.5f, StateInterval = 0.2f, ReannounceInterval = 4f;
+    // 0.14.0: the scan was every 0.5 s, two FindObjectsOfType calls with 7-13 ms spikes on the host; chests and map
+    // tasks appear seconds apart, so once a second and a half is enough.
+    private const float ScanInterval = 1.5f, StateInterval = 0.2f, ReannounceInterval = 4f;
     private const float AssistRadius = 2.6f;
 
     private const byte KindChest = 0, KindTask = 1;

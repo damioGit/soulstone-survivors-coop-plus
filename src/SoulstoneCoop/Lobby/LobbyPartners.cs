@@ -54,10 +54,22 @@ internal static class LobbyPartners
         }
     }
 
+    // 0.14.0: looked up with FindObjectsOfType every frame, 6.5 ms of a 10 ms frame in the menu. Kept while it still
+    // shows our character; looked up again at most twice a second.
+    private static CharacterModelHolder? _holder;
+    private static float _holderLookAt = -10f;
+
+    private static bool Showing(CharacterModelHolder? h) =>
+        h != null && h.isActiveAndEnabled && h.SpawnedCharacter != null && h.SpawnedCharacter.gameObject.activeInHierarchy;
+
     private static CharacterModelHolder? MenuHolder()
     {
+        if (Showing(_holder)) return _holder;
+        _holder = null;
+        if (Time.unscaledTime - _holderLookAt < 0.5f) return null;
+        _holderLookAt = Time.unscaledTime;
         foreach (var h in UnityEngine.Object.FindObjectsOfType<CharacterModelHolder>())
-            if (h != null && h.isActiveAndEnabled && h.SpawnedCharacter != null && h.SpawnedCharacter.gameObject.activeInHierarchy) return h;
+            if (Showing(h)) return _holder = h;
         return null;
     }
 

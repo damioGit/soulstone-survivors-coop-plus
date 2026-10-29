@@ -25,9 +25,11 @@ public sealed class PlayerInfo
     public string SkinId = "";
     public string WeaponSkinId = "";
     public string ModVersion = "";
+    public short Prestige = -1;   // 0.14.0: the character's prestige level on this player's profile (-1 = unknown)
 
     public bool SameAs(PlayerInfo o) =>
-        Name == o.Name && CharacterId == o.CharacterId && WeaponId == o.WeaponId && SkinId == o.SkinId && WeaponSkinId == o.WeaponSkinId;
+        Name == o.Name && CharacterId == o.CharacterId && WeaponId == o.WeaponId && SkinId == o.SkinId && WeaponSkinId == o.WeaponSkinId &&
+        Prestige == o.Prestige;
 
     public void Write(NetDataWriter w)
     {
@@ -38,19 +40,25 @@ public sealed class PlayerInfo
         w.Put(SkinId);
         w.Put(WeaponSkinId);
         w.Put(ModVersion);
+        w.Put(Prestige);
     }
 
-    public static PlayerInfo Read(NetDataReader r) => new()
+    public static PlayerInfo Read(NetDataReader r)
     {
-        Known = true,
-        Name = r.GetString(),
-        CharacterId = r.GetByte(),
-        CharacterName = r.GetString(),
-        WeaponId = r.GetString(),
-        SkinId = r.GetString(),
-        WeaponSkinId = r.GetString(),
-        ModVersion = r.GetString(),
-    };
+        var i = new PlayerInfo
+        {
+            Known = true,
+            Name = r.GetString(),
+            CharacterId = r.GetByte(),
+            CharacterName = r.GetString(),
+            WeaponId = r.GetString(),
+            SkinId = r.GetString(),
+            WeaponSkinId = r.GetString(),
+            ModVersion = r.GetString(),
+        };
+        if (r.AvailableBytes >= 2) i.Prestige = r.GetShort();
+        return i;
+    }
 }
 
 /// <summary>
@@ -388,6 +396,14 @@ public static class CoopSession
                 try { info.WeaponId = prof.SelectedWeaponPerCharacter?.GetWeaponIdByCharacterId(ct) ?? ""; } catch { }
                 try { info.SkinId = prof.SelectedSkinPerCharacter?.GetCharacterSkinIdByCharacterId(ct) ?? ""; } catch { }
                 try { info.WeaponSkinId = prof.SelectedSkinPerCharacter?.GetWeaponSkinIdByCharacterId(ct) ?? ""; } catch { }
+                try
+                {
+                    var list = prof.CharacterProgression?.Progress;
+                    if (list != null)
+                        foreach (var c in list)
+                            if (c != null && c.CharacterIdAsEnum == ct) { info.Prestige = (short)c.CharacterPrestigeLevel; break; }
+                }
+                catch { }
             }
         }
         catch (Exception ex)
@@ -404,6 +420,7 @@ public static class CoopSession
         Local.SkinId = info.SkinId;
         Local.WeaponSkinId = info.WeaponSkinId;
         Local.ModVersion = info.ModVersion;
+        Local.Prestige = info.Prestige;
         return changed;
     }
 
@@ -426,7 +443,7 @@ public static class CoopSession
         if (p == null) return;
         bool first = !p.Info.Known;
         p.Info = info;
-        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Hello from slot {p.Slot}: {info.Name} {info.CharacterName} weapon={info.WeaponId} skin={info.SkinId}/{info.WeaponSkinId} mod={info.ModVersion}");
+        Plugin.StaticLog.LogInfo($"[SoulstoneCoop][session] Hello from slot {p.Slot}: {info.Name} {info.CharacterName} weapon={info.WeaponId} skin={info.SkinId}/{info.WeaponSkinId} mod={info.ModVersion} prestige={info.Prestige}");
         if (!first) return;
         string who = info.CharacterName.Length > 0 ? $"{p.Name} ({info.CharacterName})" : p.Name;
         Notice(Ui.Loc.Msg(NetworkManager.Role == NetRole.Client && !p.IsHost ? "nt.joined_group" : "nt.connected", ("name", who)), 5f);

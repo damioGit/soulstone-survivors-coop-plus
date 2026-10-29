@@ -14,6 +14,23 @@ REPO=/i/soulstone-coop
 
 pids() { tasklist //FI "IMAGENAME eq Soulstone Survivors.exe" //FO CSV //NH | grep -i soulstone | cut -d, -f2 | tr -d '"'; }
 
+# Both game windows onto the monitor that isn't the primary one (the user works on that one), cascaded; moved
+# without activating them, so nothing steals the focus. Captures work on covered windows too.
+move_windows() {
+  powershell -NoProfile -Command '
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -Namespace W -Name U -MemberDefinition "[DllImport(`"user32.dll`")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int hh, uint f);"
+    $s = [System.Windows.Forms.Screen]::AllScreens | Where-Object { -not $_.Primary } | Select-Object -First 1
+    if (-not $s) { "no second monitor"; exit }
+    $b = $s.WorkingArea; $i = 0
+    Get-Process -Name "Soulstone Survivors" -ErrorAction SilentlyContinue | Sort-Object StartTime | ForEach-Object {
+      if ($_.MainWindowHandle -ne [IntPtr]::Zero) {
+        [void][W.U]::SetWindowPos($_.MainWindowHandle, [IntPtr]::Zero, $b.X + $i * 600, $b.Y + $i * 330, 0, 0, 0x15); $i++
+      }
+    }
+    "moved $i window(s) to the second monitor"'
+}
+
 req() {
   local who=$1; shift
   local d="$OUT/$who"
@@ -42,7 +59,7 @@ case "${1:-}" in
     echo 2066020 > "$G/steam_appid.txt"
     # silent tests: master volume 0 (duo.sh stop restores the registry from the backup)
     reg add "HKCU\Software\Game Smithing\Soulstone Survivors" //v masterVolume_h3359004273 //t REG_DWORD //d 0 //f >/dev/null
-    W="-screen-fullscreen 0 -screen-width 1280 -screen-height 720"
+    W="-screen-fullscreen 0 -screen-width 1280 -screen-height 720 -monitor 2" # second monitor: the user works on the main one
     cd "$G"
     for attempt in 1 2 3; do
       for p in $(pids); do taskkill //PID $p //F >/dev/null; done; sleep 3
@@ -51,6 +68,7 @@ case "${1:-}" in
       sleep 12
       cmd //c start "" "Soulstone Survivors.exe" $W --coop-connect 127.0.0.1 --coop-name B --coop-test B
       for w in A B; do for i in $(seq 1 60); do [ -f "$OUT/$w/ready.txt" ] && break; sleep 2; done; done
+      move_windows
       sleep 10
       ok=0
       for w in A B; do for i in $(seq 1 12); do r=$(req $w play); case "$r" in *pressed*) ok=$((ok+1)); break;; esac; sleep 2; done; done
@@ -72,6 +90,7 @@ case "${1:-}" in
     echo stopped
     ;;
   A|B) who=$1; shift; req $who "$@" ;;
+  move) move_windows ;;
   diff)
     req A cmd snap > "$OUT/snapA.txt"; req B cmd snap > "$OUT/snapB.txt"
     diff --label host "$OUT/snapA.txt" --label guest "$OUT/snapB.txt" -U0 | grep -v '^@@' && true

@@ -56,6 +56,27 @@ public static class EnemyCasts
         SummonSkill.Clear();
     }
 
+    private static readonly HashSet<string> WokenKeys = new();
+    internal static int Woken;
+
+    /// <summary>0.14.0: a boss turns its skills on with its phases (Mh'thaeus' finale set); the puppet runs no phases,
+    /// so the host's casts of them were dropped as inactive and the guest saw none of the finale's attacks. The host
+    /// cast it, so it's on there: turn it on here (up to the puppet's root; the puppet's AI stays off).</summary>
+    private static bool Wake(Entity e, Skill skill, string key)
+    {
+        var root = e.transform;
+        for (var t = skill.transform; t != null; t = t.parent)
+        {
+            if (!t.gameObject.activeSelf) t.gameObject.SetActive(true);
+            if (t == root) break;
+        }
+        if (!skill.enabled) skill.enabled = true;
+        if (!skill.isActiveAndEnabled) return false;
+        Woken++;
+        if (WokenKeys.Add(key)) Plugin.StaticLog.LogInfo($"[SoulstoneCoop][enemycasts] Client: '{key}' was off on puppet '{e.gameObject.name}' - turned on for the host's cast.");
+        return true;
+    }
+
     private static string KeyOf(Skill skill) => EnemyPrefabKeys.StripClone(skill.gameObject.name);
 
     // ---------------- host ----------------
@@ -183,7 +204,7 @@ public static class EnemyCasts
             var skill = FindSkill(e, key);
             if (skill == null || caster == null) { _noSkill++; return; }
             if (IsSummonSkill(skill)) { _skippedSummon++; return; }
-            if (!skill.isActiveAndEnabled) { _inactive++; return; }
+            if (!skill.isActiveAndEnabled && !Wake(e, skill, key)) { _inactive++; return; }
             // A skill whose replay threw once isn't replayed again (the host's hit still lands). Charged line attacks
             // (beams, flamethrowers, cleaves) used to be skipped as a group after one threw on a titan; with the aim
             // point always given they replay fine.
