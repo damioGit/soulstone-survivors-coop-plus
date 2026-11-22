@@ -2,7 +2,7 @@
 
 > **This is a modified copy of [gskolber/soulstone-survivors-coop](https://github.com/gskolber/soulstone-survivors-coop).** It's the same mod by the same author, with new features and fixes made with the help of AI (Claude) so it supports more of the game: the Co-op panel restyled to match the game, Mastery and Titan Hunt in co-op, the guest's crowd control, chests and map tasks, boss statues, smoother enemies, more synced effects, tougher enemies in co-op, one shared level for the group, a zoomed-out camera in co-op, partners' characters in the menu, map quests and their rewards for guests, reconnecting to a run after a dropped link, the partners' prestige stars, co-op options in the panel and Polish texts. It also includes the author's own 1.1.0 additions (party panel, upgrade panel above the HUD with gamepad support, guests seeing every enemy). All credit for the original mod goes to its author. What's new: [docs/releases/0.14.0.md](docs/releases/0.14.0.md).
 >
-> **Download:** the [Releases](../../releases) page, file `SoulstoneCoop-0.14.0.zip` (unpack it into the game's folder; everyone in the group needs this same version).
+> **Download:** with a mod manager (r2modman, Thunderstore Mod Manager) from [Thunderstore: SoulstoneCoopPlus](https://thunderstore.io/c/soulstone-survivors/p/MythMDS/SoulstoneCoopPlus/), or by hand from the [Releases](../../releases) page, file `SoulstoneCoop-0.14.0.zip` (unpack it into the game's folder). Everyone in the group needs this same version.
 
 Online co-op for [Soulstone Survivors](https://store.steampowered.com/app/2066020/Soulstone_Survivors/): up to 8 players in the same run, invited through Steam.
 
@@ -11,6 +11,8 @@ An unofficial fan mod, not affiliated with or endorsed by the game's developers.
 > **Status: alpha.** Played by two people over Steam up to 0.8.0; 3+ players and the 0.9.0 changes are untested. See [What works](#what-works) and [Known limitations](#known-limitations).
 
 ## Install
+
+With a mod manager: install [SoulstoneCoopPlus](https://thunderstore.io/c/soulstone-survivors/p/MythMDS/SoulstoneCoopPlus/) from Thunderstore (it brings BepInEx with it) and launch the game from the manager. By hand:
 
 1. Download the latest `SoulstoneCoop-<version>.zip` from [Releases](../../releases).
 2. Close the game. In Steam: right-click **Soulstone Survivors → Manage → Browse local files**.
