@@ -103,6 +103,12 @@ The build copies the plugin into the game's `BepInEx/plugins/SoulstoneCoop` (ski
 
 Design notes for each phase (in Portuguese) are in [`docs/`](docs/), starting with [`docs/roadmap.md`](docs/roadmap.md).
 
+## Sharing
+
+Do whatever you want with the mod: play it, change it, share it, build your own on it ([MIT](LICENSE)). One request: please don't upload it to Nexus Mods.
+
+<img src="docs/img/no-nexus.png" alt="i hate this cat" width="211">
+
 ## Credits
 
 - [BepInEx](https://github.com/BepInEx/BepInEx) and [Il2CppInterop](https://github.com/BepInEx/Il2CppInterop): mod loader and IL2CPP interop, bundled in the release zip.
